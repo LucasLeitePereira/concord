@@ -385,6 +385,9 @@ impl Net {
 
     /// Queues a control message on the active connection to `friend`.
     pub fn send_control(&self, friend: &str, msg: ControlMessage) -> Result<(), NetError> {
+        // Reject oversized frames here so callers (e.g. chat history) never record
+        // a message that the writer would silently drop.
+        msg.encode_frame().map_err(NetError::Protocol)?;
         let conns = lock(&self.inner.conns);
         let active = conns
             .get(friend)
@@ -601,22 +604,43 @@ async fn establish(inner: Arc<Inner>, conn: quinn::Connection, side: ConnSide) {
     }
 
     // Control stream: opened by the dialer (its first frame is a Heartbeat so the
-    // acceptor sees the stream), accepted by the other side.
+    // acceptor sees the stream), accepted by the other side, which answers with a
+    // Heartbeat. The dialer only proceeds after reading that first frame, so a peer
+    // that refuses us after the handshake (e.g. fingerprint mismatch) never makes the
+    // dialer report `Connected`.
     let setup = tokio::time::timeout(CONTROL_SETUP_TIMEOUT, async {
+        let heartbeat = ControlMessage::Heartbeat
+            .encode_frame()
+            .map_err(|e| e.to_string())?;
+        let mut decoder = FrameDecoder::new(MAX_CONTROL_FRAME);
         match side {
             ConnSide::Dialed => {
-                let (mut send, recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
-                let frame = ControlMessage::Heartbeat
-                    .encode_frame()
-                    .map_err(|e| e.to_string())?;
-                send.write_all(&frame).await.map_err(|e| e.to_string())?;
-                Ok::<_, String>((send, recv))
+                let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+                send.write_all(&heartbeat).await.map_err(|e| e.to_string())?;
+                let mut buf = vec![0u8; 4096];
+                loop {
+                    if let Some(first) = decoder.next_message().map_err(|e| e.to_string())? {
+                        if !matches!(first, ControlMessage::Heartbeat) {
+                            return Err("unexpected first control frame".to_string());
+                        }
+                        break;
+                    }
+                    match recv.read(&mut buf).await.map_err(|e| e.to_string())? {
+                        Some(n) => decoder.push(&buf[..n]),
+                        None => return Err("control stream closed during setup".to_string()),
+                    }
+                }
+                Ok::<_, String>((send, recv, decoder))
             }
-            ConnSide::Accepted => conn.accept_bi().await.map_err(|e| e.to_string()),
+            ConnSide::Accepted => {
+                let (mut send, recv) = conn.accept_bi().await.map_err(|e| e.to_string())?;
+                send.write_all(&heartbeat).await.map_err(|e| e.to_string())?;
+                Ok((send, recv, decoder))
+            }
         }
     })
     .await;
-    let (send, recv) = match setup {
+    let (send, recv, decoder) = match setup {
         Ok(Ok(streams)) => streams,
         Ok(Err(e)) => {
             tracing::debug!(%friend, "control stream setup failed: {e}");
@@ -664,7 +688,7 @@ async fn establish(inner: Arc<Inner>, conn: quinn::Connection, side: ConnSide) {
         fingerprint: peer_fp,
         newly_pinned,
     });
-    let task = run_connection(inner, conn, friend, id, send, recv, rx);
+    let task = run_connection(inner, conn, friend, id, (send, recv, decoder), rx);
     match side {
         ConnSide::Dialed => {
             tokio::spawn(task);
@@ -678,14 +702,13 @@ async fn run_connection(
     conn: quinn::Connection,
     friend: String,
     id: u64,
-    send: quinn::SendStream,
-    recv: quinn::RecvStream,
+    (send, recv, decoder): (quinn::SendStream, quinn::RecvStream, FrameDecoder),
     rx: mpsc::UnboundedReceiver<ControlMessage>,
 ) {
     let shutdown = inner.shutdown.subscribe();
     tokio::select! {
         _ = write_loop(send, rx, shutdown) => {}
-        _ = read_loop(recv, &inner, &friend) => {}
+        _ = read_loop(recv, decoder, &inner, &friend) => {}
         _ = datagram_loop(&conn, &inner, &friend) => {}
         _ = conn.closed() => {}
     }
@@ -741,14 +764,15 @@ async fn write_loop(
     }
 }
 
-async fn read_loop(mut recv: quinn::RecvStream, inner: &Inner, friend: &str) {
-    let mut decoder = FrameDecoder::new(MAX_CONTROL_FRAME);
+async fn read_loop(
+    mut recv: quinn::RecvStream,
+    mut decoder: FrameDecoder,
+    inner: &Inner,
+    friend: &str,
+) {
     let mut buf = vec![0u8; 4096];
     loop {
-        match recv.read(&mut buf).await {
-            Ok(Some(n)) => decoder.push(&buf[..n]),
-            Ok(None) | Err(_) => return,
-        }
+        // Drain first: setup may have left complete frames in the decoder.
         loop {
             match decoder.next_message() {
                 Ok(Some(ControlMessage::Heartbeat)) => {}
@@ -768,6 +792,10 @@ async fn read_loop(mut recv: quinn::RecvStream, inner: &Inner, friend: &str) {
                     return;
                 }
             }
+        }
+        match recv.read(&mut buf).await {
+            Ok(Some(n)) => decoder.push(&buf[..n]),
+            Ok(None) | Err(_) => return,
         }
     }
 }

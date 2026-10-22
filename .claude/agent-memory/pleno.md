@@ -30,6 +30,9 @@
 - Declare desvios do pedido; não esconda.
 - Saída do clippy/cargo: filtre com `grep -E "^error|^warning|-->|Finished|^test result"` para economizar tokens.
 - Caminho temporário do Git Bash para programa Windows: `$(cygpath -w "$T")`.
+- Processo em background no Git Bash: `$!` não é o PID Windows; encerre com `taskkill //F //IM sala-core.exe`.
+- Capturar logs `tracing` em teste tokio multi-thread exige `set_global_default` (um `#[test]` por arquivo); `set_default` é por thread.
+- Duas instâncias que se discam em teste: porta livre via `UdpSocket::bind("127.0.0.1:0")`, ler e soltar.
 
 ## Convenções do projeto (Sala)
 - Spec: `ideia/sala-handoff/PLANO-CLAUDE-CODE.md`; design: `ideia/sala-handoff/design/`.

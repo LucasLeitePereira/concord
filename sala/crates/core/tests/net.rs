@@ -218,7 +218,7 @@ async fn b_non_friend_is_rejected() {
 async fn c_post_handshake_fingerprint_mismatch_keeps_pin() {
     with_timeout(async {
         let wrong = Fingerprint([0x42; 32]);
-        let a = node(new_identity(), vec![entry("B", LOCALHOST, None)], 0);
+        let mut a = node(new_identity(), vec![entry("B", LOCALHOST, None)], 0);
         let mut b = node(new_identity(), vec![entry("A", LOCALHOST, Some(wrong))], 0);
         a.net.dial(&friend("B", port(&b))).unwrap();
 
@@ -237,6 +237,17 @@ async fn c_post_handshake_fingerprint_mismatch_keeps_pin() {
         assert_eq!(presented, a.identity.fingerprint());
         assert_eq!(b.net.pinned_fingerprint("A"), Some(wrong), "pin must not change");
         assert!(!b.net.is_connected("A"));
+        // The dialer must never report `Connected` to a peer that refuses it
+        // (it only registers after the acceptor's first control frame).
+        let mut a_events = Vec::new();
+        while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(800), a.rx.recv()).await {
+            a_events.push(ev);
+        }
+        assert!(
+            !a_events.iter().any(|e| matches!(e, NetEvent::Connected { .. })),
+            "A emitted Connected before B accepted: {a_events:?}"
+        );
+        assert!(!a.net.is_connected("B"));
         // Control: with the right pin the same setup connects (see test a).
     })
     .await;

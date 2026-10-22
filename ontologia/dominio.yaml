@@ -69,7 +69,7 @@ conceitos:
   # ---------- rede ----------
   - id: peer-connection
     nome: PeerConnection
-    definicao: "Conexão QUIC (quinn) com um Friend, porta UDP 47800 configurável. Ambos escutam; quem inicia a chamada disca. Tem 1 stream bidirecional de controle + datagramas de mídia. Heartbeat periódico; reconexão automática com backoff."
+    definicao: "Conexão QUIC (quinn) com um Friend, porta UDP 47800 configurável. Ambos escutam; quem inicia a chamada disca. Tem 1 stream bidirecional de controle + datagramas de mídia. Heartbeat periódico; reconexão automática com backoff. Connected só é emitido depois de ler o 1º frame do par (o dialer espera o aceite)."
     estados: [idle, dialing, handshaking, connected, reconnecting, closed]
     secao: "§4"
 
@@ -143,12 +143,13 @@ conceitos:
       - {nome: id, tipo: "u64 ou UUID"}
       - {nome: text, tipo: String}
       - {nome: sent_at, tipo: "u64 (unix ms)"}
-      - {nome: from_self, tipo: bool}
+      - {nome: from_self, tipo: bool, nota: "só no ChatEntry do histórico; não trafega no ControlMessage::Chat"}
+    regras: "texto > MAX_CONTROL_FRAME é recusado no envio e não entra no histórico"
     secao: "§5.4"
 
   - id: chat-history
     nome: ChatHistory
-    definicao: "Vec<ChatMessage> em memória dentro do núcleo; a UI consulta via IPC. Descartado ao fim da chamada ou do núcleo."
+    definicao: "Vec<ChatMessage> em memória dentro do núcleo; a UI consulta via IPC. Descartado ao fim da chamada ou do núcleo (Disconnected ou shutdown)."
     secao: "§5.4"
 
   # ---------- modo jogo ----------
@@ -233,7 +234,7 @@ invariantes:
   - id: inv-chat-never-on-disk
     conceitos: [chat-message, chat-history]
     regra: "Texto de chat nunca é gravado em disco: nem arquivo, nem log (tracing não registra conteúdo de chat). Teste: sessão com chat e depois varredura do data_dir procurando o texto."
-    testado_em: ""
+    testado_em: "sala/crates/core/tests/f1_integration.rs::f1_call_voice_chat_and_chat_never_on_disk (data_dir + log capturado, com controle negativo)"
   - id: inv-only-friends-connect
     conceitos: [friend, peer-connection]
     regra: "Conexão de entrada cujo IP remoto não está em config.friends é recusada antes de qualquer troca de aplicação. Comparar IPs canônicos (IPv4 mapeado em IPv6 ::ffff:a.b.c.d == a.b.c.d, por causa do socket dual-stack)."
