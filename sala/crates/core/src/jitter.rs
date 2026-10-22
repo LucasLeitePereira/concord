@@ -11,6 +11,9 @@ pub const FRAME_MS: u32 = 20;
 /// Samples per millisecond at 48 kHz (used to convert RTP-style timestamps).
 const SAMPLES_PER_MS: i64 = 48;
 
+/// Ticks of an underrun answered with `Lost` (PLC) before falling back to `Empty` (D-006).
+const UNDERRUN_LOST_TICKS: u32 = 3;
+
 /// Result of one playout tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pop {
@@ -53,10 +56,15 @@ pub struct JitterStats {
 ///
 /// Implementation notes: sequence numbers are unwrapped into a monotonic `i64`
 /// ("extended" sequence). When the buffer runs dry after playout started
-/// (underrun, e.g. DTX silence or a network stall) it re-buffers: `pop` returns
-/// `Empty` without advancing and playout resumes once the target delay has
-/// elapsed since the next arrival. Delay growth therefore happens at underruns;
-/// shrinking happens only through the overflow cap.
+/// (underrun, e.g. DTX silence or a network stall) it re-buffers without
+/// advancing the sequence: the first 3 ticks (60 ms) return `Lost` (counted in
+/// `stats.lost`, so the decoder runs PLC over a short stall), later ticks return
+/// `Empty` (silence). This also applies while frames are buffered but the target
+/// delay has not yet elapsed since the new anchor. Playout resumes at the next
+/// expected sequence once the target delay has elapsed since the next arrival;
+/// frames with an already played sequence are dropped as late. Delay growth
+/// therefore happens at underruns; shrinking happens only through the overflow
+/// cap. Before the first start `pop` always returns `Empty` (decision D-006).
 #[derive(Debug)]
 pub struct JitterBuffer {
     min_delay_ms: u32,
@@ -73,6 +81,8 @@ pub struct JitterBuffer {
     ever_started: bool,
     /// Arrival time anchoring the current buffering phase.
     anchor_ms: Option<u64>,
+    /// `Lost` ticks already returned in the current underrun.
+    underrun_ticks: u32,
     /// Previous (arrival_ms, timestamp) for the jitter estimator.
     prev: Option<(u64, u32)>,
     /// Smoothed interarrival jitter in ms (RFC 3550 style, gain 1/16).
@@ -93,6 +103,7 @@ impl JitterBuffer {
             playing: false,
             ever_started: false,
             anchor_ms: None,
+            underrun_ticks: 0,
             prev: None,
             jitter_ms: 0.0,
             stats: JitterStats::default(),
@@ -162,16 +173,16 @@ impl JitterBuffer {
     /// Playout tick (see type-level contract).
     pub fn pop(&mut self, now_ms: u64) -> Pop {
         if !self.playing {
-            let Some((&first, _)) = self.frames.first_key_value() else {
-                return Pop::Empty;
+            let ready = match (self.frames.first_key_value(), self.anchor_ms) {
+                (Some(_), Some(anchor)) => now_ms >= anchor + u64::from(self.target_delay_ms()),
+                _ => false,
             };
-            let Some(anchor) = self.anchor_ms else {
-                return Pop::Empty;
-            };
-            if now_ms < anchor + u64::from(self.target_delay_ms()) {
-                return Pop::Empty;
+            if !ready {
+                return self.underrun_tick();
             }
+            let first = *self.frames.first_key_value().expect("ready implies a frame").0;
             self.playing = true;
+            self.underrun_ticks = 0;
             // First start: lowest buffered. Restart after underrun: resume at the
             // next expected slot unless it is hopelessly behind.
             if !self.ever_started || first - self.next_play > self.max_frames() as i64 {
@@ -184,7 +195,8 @@ impl JitterBuffer {
             // Underrun: re-buffer without advancing.
             self.playing = false;
             self.anchor_ms = None;
-            return Pop::Empty;
+            self.underrun_ticks = 0;
+            return self.underrun_tick();
         }
 
         let slot = self.next_play;
@@ -198,6 +210,18 @@ impl JitterBuffer {
                 self.stats.lost += 1;
                 Pop::Lost
             }
+        }
+    }
+
+    /// One tick while not playing: before the first start it is `Empty`; during an
+    /// underrun the first `UNDERRUN_LOST_TICKS` ticks are `Lost` (D-006), then `Empty`.
+    fn underrun_tick(&mut self) -> Pop {
+        if self.ever_started && self.underrun_ticks < UNDERRUN_LOST_TICKS {
+            self.underrun_ticks += 1;
+            self.stats.lost += 1;
+            Pop::Lost
+        } else {
+            Pop::Empty
         }
     }
 
@@ -304,7 +328,8 @@ mod tests {
         assert_ne!(arrival_order, vec![0, 1, 2, 3, 4, 5]); // control: input is disordered
         let out = run(&mut jb, &sched, 0..14);
         assert_eq!(frames(&out), (0..6).map(pl).collect::<Vec<_>>());
-        assert_eq!(jb.stats().lost, 0);
+        // No Lost while the stream runs (the trailing underrun after the last frame is PLC).
+        assert_eq!(out[..8].iter().filter(|p| **p == Pop::Lost).count(), 0);
     }
 
     #[test]
@@ -392,10 +417,75 @@ mod tests {
         jb.push(1, ts(1), pl(1), 20);
         assert_eq!(jb.pop(40), Pop::Frame(pl(0)));
         assert_eq!(jb.pop(60), Pop::Frame(pl(1)));
-        assert_eq!(jb.pop(80), Pop::Empty); // dry
+        assert_eq!(jb.pop(80), Pop::Lost); // dry: short stall is covered by PLC
         jb.push(2, ts(2), pl(2), 90);
-        assert_eq!(jb.pop(100), Pop::Empty); // re-buffering
+        assert_eq!(jb.pop(100), Pop::Lost); // re-buffering
         assert_eq!(jb.pop(140), Pop::Frame(pl(2)));
+    }
+
+    #[test]
+    fn short_stall_of_two_ticks_yields_lost_lost_then_resumes() {
+        let mut jb = JitterBuffer::default();
+        jb.push(0, ts(0), pl(0), 0);
+        jb.push(1, ts(1), pl(1), 20);
+        assert_eq!(jb.pop(40), Pop::Frame(pl(0)));
+        assert_eq!(jb.pop(60), Pop::Frame(pl(1)));
+        assert_eq!(jb.pop(80), Pop::Lost); // dry
+        // The sender's timestamps jump over the stall, so arrivals stay regular.
+        jb.push(2, ts(2) + 1920, pl(2), 80);
+        jb.push(3, ts(3) + 1920, pl(3), 100);
+        assert_eq!(jb.pop(100), Pop::Lost); // frames buffered, still waiting target delay
+        assert_eq!(jb.pop(120), Pop::Frame(pl(2)));
+        assert_eq!(jb.pop(140), Pop::Frame(pl(3)));
+        let s = jb.stats();
+        assert_eq!((s.lost, s.late_dropped, s.played), (2, 0, 4));
+        // Control: a stall without underrun never yields Lost.
+        let mut ok = JitterBuffer::default();
+        let sched: Vec<_> = (0..4u16).map(|s| (u64::from(s) * 20, s)).collect();
+        assert!(!run(&mut ok, &sched, 0..6).contains(&Pop::Lost));
+    }
+
+    #[test]
+    fn long_pause_yields_exactly_three_lost_then_empty_then_resumes_next_seq() {
+        let mut jb = JitterBuffer::default();
+        jb.push(0, ts(0), pl(0), 0);
+        jb.push(1, ts(1), pl(1), 20);
+        assert_eq!(jb.pop(40), Pop::Frame(pl(0)));
+        assert_eq!(jb.pop(60), Pop::Frame(pl(1)));
+        let pauses: Vec<Pop> = (4..10u64).map(|t| jb.pop(t * 20)).collect();
+        assert_eq!(&pauses[..3], &[Pop::Lost, Pop::Lost, Pop::Lost]);
+        assert!(pauses[3..].iter().all(|p| *p == Pop::Empty));
+        // DTX: seq stays contiguous after the pause.
+        jb.push(2, ts(2) + 7680, pl(2), 200);
+        jb.push(3, ts(3) + 7680, pl(3), 220);
+        assert_eq!(jb.pop(200), Pop::Empty);
+        assert_eq!(jb.pop(240), Pop::Frame(pl(2)));
+        assert_eq!(jb.pop(260), Pop::Frame(pl(3)));
+        let s = jb.stats();
+        assert_eq!((s.lost, s.late_dropped), (3, 0));
+    }
+
+    #[test]
+    fn stats_lost_counts_underrun_lost() {
+        let mut jb = JitterBuffer::default();
+        jb.push(0, ts(0), pl(0), 0);
+        assert_eq!(jb.pop(40), Pop::Frame(pl(0)));
+        assert_eq!(jb.stats().lost, 0);
+        assert_eq!(jb.pop(60), Pop::Lost);
+        assert_eq!(jb.stats().lost, 1);
+        assert_eq!(jb.pop(80), Pop::Lost);
+        assert_eq!(jb.pop(100), Pop::Lost);
+        assert_eq!(jb.pop(120), Pop::Empty);
+        assert_eq!(jb.stats().lost, 3);
+    }
+
+    #[test]
+    fn before_first_start_is_always_empty() {
+        let mut jb = JitterBuffer::default();
+        for t in 0..6u64 {
+            assert_eq!(jb.pop(t * 20), Pop::Empty);
+        }
+        assert_eq!(jb.stats().lost, 0);
     }
 
     #[test]

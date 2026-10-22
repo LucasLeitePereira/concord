@@ -16,7 +16,7 @@
 - Clippy 1.99 (`-D warnings`): `collapsible_if` pede let-chains (`if a && let Some(x) = y`); `result_large_err` → `Box<toml::de::Error>` no enum de erro; `field_reassign_with_default` → `X { campo, ..Default::default() }`.
 - IP de socket dual-stack chega como `::ffff:a.b.c.d`: compare com `IpAddr::to_canonical()`.
 - `u8::from_str_radix` aceita `+` inicial: valide `is_ascii_hexdigit` antes de parsear hex.
-- Buffer de tempo real (jitter etc.): além de perda/reordenação, teste deriva de relógio, pausa do remetente (DTX/mudo) e ressincronização.
+- Buffer de tempo real (jitter etc.): além de perda/reordenação, teste deriva de relógio, pausa do remetente (DTX/mudo) e ressincronização; simule pausa com salto de timestamp (senão o estimador sobe o alvo) e calcule a retomada com `target_delay_ms()`.
 - Scripts que escrevem em pastas de entrega não podem apagar pastas onde o usuário já roda coisas: monte em diretório temporário.
 
 ## Atalhos / padrões que funcionaram
