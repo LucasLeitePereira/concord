@@ -158,6 +158,16 @@ class TestOrquestrador(Base):
         out = capturar(coletar.main, ["orquestrador", "sessX"])
         self.assertEqual(json.loads(out)["custo_ontologia"]["n_edicoes_ontologia"], 2)
 
+    def test_custo_ontologia_edicao_via_shell(self):
+        escreve = ["cat >> ontologia/decisoes.md <<'EOF'\n## D-9\nEOF",
+                   "sed -i 's/a/b/' ontologia/dominio.yaml",
+                   "python - <<'EOF'\nopen(\"ontologia/dominio.yaml\",\"w\",encoding=\"utf-8\")\nEOF"]
+        so_le = ["grep -n x ontologia/dominio.yaml", "cat ontologia/decisoes.md > /tmp/x"]
+        for cmd in escreve:
+            self.assertTrue(coletar._edicao_ontologia(tu("Bash", command=cmd)), cmd)
+        for cmd in so_le:  # controle negativo: leitura e redirecionamento para fora
+            self.assertFalse(coletar._edicao_ontologia(tu("Bash", command=cmd)), cmd)
+
 
 class TestEstatistica(unittest.TestCase):
     def test_cinco_favoraveis(self):

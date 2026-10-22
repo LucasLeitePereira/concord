@@ -50,10 +50,11 @@ Quem atualiza é o sênior, ao fim de cada fase, a partir de `tarefas.jsonl`. Co
   - Na revisão cega, CTRL teve menos bugs em T-004 e T-006, e o revisor preferiu CTRL em T-003 e T-006.
   - Causa provável: a spec literal traz contexto que a ontologia condensada perdeu. Exemplos: na T-004, a semântica de underrun e DTX; na T-006, IPv4 mapeado em IPv6 no socket dual-stack.
 - **H4, divergência de nomes: inconclusiva.** Houve 1 divergência, no braço ONTO da T-004 (alvo de atraso que não se adapta). A revisão apontou 2 lacunas da própria ontologia (`opus_payload`×`payload`, `from_self`).
-- **H3, saldo:**
-  - Custo de criar e manter a ontologia nesta sessão: US$ 0,26 (turnos do orquestrador com edição em `ontologia/`, medido por `coletar.py orquestrador`).
-  - Com a economia mediana de US$ 0,06 por tarefa, o break-even fica em ≈ 4–5 tarefas de código.
-  - Esse cálculo ignora o custo dos bugs a mais, que na F1 custaram uma tarefa de correção (T-004b, ≈ US$ 0,2).
+- **H3, saldo: ainda negativo na F1.**
+  - Custo de criar e manter a ontologia nesta sessão: **US$ 0,86**, medido por `coletar.py orquestrador`. São 11 turnos do orquestrador com edição em `ontologia/`, contando Edit/Write e escrita via shell.
+  - O valor é aproximado. Conta o turno inteiro, mesmo quando ele também mexeu em outra coisa, e não conta o tempo de pensar sem editar.
+  - Com a economia mediana de US$ 0,06 por tarefa, o break-even fica em **≈ 14 tarefas de código**. A F1 teve 9 tarefas de dev.
+  - Esse cálculo ainda ignora o custo dos bugs a mais do braço ONTO. Na F1 eles custaram uma tarefa de correção (T-004b, US$ 0,28).
 
 ### Efeito colateral útil: o experimento melhorou a ontologia
 A revisão cega achou lacunas, e todas viraram decisões ou invariantes (ontologia v2):
@@ -68,4 +69,40 @@ As tarefas seguintes que usaram a v2 (T-004b) relataram "ajudou: s", com 0 diver
 - Manter A/A em mais um par para estimar melhor o ruído de correção.
 
 ## Fases
-_(F1 em andamento: T-007, T-008 e T-009 serão acrescentadas no fechamento da fase)_
+
+### F1 — workspace, protocolo, rede e voz (fechada em 2026-10-22)
+
+**Entrega:**
+- Pacotes `sala-protocol` e `sala-core`, com 64 testes unitários e 4 suítes de integração: aceite, `net` e `f1_integration`.
+- `clippy -D warnings` limpo.
+- Duas instâncias `--profile a/b --synthetic-audio` conectam com TOFU e trocam Hello/Status. A voz chega com ≈ 99,6 % dos quadros e 0 perdidos, e o chat comprovadamente não vai a disco nem a log.
+
+**Tarefas fora do A/B** (observacionais; todas com a ontologia v2 no prompt):
+
+| tarefa | US$ | min | tool calls | ajudou | bugs | divergências |
+|---|---|---|---|---|---|---|
+| T-005 config/perfis | 0,45 | 3,7 | 20 | s | 0 | 2 (tipos de `Friend`) |
+| T-004b underrun D-006 | 0,28 | 1,8 | 16 | s | 0 | 0 |
+| T-007 QUIC | 1,05 | 11,0 | 25 | s | 0 | 2 (limite real do datagrama; reconexão do mesmo lado) |
+| T-008 voz | 1,03 | 9,5 | 28 | s | 0 | 0 |
+| T-009 sessão/chat | 0,79 | 9,9 | 24 | s | 1 baixo | 0 |
+
+**Leitura:**
+- Nas tarefas de integração (T-007 a T-009), "ajudou" foi sempre "s", e os agentes citam as **decisões** (D-005/006/007) como o que mais poupou trabalho, mais que os conceitos.
+- As divergências mudaram de tipo. Na F1 inicial eram lacunas da ontologia que viravam bug; agora são descobertas da implementação que viram atualização da ontologia, como o limite real do quinn abaixo de 1200 bytes.
+- Hipótese para a F2: o valor está mais em **decisões e invariantes curadas** que no glossário de conceitos.
+
+**Totais:**
+
+| | valor |
+|---|---|
+| Custo dos agentes (dev) | US$ 5,99 |
+| Medição (revisão cega e outros) | US$ 1,44 |
+| Orquestrador (sessão inteira, incluindo a criação da ontologia e do experimento) | US$ 9,43 |
+
+**Ajustes para a F2:**
+- testes ocultos adversariais;
+- 2º A/A;
+- par A/B da histerese do modo jogo;
+- par A/B de uma tela de UI, onde se espera pouco ganho da ontologia;
+- medir se o custo da ontologia cai depois da curadoria inicial (US$/tarefa de manutenção).

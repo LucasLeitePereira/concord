@@ -66,9 +66,21 @@ def _tokens(u):
             + u.get("cache_creation_input_tokens", 0) + u.get("cache_read_input_tokens", 0))
 
 
+RE_SHELL_ESCREVE_ONTO = re.compile(
+    r""">>?\s*["']?(?:\./)?ontologia/"""                      # redirecionamento
+    r"""|sed\s+-i\b[^\n]*ontologia/"""                       # sed in-place
+    r"""|ontologia/[^\n]*["'],\s*["']w["']""")               # open("ontologia/...", "w")
+
+
 def _edicao_ontologia(b):
-    return (b.get("type") == "tool_use" and b.get("name") in ("Edit", "Write")
-            and _em_pasta((b.get("input") or {}).get("file_path", ""), "ontologia"))
+    if b.get("type") != "tool_use":
+        return False
+    inp = b.get("input") or {}
+    if b.get("name") in ("Edit", "Write"):
+        return _em_pasta(inp.get("file_path", ""), "ontologia")
+    if b.get("name") in ("Bash", "PowerShell"):
+        return bool(RE_SHELL_ESCREVE_ONTO.search(str(inp.get("command", "")).replace("\\", "/")))
+    return False
 
 
 def medir(arquivo):
