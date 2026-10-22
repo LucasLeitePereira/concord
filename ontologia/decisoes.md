@@ -60,3 +60,13 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Stream de controle: um bidirecional, aberto por quem discou. A 1ª mensagem de cada lado é `Hello`.
 **Alternativa descartada:** verificar o fingerprint dentro do verificador do rustls. O verificador não sabe qual amigo está do outro lado na entrada, e o TOFU precisa gravar estado.
 **Data:** 2026-10-22
+
+## D-008 Detector de jogo: casamento por nome de arquivo e override manual
+**Conceitos:** game-detector, game-mode, inv-game-mode-hysteresis-2-3
+**Decisão:**
+- A amostra traz o caminho completo do executável (`QueryFullProcessImageNameW`). As listas `games`/`exclude` têm nomes de arquivo; o casamento é pelo nome inteiro do arquivo, sem diferenciar maiúsculas (nada de sufixo ou substring). Jogo listado é positivo mesmo se também estiver em `exclude`. Sem janela em primeiro plano = negativo.
+- Entrada manual (atalho, bandeja, UI): liga na hora; a detecção automática nunca tira do modo jogo que foi ligado à mão.
+- Saída manual: desliga na hora; a entrada automática fica suspensa até chegar uma leitura negativa, e só contam as positivas depois dela. Sem isso o jogo ainda em foco religaria o modo 4 s depois.
+- Recarregar a config mantém estado e origem e zera as sequências. `auto_detect = false` ⇒ `tick` nunca muda o estado.
+**Alternativa descartada:** desligar a detecção automática após qualquer ação manual (o usuário teria de religar à mão e esqueceria).
+**Data:** 2026-10-22

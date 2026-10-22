@@ -161,7 +161,7 @@ conceitos:
 
   - id: game-detector
     nome: GameDetector
-    definicao: "A cada 2 s lê a janela em primeiro plano. Positivo se o exe está em games OU (janela cobre o monitor inteiro E exe não está em exclude). Histerese: entra após 2 positivos seguidos, sai após 3 negativos seguidos."
+    definicao: "A cada 2 s lê a janela em primeiro plano. Positivo se o exe está em games OU (janela cobre o monitor inteiro E exe não está em exclude). Histerese: entra após 2 positivos seguidos, sai após 3 negativos seguidos. Casamento de exe e override manual: D-008."
     secao: "§5.2"
 
   # ---------- mesa de sons ----------
