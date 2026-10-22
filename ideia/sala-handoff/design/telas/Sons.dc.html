@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Sala — mesa de sons</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap">
+<style>
+body{margin:0;background:#0F1012}
+a{color:#A0A6AD;text-decoration:none}a:hover{color:#EDEEF0}
+button{font:inherit;cursor:pointer}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid #3DD68C;outline-offset:2px}
+</style>
+</helmet>
+<div style="width: 960px; height: 700px; box-sizing: border-box; background: #0F1012; color: #EDEEF0; font-family: 'Manrope', system-ui, sans-serif; font-size: 14px; padding: 28px; display: flex; flex-direction: column; gap: 22px">
+
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; align-self: flex-start; min-height: 32px">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"></path></svg>
+Voltar para a chamada
+</a>
+
+<div style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<h1 style="margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em">Mesa de sons</h1>
+<span style="font-size: 13px; color: #A0A6AD">Os atalhos funcionam até com o jogo aberto.</span>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 18px">
+<label style="display: flex; align-items: center; gap: 10px; font-size: 13px; color: #A0A6AD">
+Volume geral
+<input type="range" min="0" max="100" value="70" style="width: 140px; accent-color: {{accent}}">
+</label>
+<label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #A0A6AD; min-height: 44px">
+<input type="checkbox" checked style="width: 18px; height: 18px; accent-color: {{accent}}">
+Ouvir no meu fone também
+</label>
+<button type="button" style="display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: {{accent}}; color: #06281A; font-weight: 700">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+Adicionar som
+</button>
+</div>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px">
+<sc-for list="{{sounds}}" as="s" hint-placeholder-count="7">
+<div style="border-radius: 16px; background: {{s.bg}}; border: 1px solid {{s.border}}; padding: 14px; display: flex; flex-direction: column; gap: 12px; min-height: 142px; box-sizing: border-box">
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px">
+<span style="font-weight: 700; font-size: 15px">{{s.name}}</span>
+<span style="font-size: 12px; color: #858C94; font-family: 'JetBrains Mono', ui-monospace, monospace">{{s.duration}}</span>
+</div>
+<span style="align-self: flex-start; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; padding: 3px 8px; border-radius: 6px; background: #23262A; color: #C9CDD2">{{s.hotkey}}</span>
+<div style="margin-top: auto; display: flex; align-items: center; gap: 10px">
+<button type="button" aria-label="{{s.playLabel}}" aria-pressed="{{s.playing}}" onClick="{{s.toggle}}" style="width: 44px; height: 44px; flex-shrink: 0; border-radius: 50%; border: none; background: {{s.btnBg}}; color: {{s.btnColor}}; display: flex; align-items: center; justify-content: center">
+<sc-if value="{{s.isPlaying}}" hint-placeholder-val="{{ false }}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>
+</sc-if>
+<sc-if value="{{s.isIdle}}" hint-placeholder-val="{{ true }}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"></path></svg>
+</sc-if>
+</button>
+<input type="range" min="0" max="100" value="{{s.volume}}" aria-label="{{s.volLabel}}" style="flex-grow: 1; min-width: 0; accent-color: {{accent}}">
+</div>
+</div>
+</sc-for>
+<button type="button" style="border-radius: 16px; border: 2px dashed #2A2E33; background: transparent; color: #A0A6AD; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 142px; padding: 14px; text-align: center">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 20h16"></path></svg>
+<span style="font-weight: 600">Solte um arquivo aqui</span>
+<span style="font-size: 12px; color: #858C94">MP3, OGG, WAV ou FLAC</span>
+</button>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#3DD68C","options":["#3DD68C","#4CC9F0","#F2A93B","#B79CFF"]},"$preview":{"width":960,"height":700}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { playing: 'risada' };
+  }
+  renderVals() {
+    const accent = this.props.accent ?? '#3DD68C';
+    const list = [
+      { id: 'buzina', name: 'Buzina', duration: '0:02', hotkey: 'Ctrl+Num1', volume: 80 },
+      { id: 'risada', name: 'Risada', duration: '0:03', hotkey: 'Ctrl+Num2', volume: 70 },
+      { id: 'trombone', name: 'Trombone triste', duration: '0:04', hotkey: 'Ctrl+Num3', volume: 75 },
+      { id: 'aplausos', name: 'Aplausos', duration: '0:05', hotkey: 'Ctrl+Num4', volume: 60 },
+      { id: 'ding', name: 'Ding', duration: '0:01', hotkey: 'Ctrl+Num5', volume: 90 },
+      { id: 'suspense', name: 'Suspense', duration: '0:06', hotkey: 'Ctrl+Num6', volume: 65 },
+      { id: 'vitoria', name: 'Vitória', duration: '0:04', hotkey: 'Ctrl+Num7', volume: 70 }
+    ];
+    return {
+      accent,
+      sounds: list.map((s) => {
+        const on = this.state.playing === s.id;
+        return {
+          ...s,
+          isPlaying: on,
+          isIdle: !on,
+          playing: String(on),
+          playLabel: (on ? 'Parar ' : 'Tocar ') + s.name,
+          volLabel: 'Volume de ' + s.name,
+          bg: on ? '#16241E' : '#17191C',
+          border: on ? accent : '#23262A',
+          btnBg: on ? accent : '#23262A',
+          btnColor: on ? '#06281A' : '#EDEEF0',
+          toggle: () => this.setState({ playing: on ? null : s.id })
+        };
+      })
+    };
+  }
+}
+</script>
+</body>
+</html>

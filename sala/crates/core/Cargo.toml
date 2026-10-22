@@ -1,0 +1,16 @@
+[package]
+name = "sala-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "sala_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sala-core"
+path = "src/main.rs"
+
+[dependencies]
+sala-protocol = { path = "../protocol" }

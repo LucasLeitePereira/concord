@@ -1,0 +1,288 @@
+# Ontologia do domínio — Sala (app P2P de voz e tela). Fonte: ideia/sala-handoff/PLANO-CLAUDE-CODE.md (§ = seção).
+# Ler só o recorte: grep -n -A15 'id: <conceito>' ontologia/dominio.yaml
+versao: 1
+conceitos:
+  # ---------- pessoas e identidade ----------
+  - id: friend
+    nome: Friend
+    definicao: "Amigo configurado em [[friends]]. Único tipo de par que pode conectar (§4)."
+    atributos:
+      - {nome: name, tipo: String, obrigatorio: true}
+      - {nome: address, tipo: "IpAddr (100.x.y.z do Tailscale; 127.0.0.1 em testes)", obrigatorio: true}
+      - {nome: fingerprint, tipo: "Option<Fingerprint>", obrigatorio: false, nota: "preenchido na 1ª conexão (TOFU)"}
+    estados: [offline, online, in_call, reconnecting]
+    secao: "§4, §6"
+
+  - id: identity-fingerprint
+    nome: Fingerprint
+    definicao: "SHA-256 do certificado TLS autoassinado de uma instância, em hex minúsculo. Identidade do par; usado em pinning e no desempate de conexões."
+    atributos:
+      - {nome: value, tipo: "[u8; 32]", obrigatorio: true}
+    estados: [unknown, pinned, mismatch]
+    nota: "Certificado próprio gerado na 1ª execução e salvo no diretório de config do perfil."
+    secao: "§4"
+
+  - id: profile
+    nome: Profile
+    definicao: "Isolamento de instância para testes numa máquina: `--profile a|b` muda diretório de config/dados e porta."
+    atributos:
+      - {nome: name, tipo: "Option<String>", obrigatorio: false, nota: "None = perfil padrão %APPDATA%\\Sala"}
+      - {nome: data_dir, tipo: PathBuf, obrigatorio: true}
+      - {nome: port, tipo: u16, obrigatorio: true, nota: "padrão 47800; perfis usam portas distintas"}
+    secao: "§9"
+
+  - id: config
+    nome: Config
+    definicao: "Configuração persistida em <data_dir>/config.toml; criada com valores padrão comentados na 1ª execução; editável pela UI via núcleo."
+    atributos:
+      - {nome: name, tipo: String}
+      - {nome: port, tipo: u16, padrao: 47800}
+      - {nome: friends, tipo: "Vec<Friend>"}
+      - {nome: audio, tipo: "AudioConfig {input_device, output_device, bitrate_kbps(32..=128, 96), mode(voice_activity|push_to_talk), vad_threshold(-45 dB), noise_suppression(false)}"}
+      - {nome: hotkeys, tipo: "HotkeyConfig {push_to_talk, toggle_mute, toggle_game_mode}"}
+      - {nome: game_mode, tipo: "GameModeConfig {auto_detect(true), games, exclude, keep_sharing_in_game_mode(false)}"}
+      - {nome: share, tipo: "ShareConfig {preset, share_audio}"}
+      - {nome: soundboard, tipo: "Vec<SoundConfig {file, hotkey, volume}>"}
+    secao: "§6"
+
+  # ---------- processos ----------
+  - id: core-process
+    nome: sala-core
+    definicao: "Processo principal sempre ligado: bandeja, rede, voz, sons, atalhos, detecção de jogo, captura/visualizador de tela, estado do chat. Dono de toda a lógica. Inicia/encerra sala-ui."
+    secao: "§3"
+
+  - id: ui-process
+    nome: sala-ui
+    definicao: "App Tauri 2 que só exibe estado e envia comandos via IPC. Existe apenas no modo normal. Se aberto sem núcleo, inicia o núcleo. Ao receber Shutdown, sai."
+    secao: "§3, §7"
+
+  - id: ipc-message
+    nome: IpcMessage
+    definicao: "Mensagem entre sala-ui e sala-core por named pipe \\\\.\\pipe\\sala-core-<usuário>, JSON delimitado por linha (uma mensagem por linha)."
+    atributos:
+      - {nome: direcao, tipo: "UiToCore (comandos) | CoreToUi (estado/eventos, inclui Shutdown)"}
+    secao: "§3"
+
+  # ---------- rede ----------
+  - id: peer-connection
+    nome: PeerConnection
+    definicao: "Conexão QUIC (quinn) com um Friend, porta UDP 47800 configurável. Ambos escutam; quem inicia a chamada disca. Tem 1 stream bidirecional de controle + datagramas de mídia. Heartbeat periódico; reconexão automática com backoff."
+    estados: [idle, dialing, handshaking, connected, reconnecting, closed]
+    secao: "§4"
+
+  - id: control-message
+    nome: ControlMessage
+    definicao: "Mensagem confiável no stream de controle, serializada com prefixo de tamanho (ver D-001)."
+    variantes:
+      - "Hello { name, app_version, protocol_version, capabilities }"
+      - "Status { muted, deafened, game_mode, sharing }"
+      - "Chat { id, text, sent_at }"
+      - "ShareStart { codec, width, height, fps }"
+      - "ShareStop"
+      - "KeyframeRequest"
+      - "Bye"
+      - "Heartbeat (sinal de vida; pode ser variante própria)"
+    secao: "§4"
+
+  - id: capabilities
+    nome: Capabilities
+    definicao: "Codecs de vídeo que a máquina codifica e decodifica POR HARDWARE, anunciados no Hello."
+    atributos:
+      - {nome: hw_encode, tipo: "Vec<VideoCodec>"}
+      - {nome: hw_decode, tipo: "Vec<VideoCodec>"}
+    secao: "§4, §5.5"
+
+  - id: media-datagram
+    nome: MediaDatagram
+    definicao: "Datagrama QUIC não confiável com mídia. Tamanho serializado ≤ max_datagram_size da conexão (~1200 bytes)."
+    variantes:
+      - "Audio { stream: Voice | ShareAudio, seq: u16, timestamp: u32, opus_payload }"
+      - "Video { frame_id: u32, frag_idx: u16, frag_count: u16, keyframe: bool, timestamp: u32, payload }"
+    secao: "§4"
+
+  # ---------- voz ----------
+  - id: voice-frame
+    nome: VoiceFrame
+    definicao: "Quadro Opus de 20 ms, 48 kHz mono, modo VOIP, 96 kbps padrão (32–128), FEC e DTX ligados. seq u16 com wrap-around; timestamp em amostras (960 por quadro)."
+    secao: "§5.1"
+
+  - id: jitter-buffer
+    nome: JitterBuffer
+    definicao: "Buffer adaptativo de recepção de voz, alvo entre 40 e 120 ms. Reordena por seq (com wrap u16), descarta atrasados/duplicados e, quando falta o quadro da vez, sinaliza perda para o decoder fazer PLC (ocultação do próprio Opus)."
+    atributos:
+      - {nome: min_delay_ms, tipo: u32, padrao: 40}
+      - {nome: max_delay_ms, tipo: u32, padrao: 120}
+      - {nome: target_delay_ms, tipo: u32, nota: "adapta-se ao jitter medido, sempre dentro de [min, max]"}
+    saida: "pop() -> Frame(payload) | Lost (PLC) | Empty (ainda bufferizando)"
+    secao: "§5.1"
+
+  - id: voice-activation
+    nome: VoiceActivation
+    definicao: "Decide se o microfone transmite: voice_activity (nível ≥ vad_threshold dB) ou push_to_talk (atalho global pressionado). Mudo/ensurdecer têm precedência."
+    secao: "§5.1"
+
+  - id: call
+    nome: Call
+    definicao: "Sessão ativa de voz com um Friend sobre uma PeerConnection. Ao terminar, o chat-history é descartado."
+    atributos:
+      - {nome: started_at, tipo: Instant}
+      - {nome: muted, tipo: bool}
+      - {nome: deafened, tipo: bool}
+      - {nome: peer_volume, tipo: "f32 (0.0–2.0)"}
+    secao: "§5.1"
+
+  # ---------- chat ----------
+  - id: chat-message
+    nome: ChatMessage
+    definicao: "Mensagem só de texto trafegada no stream de controle. Links são clicáveis na UI."
+    atributos:
+      - {nome: id, tipo: "u64 ou UUID"}
+      - {nome: text, tipo: String}
+      - {nome: sent_at, tipo: "u64 (unix ms)"}
+      - {nome: from_self, tipo: bool}
+    secao: "§5.4"
+
+  - id: chat-history
+    nome: ChatHistory
+    definicao: "Vec<ChatMessage> em memória dentro do núcleo; a UI consulta via IPC. Descartado ao fim da chamada ou do núcleo."
+    secao: "§5.4"
+
+  # ---------- modo jogo ----------
+  - id: game-mode
+    nome: GameMode
+    definicao: "Estado em que só sala-core roda. Entrar: Shutdown na UI e confirmar término; fechar visualizador; parar transmissão (salvo keep_sharing_in_game_mode); liberar buffers; enviar Status. Sair: reabrir UI; enviar Status. Chat recebido vira toast nativo."
+    estados: [normal, game]
+    secao: "§5.2"
+
+  - id: game-detector
+    nome: GameDetector
+    definicao: "A cada 2 s lê a janela em primeiro plano. Positivo se o exe está em games OU (janela cobre o monitor inteiro E exe não está em exclude). Histerese: entra após 2 positivos seguidos, sai após 3 negativos seguidos."
+    secao: "§5.2"
+
+  # ---------- mesa de sons ----------
+  - id: sound
+    nome: Sound
+    definicao: "Arquivo em <data_dir>/sons (WAV/MP3/OGG/FLAC), decodificado sob demanda com symphonia e reamostrado a 48 kHz com rubato. Tem atalho global e volume próprios."
+    secao: "§5.3"
+
+  - id: soundboard
+    nome: Soundboard
+    definicao: "Toca Sound mixado na voz enviada e, opcionalmente, localmente. Um som por vez no MVP. Atalhos funcionam no modo jogo."
+    secao: "§5.3"
+
+  # ---------- tela ----------
+  - id: screen-share
+    nome: ScreenShare
+    definicao: "Transmissão de monitor ou janela: captura WGC → encoder de hardware (FFmpeg) → fragmentos em datagramas; áudio do sistema por loopback WASAPI em Opus estéreo 128 kbps sincronizado por timestamp."
+    estados: [idle, starting, sharing, stopping]
+    secao: "§5.5"
+
+  - id: share-preset
+    nome: SharePreset
+    definicao: "Leve 720p30 3 Mbps · Padrao 1080p60 8 Mbps · Alta 1440p60 14 Mbps · Maxima nativa 60 20 Mbps · ou bitrate manual."
+    secao: "§5.5"
+
+  - id: encoder-choice
+    nome: EncoderChoice
+    definicao: "Escolha do codec pela interseção (encode local × decode remoto): AV1 hw > HEVC hw > H.264 hw > fallback software 720p30 com aviso. Sem B-frames, GOP longo, keyframe sob KeyframeRequest, CBR/VBR com VBV curto."
+    secao: "§5.5"
+
+  - id: video-fragment
+    nome: VideoFragment
+    definicao: "Pedaço de um quadro codificado que cabe num MediaDatagram::Video."
+    secao: "§4, §5.5"
+
+  - id: video-frame
+    nome: VideoFrame
+    definicao: "Quadro codificado remontado a partir de frag_count fragmentos do mesmo frame_id. Incompleto ⇒ descartado e KeyframeRequest (limitado)."
+    secao: "§5.5"
+
+  - id: adaptive-bitrate
+    nome: AdaptiveBitrate
+    definicao: "Controle de bitrate da transmissão por perda e RTT do QUIC."
+    secao: "§5.5"
+
+relacoes:
+  - {de: friend, rel: identificado_por, para: identity-fingerprint, card: "1:0..1"}
+  - {de: config, rel: contem, para: friend, card: "1:N"}
+  - {de: profile, rel: determina, para: config, card: "1:1"}
+  - {de: peer-connection, rel: com, para: friend, card: "N:1"}
+  - {de: peer-connection, rel: transporta, para: control-message, card: "1:N"}
+  - {de: peer-connection, rel: transporta, para: media-datagram, card: "1:N"}
+  - {de: control-message, rel: inclui, para: capabilities, card: "Hello 1:1"}
+  - {de: call, rel: usa, para: peer-connection, card: "1:1"}
+  - {de: call, rel: possui, para: chat-history, card: "1:1"}
+  - {de: chat-history, rel: contem, para: chat-message, card: "1:N"}
+  - {de: media-datagram, rel: carrega, para: voice-frame, card: "1:1 (Audio)"}
+  - {de: media-datagram, rel: carrega, para: video-fragment, card: "1:1 (Video)"}
+  - {de: video-frame, rel: composto_de, para: video-fragment, card: "1:N"}
+  - {de: jitter-buffer, rel: ordena, para: voice-frame, card: "1:N"}
+  - {de: core-process, rel: gerencia, para: ui-process, card: "1:0..1"}
+  - {de: core-process, rel: comunica_por, para: ipc-message, card: "1:N"}
+  - {de: game-detector, rel: dispara, para: game-mode, card: "1:1"}
+  - {de: soundboard, rel: toca, para: sound, card: "1:0..1 (por vez)"}
+  - {de: screen-share, rel: usa, para: share-preset, card: "N:1"}
+  - {de: screen-share, rel: usa, para: encoder-choice, card: "1:1"}
+  - {de: adaptive-bitrate, rel: ajusta, para: screen-share, card: "1:1"}
+
+invariantes:
+  - id: inv-chat-never-on-disk
+    conceitos: [chat-message, chat-history]
+    regra: "Texto de chat nunca é gravado em disco: nem arquivo, nem log (tracing não registra conteúdo de chat). Teste: sessão com chat e depois varredura do data_dir procurando o texto."
+    testado_em: ""
+  - id: inv-only-friends-connect
+    conceitos: [friend, peer-connection]
+    regra: "Conexão de entrada cujo IP remoto não está em config.friends é recusada antes de qualquer troca de aplicação."
+    testado_em: ""
+  - id: inv-fingerprint-tofu
+    conceitos: [identity-fingerprint, friend]
+    regra: "1ª conexão com um Friend sem fingerprint: aceitar e gravar o fingerprint (TOFU). Depois: fingerprint diferente ⇒ recusar e gerar aviso (estado mismatch). Reset só por ação explícita do usuário."
+    testado_em: ""
+  - id: inv-simultaneous-conn-lowest-fp
+    conceitos: [peer-connection, identity-fingerprint]
+    regra: "Se existirem duas conexões simultâneas com o mesmo Friend (ambos discaram), mantém-se a iniciada pelo lado com fingerprint lexicograficamente menor; a outra é fechada. Decisão determinística e igual nos dois lados."
+    testado_em: ""
+  - id: inv-datagram-max-size
+    conceitos: [media-datagram, video-fragment]
+    regra: "Todo MediaDatagram serializado tem tamanho ≤ max_datagram_size da conexão (assumir 1200 bytes quando desconhecido). Fragmentação de vídeo respeita esse limite incluindo cabeçalho."
+    testado_em: ""
+  - id: inv-jitter-40-120ms
+    conceitos: [jitter-buffer]
+    regra: "O atraso-alvo do jitter buffer permanece sempre em [40, 120] ms. Quadro faltante na vez ⇒ Lost (PLC), nunca bloqueia; quadro atrasado além da vez ou duplicado ⇒ descartado. Comparação de seq considera wrap-around de u16."
+    testado_em: ""
+  - id: inv-game-mode-hysteresis-2-3
+    conceitos: [game-detector, game-mode]
+    regra: "Entra no modo jogo após 2 leituras positivas consecutivas; sai após 3 negativas consecutivas. Leitura isolada não muda o estado."
+    testado_em: ""
+  - id: inv-game-mode-only-core
+    conceitos: [game-mode, core-process, ui-process]
+    regra: "No modo jogo o único processo da Sala é sala-core: a UI recebeu Shutdown e o término foi confirmado; o visualizador foi destruído. Voz continua."
+    testado_em: ""
+  - id: inv-ui-no-business-logic
+    conceitos: [ui-process, ipc-message]
+    regra: "sala-ui não contém lógica de negócio; todo número exibido (latência, encoder, upload, tempo) vem do núcleo via IPC."
+    testado_em: ""
+  - id: inv-keyframe-request-500ms
+    conceitos: [video-frame, control-message]
+    regra: "Quadro de vídeo incompleto é descartado e gera KeyframeRequest, no máximo um a cada 500 ms."
+    testado_em: ""
+  - id: inv-adaptive-bitrate-rule
+    conceitos: [adaptive-bitrate, share-preset]
+    regra: "Perda > 2% ⇒ bitrate × 0,8. Rede estável por 10 s ⇒ bitrate × 1,05, nunca acima do alvo do preset."
+    testado_em: ""
+  - id: inv-mix-no-clipping
+    conceitos: [soundboard, voice-frame]
+    regra: "Mixagem de som + voz nunca estoura: amostras finais limitadas a [-1.0, 1.0] (limitador ou clamp)."
+    testado_em: ""
+  - id: inv-one-sound-at-a-time
+    conceitos: [soundboard, sound]
+    regra: "No MVP, tocar um som interrompe o que estiver tocando."
+    testado_em: ""
+  - id: inv-deafen-implies-mute
+    conceitos: [call, voice-activation]
+    regra: "Ensurdecer também muta o microfone; desensurdecer restaura o estado de mudo anterior."
+    testado_em: ""
+  - id: inv-no-external-calls
+    conceitos: [core-process, ui-process]
+    regra: "Nenhuma chamada de rede a serviços externos (sem telemetria, sem fontes remotas); só conexões com Friends."
+    testado_em: ""

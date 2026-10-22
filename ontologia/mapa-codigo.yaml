@@ -1,0 +1,8 @@
+# conceito (id) -> onde vive no código (caminhos relativos à raiz do repo)
+mapa:
+  metricas-tooling:
+    codigo: [metricas/coletar.py]
+    testes: [metricas/test_coletar.py]
+#  exemplo:
+#    codigo: [sala/crates/x/src/y.rs]
+#    testes: [sala/crates/x/tests/y.rs]

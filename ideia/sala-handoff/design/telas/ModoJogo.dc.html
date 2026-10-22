@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Sala — modo jogo</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap">
+<style>
+body{margin:0;background:#0B0C0E}
+a{color:#EDEEF0;text-decoration:none}a:hover{color:#FFFFFF}
+button{font:inherit;cursor:pointer}
+button:focus-visible,a:focus-visible{outline:2px solid #3DD68C;outline-offset:2px}
+</style>
+</helmet>
+<div style="width: 760px; height: 440px; box-sizing: border-box; background: #0B0C0E; color: #EDEEF0; font-family: 'Manrope', system-ui, sans-serif; font-size: 14px; padding: 32px; display: flex; gap: 32px; align-items: flex-start">
+
+<div role="menu" aria-label="Menu da Sala na bandeja" style="width: 300px; flex-shrink: 0; border-radius: 14px; background: #1C1E22; border: 1px solid #2E3237; padding: 8px; display: flex; flex-direction: column; gap: 2px">
+<div style="padding: 10px 10px 12px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid #2A2E33; margin-bottom: 6px">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 8px">
+<span style="font-weight: 700">Sala</span>
+<span style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: #2B2214; color: #F5C27A"><span style="width: 6px; height: 6px; border-radius: 50%; background: #F2A93B"></span>Modo jogo</span>
+</div>
+<span style="font-size: 12px; color: #A0A6AD">Em chamada com Pedro · 18 ms</span>
+</div>
+<button type="button" role="menuitem" style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; border-radius: 8px; border: none; background: #262A2F; color: #EDEEF0; text-align: left">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg>
+<span style="flex-grow: 1">Mutar microfone</span>
+<span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #858C94">Ctrl+Shift+M</span>
+</button>
+<button type="button" role="menuitem" style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; border-radius: 8px; border: none; background: transparent; color: #EDEEF0; text-align: left">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15v-3a8 8 0 0 1 16 0v3"></path><rect x="3" y="14" width="4" height="6" rx="1.5"></rect><rect x="17" y="14" width="4" height="6" rx="1.5"></rect></svg>
+<span style="flex-grow: 1">Ensurdecer</span>
+<span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #858C94">Ctrl+Shift+D</span>
+</button>
+<a href="Main.dc.html" role="menuitem" style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; border-radius: 8px; color: #F5C27A">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="10" rx="5"></rect><path d="M7 10v4M5 12h4"></path></svg>
+<span style="flex-grow: 1; font-weight: 600">Sair do modo jogo</span>
+<span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #A88A5A">Ctrl+Shift+G</span>
+</a>
+<div aria-hidden="true" style="height: 1px; background: #2A2E33; margin: 6px 4px"></div>
+<button type="button" role="menuitem" style="display: flex; align-items: center; min-height: 40px; padding: 0 10px; border-radius: 8px; border: none; background: transparent; color: #A0A6AD; text-align: left">Fechar a Sala</button>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 16px; flex-grow: 1; min-width: 0">
+<div role="status" aria-label="Notificação de mensagem" style="border-radius: 14px; background: #1C1E22; border: 1px solid #2E3237; padding: 16px; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; align-items: center; gap: 10px">
+<div style="width: 24px; height: 24px; border-radius: 7px; background: {{accent}}; color: #06281A; display: flex; align-items: center; justify-content: center">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h2M8 8v8M12 5v14M16 8v8"></path></svg>
+</div>
+<span style="font-size: 12px; color: #A0A6AD">Sala · agora</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<span style="font-weight: 700">Pedro</span>
+<span style="line-height: 1.5">bora mais uma depois dessa?</span>
+</div>
+<div style="display: flex; gap: 8px">
+<a href="Main.dc.html" style="flex: 1; min-height: 40px; border-radius: 9px; background: #262A2F; color: #EDEEF0; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center">Abrir o chat</a>
+<button type="button" style="flex: 1; min-height: 40px; border-radius: 9px; border: none; background: transparent; color: #A0A6AD; font-size: 13px; font-weight: 600">Dispensar</button>
+</div>
+</div>
+
+<div style="border-radius: 14px; border: 1px dashed #2A2E33; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+<span style="font-size: 12px; font-weight: 600; color: #A0A6AD">Rodando agora</span>
+<div style="display: flex; align-items: center; justify-content: space-between; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px">
+<span>sala-core.exe</span>
+<span style="color: {{accent}}">meta: &lt; 50 MB · &lt; 2% CPU</span>
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #858C94">
+<span>sala-ui.exe</span>
+<span>encerrado</span>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#3DD68C","options":["#3DD68C","#4CC9F0","#F2A93B","#B79CFF"]},"$preview":{"width":760,"height":440}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#3DD68C' };
+  }
+}
+</script>
+</body>
+</html>
