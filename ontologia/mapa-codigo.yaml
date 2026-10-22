@@ -1,8 +1,38 @@
 # conceito (id) -> onde vive no código (caminhos relativos à raiz do repo)
 mapa:
   metricas-tooling:
-    codigo: [metricas/coletar.py]
+    codigo: [metricas/coletar.py, metricas/ab/aplicar_ocultos.py]
     testes: [metricas/test_coletar.py]
-#  exemplo:
-#    codigo: [sala/crates/x/src/y.rs]
-#    testes: [sala/crates/x/tests/y.rs]
+  control-message:
+    codigo: ["sala/crates/protocol/src/lib.rs (ControlMessage, encode_frame, FrameDecoder)"]
+    testes: [sala/crates/protocol/tests/acceptance_protocol.rs]
+  media-datagram:
+    codigo: ["sala/crates/protocol/src/lib.rs (MediaDatagram, max_audio_payload, max_video_payload)"]
+    testes: [sala/crates/protocol/tests/acceptance_protocol.rs]
+  capabilities:
+    codigo: ["sala/crates/protocol/src/lib.rs (Capabilities, VideoCodec)"]
+  ipc-message:
+    codigo: ["sala/crates/protocol/src/lib.rs (UiToCore, CoreToUi, encode_ipc_line, decode_ipc_line)"]
+    testes: [sala/crates/protocol/tests/acceptance_protocol.rs]
+  chat-message:
+    codigo: ["sala/crates/protocol/src/lib.rs (ControlMessage::Chat, ChatEntry)"]
+  jitter-buffer:
+    codigo: ["sala/crates/core/src/jitter.rs (JitterBuffer, Pop, JitterStats)"]
+    testes: [sala/crates/core/tests/acceptance_jitter.rs, "sala/crates/core/src/jitter.rs (mod tests)"]
+  identity-fingerprint:
+    codigo: ["sala/crates/core/src/identity.rs (Fingerprint, LocalIdentity)"]
+    testes: [sala/crates/core/tests/acceptance_identity.rs]
+  peer-connection:
+    codigo: ["sala/crates/core/src/identity.rs (TrustStore::check_peer, PeerDecision, keep_connection)"]
+    testes: [sala/crates/core/tests/acceptance_identity.rs]
+  friend:
+    codigo: ["sala/crates/core/src/config.rs (Friend)", "sala/crates/core/src/identity.rs (FriendEntry)"]
+    testes: ["sala/crates/core/src/config.rs (mod tests)"]
+  config:
+    codigo: ["sala/crates/core/src/config.rs (Config, AudioConfig, HotkeyConfig, GameModeConfig, ShareConfig, SoundConfig, ConfigError)"]
+    testes: ["sala/crates/core/src/config.rs (mod tests)"]
+  profile:
+    codigo: ["sala/crates/core/src/config.rs (Profile)", "sala/crates/core/src/cli.rs (CliArgs)"]
+    testes: ["sala/crates/core/src/config.rs (mod tests)", "sala/crates/core/src/cli.rs (mod tests)"]
+  core-process:
+    codigo: [sala/crates/core/src/main.rs]

@@ -1,6 +1,6 @@
 # Ontologia do domínio — Sala (app P2P de voz e tela). Fonte: ideia/sala-handoff/PLANO-CLAUDE-CODE.md (§ = seção).
 # Ler só o recorte: grep -n -A15 'id: <conceito>' ontologia/dominio.yaml
-versao: 1
+versao: 2
 conceitos:
   # ---------- pessoas e identidade ----------
   - id: friend
@@ -8,9 +8,9 @@ conceitos:
     definicao: "Amigo configurado em [[friends]]. Único tipo de par que pode conectar (§4)."
     atributos:
       - {nome: name, tipo: String, obrigatorio: true}
-      - {nome: address, tipo: "IpAddr (100.x.y.z do Tailscale; 127.0.0.1 em testes)", obrigatorio: true}
+      - {nome: address, tipo: "String validada como IP no load (100.x.y.z do Tailscale; 127.0.0.1 em testes); IpAddr no TrustStore", obrigatorio: true}
       - {nome: port, tipo: "Option<u16>", obrigatorio: false, nota: "padrão 47800; ver D-005"}
-      - {nome: fingerprint, tipo: "Option<Fingerprint> (hex no config.toml)", obrigatorio: false, nota: "preenchido na 1ª conexão (TOFU)"}
+      - {nome: fingerprint, tipo: "Option<String> hex no Config; Option<Fingerprint> no TrustStore (FriendEntry)", obrigatorio: false, nota: "preenchido na 1ª conexão (TOFU)"}
     estados: [offline, online, in_call, reconnecting]
     secao: "§4, §6"
 
@@ -30,6 +30,7 @@ conceitos:
       - {nome: name, tipo: "Option<String>", obrigatorio: false, nota: "None = perfil padrão %APPDATA%\\Sala"}
       - {nome: data_dir, tipo: PathBuf, obrigatorio: true}
       - {nome: port, tipo: u16, obrigatorio: true, nota: "padrão 47800; perfis usam portas distintas"}
+    regras: "nome só [a-z0-9-]; a porta do Profile só semeia o config.toml na 1ª execução, depois config.port manda (D-005)"
     secao: "§9"
 
   - id: config
@@ -43,7 +44,8 @@ conceitos:
       - {nome: hotkeys, tipo: "HotkeyConfig {push_to_talk, toggle_mute, toggle_game_mode}"}
       - {nome: game_mode, tipo: "GameModeConfig {auto_detect(true), games, exclude, keep_sharing_in_game_mode(false)}"}
       - {nome: share, tipo: "ShareConfig {preset, share_audio}"}
-      - {nome: soundboard, tipo: "Vec<SoundConfig {file, hotkey, volume}>"}
+      - {nome: soundboard, tipo: "Vec<SoundConfig {file (obrigatório), hotkey: Option, volume (1.0)}>"}
+    erros: "ConfigError: Io, Parse (cita o caminho), InvalidAddress {friend, value}, InvalidProfileName; bitrate fora da faixa sofre clamp com warn"
     secao: "§6"
 
   # ---------- processos ----------
@@ -97,14 +99,14 @@ conceitos:
     nome: MediaDatagram
     definicao: "Datagrama QUIC não confiável com mídia. Tamanho serializado ≤ max_datagram_size da conexão (~1200 bytes)."
     variantes:
-      - "Audio { stream: Voice | ShareAudio, seq: u16, timestamp: u32, opus_payload }"
+      - "Audio { stream: Voice | ShareAudio, seq: u16, timestamp: u32, payload } (payload = bytes Opus)"
       - "Video { frame_id: u32, frag_idx: u16, frag_count: u16, keyframe: bool, timestamp: u32, payload }"
     secao: "§4"
 
   # ---------- voz ----------
   - id: voice-frame
     nome: VoiceFrame
-    definicao: "Quadro Opus de 20 ms, 48 kHz mono, modo VOIP, 96 kbps padrão (32–128), FEC e DTX ligados. seq u16 com wrap-around; timestamp em amostras (960 por quadro)."
+    definicao: "Quadro Opus de 20 ms, 48 kHz mono, modo VOIP, 96 kbps padrão (32–128), FEC e DTX ligados. seq u16 com wrap-around, conta pacotes enviados (DTX/mudo não abre buraco, D-006); timestamp em amostras (960 por quadro)."
     secao: "§5.1"
 
   - id: jitter-buffer
@@ -114,7 +116,8 @@ conceitos:
       - {nome: min_delay_ms, tipo: u32, padrao: 40}
       - {nome: max_delay_ms, tipo: u32, padrao: 120}
       - {nome: target_delay_ms, tipo: u32, nota: "adapta-se ao jitter medido, sempre dentro de [min, max]"}
-    saida: "pop() -> Frame(payload) | Lost (PLC) | Empty (ainda bufferizando)"
+    saida: "pop() -> Frame(payload) | Lost (PLC) | Empty (bufferizando ou silêncio)"
+    underrun: "buffer vazio após o início: não avança o seq, re-bufferiza; 3 ticks de Lost e depois Empty (D-006)"
     secao: "§5.1"
 
   - id: voice-activation
@@ -233,24 +236,24 @@ invariantes:
     testado_em: ""
   - id: inv-only-friends-connect
     conceitos: [friend, peer-connection]
-    regra: "Conexão de entrada cujo IP remoto não está em config.friends é recusada antes de qualquer troca de aplicação."
-    testado_em: ""
+    regra: "Conexão de entrada cujo IP remoto não está em config.friends é recusada antes de qualquer troca de aplicação. Comparar IPs canônicos (IPv4 mapeado em IPv6 ::ffff:a.b.c.d == a.b.c.d, por causa do socket dual-stack)."
+    testado_em: "sala/crates/core/tests/acceptance_identity.rs::h06_unknown_address_rejected_without_side_effects"
   - id: inv-fingerprint-tofu
     conceitos: [identity-fingerprint, friend]
     regra: "1ª conexão com um Friend sem fingerprint: aceitar e gravar o fingerprint (TOFU). Depois: fingerprint diferente ⇒ recusar e gerar aviso (estado mismatch). Reset só por ação explícita do usuário."
-    testado_em: ""
+    testado_em: "sala/crates/core/tests/acceptance_identity.rs::h03_tofu_pins_on_first_contact, h04_mismatch_rejected_and_pin_kept, h05_reset_allows_new_pin"
   - id: inv-simultaneous-conn-lowest-fp
     conceitos: [peer-connection, identity-fingerprint]
     regra: "Se existirem duas conexões simultâneas com o mesmo Friend (ambos discaram), mantém-se a iniciada pelo lado com fingerprint lexicograficamente menor; a outra é fechada. Decisão determinística e igual nos dois lados."
-    testado_em: ""
+    testado_em: "sala/crates/core/tests/acceptance_identity.rs::h07_keep_connection_lowest_fingerprint_dialer, h08_keep_connection_consistent_property"
   - id: inv-datagram-max-size
     conceitos: [media-datagram, video-fragment]
     regra: "Todo MediaDatagram serializado tem tamanho ≤ max_datagram_size da conexão (assumir 1200 bytes quando desconhecido). Fragmentação de vídeo respeita esse limite incluindo cabeçalho."
-    testado_em: ""
+    testado_em: "sala/crates/protocol/tests/acceptance_protocol.rs::h08_max_payload_is_tight_bound (vídeo: pendente F4)"
   - id: inv-jitter-40-120ms
     conceitos: [jitter-buffer]
-    regra: "O atraso-alvo do jitter buffer permanece sempre em [40, 120] ms. Quadro faltante na vez ⇒ Lost (PLC), nunca bloqueia; quadro atrasado além da vez ou duplicado ⇒ descartado. Comparação de seq considera wrap-around de u16."
-    testado_em: ""
+    regra: "O atraso-alvo do jitter buffer permanece sempre em [40, 120] ms. Quadro faltante na vez (buraco conhecido) ⇒ Lost (PLC), nunca bloqueia; underrun segue a D-006; quadro atrasado além da vez ou duplicado ⇒ descartado. Comparação de seq considera wrap-around de u16."
+    testado_em: "sala/crates/core/tests/acceptance_jitter.rs::h05, h07, h08, h09, h11 + testes unitários de underrun em jitter.rs"
   - id: inv-game-mode-hysteresis-2-3
     conceitos: [game-detector, game-mode]
     regra: "Entra no modo jogo após 2 leituras positivas consecutivas; sai após 3 negativas consecutivas. Leitura isolada não muda o estado."

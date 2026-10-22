@@ -36,3 +36,15 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - A raiz `%APPDATA%` pode ser trocada pela variável `SALA_APPDATA` (usada em testes).
 **Alternativa descartada:** porta única com IPs de loopback diferentes (127.0.0.2). No Windows isso exige configuração extra e não testa a porta configurável.
 **Data:** 2026-10-22
+
+## D-006 Jitter buffer: underrun re-bufferiza com PLC curto; DTX não abre buraco de seq
+**Conceitos:** jitter-buffer, voice-frame, inv-jitter-40-120ms
+**Decisão:**
+- `seq` conta pacotes enviados. Pausa de DTX ou mudo não cria buraco de seq.
+- `Lost` na vez é só para buraco conhecido: o seq da vez falta, mas existe seq maior no buffer.
+- Underrun é o buffer vazio depois do início. Nele o `pop` não avança o seq e volta a bufferizar. Nos primeiros 3 ticks (60 ms) devolve `Lost`, para o PLC cobrir uma travada curta; depois devolve `Empty`, que é silêncio (fim de fala, DTX, mudo).
+- A reprodução volta quando passa `target_delay_ms` desde a próxima chegada. Ela continua no próximo seq esperado, ou no menor seq bufferizado se ficou mais que a capacidade para trás. Pacote com seq já tocado é descartado como atrasado.
+**Alternativas descartadas:**
+- `Lost` indefinido no underrun (braço ONTO do T-004): avança o seq sem parar, então deriva de relógio ou pausa do remetente vira silêncio permanente.
+- `Empty` imediato (braço CTRL): uma travada curta de rede corta o áudio seco, sem PLC.
+**Data:** 2026-10-22

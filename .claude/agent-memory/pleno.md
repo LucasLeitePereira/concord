@@ -12,7 +12,11 @@
 ## Armadilhas (não repetir)
 - Teste que só passa nesta máquina (arquivo não versionado, .gitignore) é teste quebrado: relate como PRIORIDADE.
 - Mudar formato de dados persistidos sem migração idempotente + backup + teste perde dados do usuário.
-- Heredoc grande (`cat <<'EOF'`) no Git Bash do Windows falha com "unexpected EOF": crie/edite arquivos com Write/Edit, nunca via shell.
+- Heredoc grande (`cat <<'EOF'`) no Git Bash do Windows falha com "unexpected EOF", e replace por script Python com aspas/barras escapadas falha em silêncio: crie/edite código com Write/Edit.
+- Clippy 1.99 (`-D warnings`): `collapsible_if` pede let-chains (`if a && let Some(x) = y`); `result_large_err` → `Box<toml::de::Error>` no enum de erro; `field_reassign_with_default` → `X { campo, ..Default::default() }`.
+- IP de socket dual-stack chega como `::ffff:a.b.c.d`: compare com `IpAddr::to_canonical()`.
+- `u8::from_str_radix` aceita `+` inicial: valide `is_ascii_hexdigit` antes de parsear hex.
+- Buffer de tempo real (jitter etc.): além de perda/reordenação, teste deriva de relógio, pausa do remetente (DTX/mudo) e ressincronização.
 - Scripts que escrevem em pastas de entrega não podem apagar pastas onde o usuário já roda coisas: monte em diretório temporário.
 
 ## Atalhos / padrões que funcionaram
@@ -20,6 +24,8 @@
 - Lógica pura isolada em funções/structs testáveis (sem I/O) em vez de testar via rede/UI.
 - Código que só o hardware valida (áudio, GPU): logs com o motivo de cada transição.
 - Declare desvios do pedido; não esconda.
+- Saída do clippy/cargo: filtre com `grep -E "^error|^warning|-->|Finished|^test result"` para economizar tokens.
+- Caminho temporário do Git Bash para programa Windows: `$(cygpath -w "$T")`.
 
 ## Convenções do projeto (Sala)
 - Spec: `ideia/sala-handoff/PLANO-CLAUDE-CODE.md`; design: `ideia/sala-handoff/design/`.
