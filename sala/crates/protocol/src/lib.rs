@@ -83,7 +83,17 @@ impl ControlMessage {
     ///
     /// Errors with `TooLarge` if the payload exceeds `MAX_CONTROL_FRAME`.
     pub fn encode_frame(&self) -> Result<Vec<u8>, ProtocolError> {
-        todo!()
+        let payload = bincode::serialize(self).map_err(|e| ProtocolError::Encode(e.to_string()))?;
+        if payload.len() > MAX_CONTROL_FRAME {
+            return Err(ProtocolError::TooLarge {
+                size: payload.len(),
+                max: MAX_CONTROL_FRAME,
+            });
+        }
+        let mut out = Vec::with_capacity(4 + payload.len());
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(&payload);
+        Ok(out)
     }
 }
 
@@ -107,13 +117,29 @@ impl FrameDecoder {
 
     /// Appends received bytes.
     pub fn push(&mut self, bytes: &[u8]) {
-        let _ = (bytes, &self.buf, self.max_frame_len);
-        todo!()
+        self.buf.extend_from_slice(bytes);
     }
 
     /// Returns the next complete message, `Ok(None)` if more bytes are needed.
     pub fn next_message(&mut self) -> Result<Option<ControlMessage>, ProtocolError> {
-        todo!()
+        if self.buf.len() < 4 {
+            return Ok(None);
+        }
+        let len = u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
+        if len > self.max_frame_len {
+            return Err(ProtocolError::TooLarge {
+                size: len,
+                max: self.max_frame_len,
+            });
+        }
+        if self.buf.len() < 4 + len {
+            return Ok(None);
+        }
+        let result = bincode::deserialize::<ControlMessage>(&self.buf[4..4 + len])
+            .map_err(|e| ProtocolError::Decode(e.to_string()));
+        // Consume the frame even on a decode error so the stream can resync.
+        self.buf.drain(..4 + len);
+        result.map(Some)
     }
 }
 
@@ -148,29 +174,53 @@ impl MediaDatagram {
     /// Encodes the datagram (bincode). Errors with `TooLarge` if the encoded
     /// size exceeds `max_size`.
     pub fn encode(&self, max_size: usize) -> Result<Vec<u8>, ProtocolError> {
-        let _ = max_size;
-        todo!()
+        let bytes = bincode::serialize(self).map_err(|e| ProtocolError::Encode(e.to_string()))?;
+        if bytes.len() > max_size {
+            return Err(ProtocolError::TooLarge {
+                size: bytes.len(),
+                max: max_size,
+            });
+        }
+        Ok(bytes)
     }
 
     /// Decodes a datagram. Never panics on malformed input.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
-        let _ = bytes;
-        todo!()
+        bincode::deserialize(bytes).map_err(|e| ProtocolError::Decode(e.to_string()))
     }
+}
+
+/// Fixed encoded overhead of `empty` (a datagram with an empty payload); the
+/// payload length prefix has a fixed width, so the overhead does not grow.
+fn max_payload_for(empty: &MediaDatagram, max_datagram: usize) -> usize {
+    let overhead = bincode::serialized_size(empty).unwrap_or(u64::MAX) as usize;
+    max_datagram.saturating_sub(overhead)
 }
 
 /// Largest audio payload such that the encoded `Audio` datagram fits in
 /// `max_datagram` bytes.
 pub fn max_audio_payload(max_datagram: usize) -> usize {
-    let _ = max_datagram;
-    todo!()
+    let empty = MediaDatagram::Audio {
+        stream: AudioStream::Voice,
+        seq: 0,
+        timestamp: 0,
+        payload: Vec::new(),
+    };
+    max_payload_for(&empty, max_datagram)
 }
 
 /// Largest video payload such that the encoded `Video` datagram fits in
 /// `max_datagram` bytes.
 pub fn max_video_payload(max_datagram: usize) -> usize {
-    let _ = max_datagram;
-    todo!()
+    let empty = MediaDatagram::Video {
+        frame_id: 0,
+        frag_idx: 0,
+        frag_count: 0,
+        keyframe: false,
+        timestamp: 0,
+        payload: Vec::new(),
+    };
+    max_payload_for(&empty, max_datagram)
 }
 
 /// One chat entry as exposed to the UI.
@@ -210,12 +260,263 @@ pub enum CoreToUi {
 
 /// Encodes an IPC message as exactly one JSON line terminated by `\n`.
 pub fn encode_ipc_line<T: Serialize>(msg: &T) -> Result<String, ProtocolError> {
-    let _ = msg;
-    todo!()
+    let mut line = serde_json::to_string(msg).map_err(|e| ProtocolError::Encode(e.to_string()))?;
+    line.push('\n');
+    Ok(line)
 }
 
 /// Decodes one IPC JSON line (trailing `\n`/`\r\n` allowed).
 pub fn decode_ipc_line<T: for<'de> Deserialize<'de>>(line: &str) -> Result<T, ProtocolError> {
-    let _ = line;
-    todo!()
+    serde_json::from_str(line.trim_end_matches(['\n', '\r']))
+        .map_err(|e| ProtocolError::Decode(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn all_messages() -> Vec<ControlMessage> {
+        vec![
+            ControlMessage::Hello {
+                name: "ana".into(),
+                app_version: "0.1.0".into(),
+                protocol_version: PROTOCOL_VERSION,
+                capabilities: Capabilities {
+                    hw_encode: vec![VideoCodec::Av1, VideoCodec::H264],
+                    hw_decode: vec![VideoCodec::Hevc],
+                },
+            },
+            ControlMessage::Status {
+                muted: true,
+                deafened: false,
+                game_mode: true,
+                sharing: false,
+            },
+            ControlMessage::Chat {
+                id: u64::MAX,
+                text: "olá, mundo".into(),
+                sent_at: 1_700_000_000_000,
+            },
+            ControlMessage::ShareStart {
+                codec: VideoCodec::Hevc,
+                width: 1920,
+                height: 1080,
+                fps: 60,
+            },
+            ControlMessage::ShareStop,
+            ControlMessage::KeyframeRequest,
+            ControlMessage::Heartbeat,
+            ControlMessage::Bye,
+        ]
+    }
+
+    #[test]
+    fn control_roundtrip_all() {
+        for m in all_messages() {
+            let mut d = FrameDecoder::new(MAX_CONTROL_FRAME);
+            d.push(&m.encode_frame().unwrap());
+            assert_eq!(d.next_message().unwrap(), Some(m));
+            assert_eq!(d.next_message().unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn decoder_handles_byte_by_byte_and_coalesced() {
+        let msgs = all_messages();
+        let bytes: Vec<u8> = msgs.iter().flat_map(|m| m.encode_frame().unwrap()).collect();
+        let mut d = FrameDecoder::new(MAX_CONTROL_FRAME);
+        let mut got = Vec::new();
+        for b in &bytes {
+            d.push(&[*b]);
+            while let Some(m) = d.next_message().unwrap() {
+                got.push(m);
+            }
+        }
+        assert_eq!(got, msgs);
+
+        let mut d = FrameDecoder::new(MAX_CONTROL_FRAME);
+        d.push(&bytes);
+        let mut got = Vec::new();
+        while let Some(m) = d.next_message().unwrap() {
+            got.push(m);
+        }
+        assert_eq!(got, msgs);
+    }
+
+    #[test]
+    fn decoder_partial_returns_none() {
+        let f = ControlMessage::Bye.encode_frame().unwrap();
+        let mut d = FrameDecoder::new(MAX_CONTROL_FRAME);
+        d.push(&f[..f.len() - 1]);
+        assert_eq!(d.next_message().unwrap(), None);
+        d.push(&f[f.len() - 1..]);
+        assert_eq!(d.next_message().unwrap(), Some(ControlMessage::Bye));
+    }
+
+    #[test]
+    fn encode_frame_too_large() {
+        let m = ControlMessage::Chat {
+            id: 1,
+            text: "x".repeat(MAX_CONTROL_FRAME),
+            sent_at: 0,
+        };
+        assert!(matches!(m.encode_frame(), Err(ProtocolError::TooLarge { .. })));
+        // control: a small chat is fine
+        let ok = ControlMessage::Chat {
+            id: 1,
+            text: "x".repeat(1000),
+            sent_at: 0,
+        };
+        assert!(ok.encode_frame().is_ok());
+    }
+
+    #[test]
+    fn decoder_rejects_oversized_declared_length_without_payload() {
+        let mut d = FrameDecoder::new(100);
+        d.push(&1000u32.to_be_bytes());
+        assert_eq!(
+            d.next_message(),
+            Err(ProtocolError::TooLarge { size: 1000, max: 100 })
+        );
+        // control: within the limit it just waits for more bytes
+        let mut d = FrameDecoder::new(2000);
+        d.push(&1000u32.to_be_bytes());
+        assert_eq!(d.next_message(), Ok(None));
+    }
+
+    #[test]
+    fn decoder_garbage_is_error_not_panic_and_resyncs() {
+        let mut d = FrameDecoder::new(MAX_CONTROL_FRAME);
+        d.push(&3u32.to_be_bytes());
+        d.push(&[0xff, 0xff, 0xff]);
+        assert!(matches!(d.next_message(), Err(ProtocolError::Decode(_))));
+        d.push(&ControlMessage::Bye.encode_frame().unwrap());
+        assert_eq!(d.next_message().unwrap(), Some(ControlMessage::Bye));
+    }
+
+    fn audio(n: usize, stream: AudioStream) -> MediaDatagram {
+        MediaDatagram::Audio {
+            stream,
+            seq: 65535,
+            timestamp: u32::MAX,
+            payload: vec![7; n],
+        }
+    }
+
+    fn video(n: usize) -> MediaDatagram {
+        MediaDatagram::Video {
+            frame_id: 9,
+            frag_idx: 2,
+            frag_count: 5,
+            keyframe: true,
+            timestamp: 123,
+            payload: vec![1; n],
+        }
+    }
+
+    #[test]
+    fn datagram_roundtrip() {
+        for d in [
+            audio(100, AudioStream::Voice),
+            audio(0, AudioStream::ShareAudio),
+            video(500),
+            video(0),
+        ] {
+            let b = d.encode(DEFAULT_MAX_DATAGRAM).unwrap();
+            assert_eq!(MediaDatagram::decode(&b).unwrap(), d);
+        }
+    }
+
+    #[test]
+    fn datagram_size_limit() {
+        let d = audio(DEFAULT_MAX_DATAGRAM, AudioStream::Voice);
+        assert!(matches!(
+            d.encode(DEFAULT_MAX_DATAGRAM),
+            Err(ProtocolError::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn max_payload_is_exact() {
+        for max in [DEFAULT_MAX_DATAGRAM, 1000, 1350] {
+            let a = max_audio_payload(max);
+            assert!(audio(a, AudioStream::Voice).encode(max).is_ok());
+            assert!(audio(a + 1, AudioStream::Voice).encode(max).is_err());
+            let v = max_video_payload(max);
+            assert!(video(v).encode(max).is_ok());
+            assert!(video(v + 1).encode(max).is_err());
+        }
+        assert_eq!(max_audio_payload(0), 0);
+        assert_eq!(max_video_payload(3), 0);
+    }
+
+    #[test]
+    fn datagram_decode_malformed_never_panics() {
+        assert!(MediaDatagram::decode(&[]).is_err());
+        assert!(MediaDatagram::decode(&[0xff; 7]).is_err());
+        let b = audio(50, AudioStream::Voice).encode(2000).unwrap();
+        assert!(MediaDatagram::decode(&b[..b.len() - 10]).is_err());
+        // huge declared vec length (length prefix is the last 8 bytes before payload)
+        let mut bad = b.clone();
+        let at = b.len() - 50 - 8;
+        bad[at..at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(MediaDatagram::decode(&bad).is_err());
+    }
+
+    #[test]
+    fn ipc_roundtrip_and_format() {
+        let cmds = [
+            UiToCore::GetState,
+            UiToCore::GetChatHistory,
+            UiToCore::SendChat { text: "oi\nlinha".into() },
+            UiToCore::SetMuted { muted: true },
+            UiToCore::SetDeafened { deafened: false },
+            UiToCore::Call { friend: "bia".into() },
+            UiToCore::HangUp,
+            UiToCore::EnterGameMode,
+            UiToCore::OpenViewer,
+        ];
+        for c in cmds {
+            let l = encode_ipc_line(&c).unwrap();
+            assert!(l.ends_with('\n'));
+            assert_eq!(l.matches('\n').count(), 1, "embedded newline must be escaped");
+            assert_eq!(decode_ipc_line::<UiToCore>(&l).unwrap(), c);
+        }
+        let e = ChatEntry {
+            id: 1,
+            from_self: false,
+            text: "t".into(),
+            sent_at: 5,
+        };
+        let evs = [
+            CoreToUi::ChatHistory { entries: vec![e.clone()] },
+            CoreToUi::ChatReceived { entry: e },
+            CoreToUi::Status { muted: true, deafened: true, game_mode: false },
+            CoreToUi::Error { message: "x".into() },
+            CoreToUi::Shutdown,
+        ];
+        for ev in evs {
+            let l = encode_ipc_line(&ev).unwrap();
+            assert_eq!(decode_ipc_line::<CoreToUi>(&l).unwrap(), ev);
+            let crlf = l.replace('\n', "\r\n");
+            assert_eq!(decode_ipc_line::<CoreToUi>(&crlf).unwrap(), ev);
+        }
+        assert_eq!(
+            encode_ipc_line(&UiToCore::HangUp).unwrap(),
+            "{\"type\":\"HangUp\"}\n"
+        );
+    }
+
+    #[test]
+    fn ipc_decode_errors() {
+        assert!(matches!(
+            decode_ipc_line::<UiToCore>("not json\n"),
+            Err(ProtocolError::Decode(_))
+        ));
+        assert!(matches!(
+            decode_ipc_line::<UiToCore>("{\"type\":\"Nope\"}"),
+            Err(ProtocolError::Decode(_))
+        ));
+        assert!(decode_ipc_line::<UiToCore>("").is_err());
+    }
 }
