@@ -237,19 +237,19 @@ invariantes:
   - id: inv-only-friends-connect
     conceitos: [friend, peer-connection]
     regra: "Conexão de entrada cujo IP remoto não está em config.friends é recusada antes de qualquer troca de aplicação. Comparar IPs canônicos (IPv4 mapeado em IPv6 ::ffff:a.b.c.d == a.b.c.d, por causa do socket dual-stack)."
-    testado_em: "sala/crates/core/tests/acceptance_identity.rs::h06_unknown_address_rejected_without_side_effects"
+    testado_em: "sala/crates/core/tests/acceptance_identity.rs::h06_unknown_address_rejected_without_side_effects, sala/crates/core/tests/net.rs::b_non_friend_is_rejected"
   - id: inv-fingerprint-tofu
     conceitos: [identity-fingerprint, friend]
     regra: "1ª conexão com um Friend sem fingerprint: aceitar e gravar o fingerprint (TOFU). Depois: fingerprint diferente ⇒ recusar e gerar aviso (estado mismatch). Reset só por ação explícita do usuário."
-    testado_em: "sala/crates/core/tests/acceptance_identity.rs::h03_tofu_pins_on_first_contact, h04_mismatch_rejected_and_pin_kept, h05_reset_allows_new_pin"
+    testado_em: "sala/crates/core/tests/acceptance_identity.rs::h03_tofu_pins_on_first_contact, h04_mismatch_rejected_and_pin_kept, h05_reset_allows_new_pin, sala/crates/core/tests/net.rs::a_*, c_post_handshake_fingerprint_mismatch_keeps_pin"
   - id: inv-simultaneous-conn-lowest-fp
     conceitos: [peer-connection, identity-fingerprint]
-    regra: "Se existirem duas conexões simultâneas com o mesmo Friend (ambos discaram), mantém-se a iniciada pelo lado com fingerprint lexicograficamente menor; a outra é fechada. Decisão determinística e igual nos dois lados."
-    testado_em: "sala/crates/core/tests/acceptance_identity.rs::h07_keep_connection_lowest_fingerprint_dialer, h08_keep_connection_consistent_property"
+    regra: "Se existirem duas conexões simultâneas com o mesmo Friend (ambos discaram), mantém-se a iniciada pelo lado com fingerprint lexicograficamente menor; a outra é fechada. Decisão determinística e igual nos dois lados. Duas conexões do mesmo lado (o par reiniciou e discou de novo) não são simultâneas: a nova substitui a velha."
+    testado_em: "sala/crates/core/tests/acceptance_identity.rs::h07_keep_connection_lowest_fingerprint_dialer, h08_keep_connection_consistent_property, sala/crates/core/tests/net.rs::d_simultaneous_dial_keeps_lowest_fingerprint_dialer"
   - id: inv-datagram-max-size
     conceitos: [media-datagram, video-fragment]
-    regra: "Todo MediaDatagram serializado tem tamanho ≤ max_datagram_size da conexão (assumir 1200 bytes quando desconhecido). Fragmentação de vídeo respeita esse limite incluindo cabeçalho."
-    testado_em: "sala/crates/protocol/tests/acceptance_protocol.rs::h08_max_payload_is_tight_bound (vídeo: pendente F4)"
+    regra: "Todo MediaDatagram serializado tem tamanho ≤ min(max_datagram_size da conexão, 1200). O limite real do quinn fica abaixo de 1200 (≈1150 em loopback): o tamanho do payload de mídia vem de Net::max_datagram_size, não da constante. Fragmentação de vídeo respeita esse limite incluindo cabeçalho."
+    testado_em: "sala/crates/protocol/tests/acceptance_protocol.rs::h08_max_payload_is_tight_bound (vídeo: pendente F4), sala/crates/core/tests/net.rs::f_oversized_datagram_is_an_error_and_not_sent"
   - id: inv-jitter-40-120ms
     conceitos: [jitter-buffer]
     regra: "O atraso-alvo do jitter buffer permanece sempre em [40, 120] ms. Quadro faltante na vez (buraco conhecido) ⇒ Lost (PLC), nunca bloqueia; underrun segue a D-006; quadro atrasado além da vez ou duplicado ⇒ descartado. Comparação de seq considera wrap-around de u16."

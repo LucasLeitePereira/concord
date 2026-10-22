@@ -17,6 +17,9 @@
 - IP de socket dual-stack chega como `::ffff:a.b.c.d`: compare com `IpAddr::to_canonical()`.
 - `u8::from_str_radix` aceita `+` inicial: valide `is_ascii_hexdigit` antes de parsear hex.
 - Buffer de tempo real (jitter etc.): além de perda/reordenação, teste deriva de relógio, pausa do remetente (DTX/mudo) e ressincronização; simule pausa com salto de timestamp (senão o estimador sobe o alvo) e calcule a retomada com `target_delay_ms()`.
+- QUIC/quinn: `accept_bi` do outro lado só retorna quando chega dado no stream → escreva um frame logo após `open_bi`.
+- Diretório temporário de teste no Windows: relógio tem baixa resolução (nanos repetem) → nome com contador atômico.
+- Helper de teste `wait_for` que descarta eventos não casados esconde contagens: drene e conte antes.
 - Scripts que escrevem em pastas de entrega não podem apagar pastas onde o usuário já roda coisas: monte em diretório temporário.
 
 ## Atalhos / padrões que funcionaram

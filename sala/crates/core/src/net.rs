@@ -1,0 +1,785 @@
+//! P2P QUIC connection (`peer-connection`, D-007).
+//!
+//! Both peers listen; whoever starts the call dials. Each connection has one
+//! bidirectional control stream (opened by the dialer) plus media datagrams.
+//! Trust is decided after the TLS handshake by `TrustStore::check_peer`.
+//! Logs never include chat content.
+
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerifier};
+use rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
+use rustls::server::danger::{ClientCertVerifier, ClientCertVerified};
+use rustls::{DigitallySignedStruct, DistinguishedName, SignatureScheme};
+use rustls_pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
+use sala_protocol::{
+    ControlMessage, DEFAULT_MAX_DATAGRAM, FrameDecoder, MAX_CONTROL_FRAME, MediaDatagram,
+    ProtocolError,
+};
+use tokio::sync::{mpsc, watch};
+
+use crate::config::{Config, Friend};
+use crate::identity::{
+    ConnSide, Fingerprint, FriendEntry, LocalIdentity, PeerDecision, TrustStore, keep_connection,
+};
+
+/// ALPN protocol identifier.
+pub const ALPN: &[u8] = b"sala/1";
+/// Interval for QUIC keep-alive and `ControlMessage::Heartbeat`.
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+/// A connection with no traffic for this long is considered dead.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(6);
+/// Reconnection backoff: 1, 2, 4, 8, 15, 15... seconds.
+pub const BACKOFF_MAX: Duration = Duration::from_secs(15);
+/// A connection that lived at least this long resets the backoff.
+const STABLE_AFTER: Duration = Duration::from_secs(2);
+const CONTROL_SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+const SERVER_NAME: &str = "sala.local";
+
+// Application close codes.
+const CODE_NORMAL: u32 = 0;
+const CODE_REJECTED: u32 = 1;
+const CODE_MISMATCH: u32 = 2;
+const CODE_SUPERSEDED: u32 = 3;
+const CODE_PROTOCOL: u32 = 4;
+
+#[derive(Debug, thiserror::Error)]
+pub enum NetError {
+    #[error("tls setup: {0}")]
+    Tls(String),
+    #[error("bind: {0}")]
+    Bind(#[from] std::io::Error),
+    #[error("unknown friend: {0}")]
+    UnknownFriend(String),
+    #[error("invalid friend address: {0}")]
+    InvalidAddress(String),
+    #[error("not connected to {0}")]
+    NotConnected(String),
+    #[error("peer does not accept datagrams")]
+    DatagramsUnsupported,
+    #[error("protocol: {0}")]
+    Protocol(#[from] ProtocolError),
+    #[error("send datagram: {0}")]
+    SendDatagram(String),
+}
+
+/// Events emitted to the application (UI / main loop).
+#[derive(Debug, Clone)]
+pub enum NetEvent {
+    /// A connection to `friend` became the active one. `newly_pinned`: the
+    /// fingerprint was pinned (TOFU) and the caller should persist it.
+    Connected {
+        friend: String,
+        fingerprint: Fingerprint,
+        newly_pinned: bool,
+    },
+    Control {
+        friend: String,
+        msg: ControlMessage,
+    },
+    Datagram {
+        friend: String,
+        dg: MediaDatagram,
+    },
+    Disconnected {
+        friend: String,
+    },
+    Reconnecting {
+        friend: String,
+        attempt: u32,
+        delay: Duration,
+    },
+    /// Inbound connection refused (address is not a friend).
+    Rejected {
+        addr: SocketAddr,
+        reason: String,
+    },
+    FingerprintMismatch {
+        friend: String,
+        expected: Fingerprint,
+        presented: Fingerprint,
+    },
+}
+
+/// Backoff delay for the n-th consecutive failure (n >= 1): 1, 2, 4, 8, 15, 15...
+pub fn backoff_delay(attempt: u32) -> Duration {
+    let secs = 1u64 << attempt.saturating_sub(1).min(4);
+    Duration::from_secs(secs).min(BACKOFF_MAX)
+}
+
+/// Builds the trust store from the config's friends (invalid entries are skipped with a warning).
+pub fn trust_store_from_config(config: &Config) -> TrustStore {
+    let mut entries = Vec::new();
+    for f in &config.friends {
+        let Ok(address) = f.address.parse::<IpAddr>() else {
+            tracing::warn!(friend = %f.name, "skipping friend with invalid address");
+            continue;
+        };
+        let fingerprint = match f.fingerprint.as_deref().map(Fingerprint::from_hex) {
+            None => None,
+            Some(Ok(fp)) => Some(fp),
+            Some(Err(_)) => {
+                tracing::warn!(friend = %f.name, "ignoring invalid fingerprint in config");
+                None
+            }
+        };
+        entries.push(FriendEntry {
+            name: f.name.clone(),
+            address,
+            fingerprint,
+        });
+    }
+    TrustStore::new(entries)
+}
+
+// ---------------------------------------------------------------- TLS
+
+fn provider() -> Arc<CryptoProvider> {
+    Arc::new(rustls::crypto::ring::default_provider())
+}
+
+/// Accepts any certificate; only checks the handshake signature. Trust is
+/// decided after the handshake (D-007).
+#[derive(Debug)]
+struct AnyCert {
+    algs: WebPkiSupportedAlgorithms,
+}
+
+impl ServerCertVerifier for AnyCert {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algs)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algs)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algs.supported_schemes()
+    }
+}
+
+impl ClientCertVerifier for AnyCert {
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        Ok(ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algs)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algs)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algs.supported_schemes()
+    }
+}
+
+fn transport() -> Arc<quinn::TransportConfig> {
+    let mut t = quinn::TransportConfig::default();
+    t.keep_alive_interval(Some(HEARTBEAT_INTERVAL));
+    t.max_idle_timeout(Some(
+        quinn::IdleTimeout::try_from(IDLE_TIMEOUT).expect("idle timeout fits"),
+    ));
+    t.max_concurrent_bidi_streams(1u8.into());
+    t.max_concurrent_uni_streams(0u8.into());
+    Arc::new(t)
+}
+
+fn build_configs(
+    identity: &LocalIdentity,
+) -> Result<(quinn::ServerConfig, quinn::ClientConfig), NetError> {
+    let tls_err = |e: &dyn std::fmt::Display| NetError::Tls(e.to_string());
+    let prov = provider();
+    let verifier = Arc::new(AnyCert {
+        algs: prov.signature_verification_algorithms,
+    });
+    let chain = vec![CertificateDer::from(identity.cert_der.clone())];
+    let key = || rustls_pki_types::PrivateKeyDer::from(PrivatePkcs8KeyDer::from(identity.key_der.clone()));
+
+    let mut server = rustls::ServerConfig::builder_with_provider(prov.clone())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| tls_err(&e))?
+        .with_client_cert_verifier(verifier.clone())
+        .with_single_cert(chain.clone(), key())
+        .map_err(|e| tls_err(&e))?;
+    server.alpn_protocols = vec![ALPN.to_vec()];
+
+    let mut client = rustls::ClientConfig::builder_with_provider(prov)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| tls_err(&e))?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_client_auth_cert(chain, key())
+        .map_err(|e| tls_err(&e))?;
+    client.alpn_protocols = vec![ALPN.to_vec()];
+
+    let mut server_cfg = quinn::ServerConfig::with_crypto(Arc::new(
+        QuicServerConfig::try_from(server).map_err(|e| tls_err(&e))?,
+    ));
+    server_cfg.transport_config(transport());
+    let mut client_cfg = quinn::ClientConfig::new(Arc::new(
+        QuicClientConfig::try_from(client).map_err(|e| tls_err(&e))?,
+    ));
+    client_cfg.transport_config(transport());
+    Ok((server_cfg, client_cfg))
+}
+
+// ---------------------------------------------------------------- state
+
+struct Active {
+    id: u64,
+    conn: quinn::Connection,
+    side: ConnSide,
+    tx: mpsc::UnboundedSender<ControlMessage>,
+}
+
+struct Inner {
+    endpoint: quinn::Endpoint,
+    local_fp: Fingerprint,
+    trust: Mutex<TrustStore>,
+    conns: Mutex<HashMap<String, Active>>,
+    /// Friends pinned (TOFU) whose pin was not yet reported through `Connected`.
+    unreported_pins: Mutex<HashSet<String>>,
+    dialing: Mutex<HashSet<String>>,
+    events: mpsc::UnboundedSender<NetEvent>,
+    shutdown: watch::Sender<bool>,
+    next_id: AtomicU64,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+impl Inner {
+    fn emit(&self, ev: NetEvent) {
+        let _ = self.events.send(ev);
+    }
+
+    fn is_connected(&self, friend: &str) -> bool {
+        lock(&self.conns).contains_key(friend)
+    }
+
+    fn is_friend_ip(&self, ip: IpAddr) -> bool {
+        let ip = ip.to_canonical();
+        lock(&self.trust)
+            .friends()
+            .iter()
+            .any(|f| f.address.to_canonical() == ip)
+    }
+}
+
+/// Handle to the QUIC endpoint. Cloning is cheap.
+#[derive(Clone)]
+pub struct Net {
+    inner: Arc<Inner>,
+}
+
+impl Net {
+    /// Binds the UDP port and starts accepting connections. Must be called
+    /// inside a tokio runtime. Use port 0 for an ephemeral port.
+    pub fn bind(
+        addr: SocketAddr,
+        identity: &LocalIdentity,
+        trust: TrustStore,
+    ) -> Result<(Net, mpsc::UnboundedReceiver<NetEvent>), NetError> {
+        let (server_cfg, client_cfg) = build_configs(identity)?;
+        let mut endpoint = quinn::Endpoint::server(server_cfg, addr)?;
+        endpoint.set_default_client_config(client_cfg);
+        let (events, rx) = mpsc::unbounded_channel();
+        let (shutdown, _) = watch::channel(false);
+        let inner = Arc::new(Inner {
+            endpoint,
+            local_fp: identity.fingerprint(),
+            trust: Mutex::new(trust),
+            conns: Mutex::new(HashMap::new()),
+            unreported_pins: Mutex::new(HashSet::new()),
+            dialing: Mutex::new(HashSet::new()),
+            events,
+            shutdown,
+            next_id: AtomicU64::new(1),
+        });
+        tokio::spawn(accept_loop(inner.clone()));
+        Ok((Net { inner }, rx))
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.inner
+            .endpoint
+            .local_addr()
+            .expect("bound endpoint has a local address")
+    }
+
+    pub fn local_fingerprint(&self) -> Fingerprint {
+        self.inner.local_fp
+    }
+
+    /// Starts (and keeps alive, with backoff) the outgoing connection to `friend`.
+    /// Calling it again for a friend that is already being dialed does nothing.
+    pub fn dial(&self, friend: &Friend) -> Result<(), NetError> {
+        let ip: IpAddr = friend
+            .address
+            .parse()
+            .map_err(|_| NetError::InvalidAddress(friend.address.clone()))?;
+        if !lock(&self.inner.trust)
+            .friends()
+            .iter()
+            .any(|f| f.name == friend.name)
+        {
+            return Err(NetError::UnknownFriend(friend.name.clone()));
+        }
+        if !lock(&self.inner.dialing).insert(friend.name.clone()) {
+            return Ok(());
+        }
+        let target = SocketAddr::new(ip, friend.effective_port());
+        tokio::spawn(supervise(self.inner.clone(), friend.name.clone(), target));
+        Ok(())
+    }
+
+    /// Queues a control message on the active connection to `friend`.
+    pub fn send_control(&self, friend: &str, msg: ControlMessage) -> Result<(), NetError> {
+        let conns = lock(&self.inner.conns);
+        let active = conns
+            .get(friend)
+            .ok_or_else(|| NetError::NotConnected(friend.to_string()))?;
+        active
+            .tx
+            .send(msg)
+            .map_err(|_| NetError::NotConnected(friend.to_string()))
+    }
+
+    /// Sends a media datagram. Fails (without sending anything) when the encoded
+    /// size exceeds the connection's maximum datagram size (`inv-datagram-max-size`).
+    pub fn send_datagram(&self, friend: &str, dg: &MediaDatagram) -> Result<(), NetError> {
+        let conn = self.connection(friend)?;
+        let max = conn
+            .max_datagram_size()
+            .ok_or(NetError::DatagramsUnsupported)?
+            .min(DEFAULT_MAX_DATAGRAM);
+        let bytes = dg.encode(max)?;
+        conn.send_datagram(bytes.into())
+            .map_err(|e| NetError::SendDatagram(e.to_string()))
+    }
+
+    /// Largest datagram currently allowed towards `friend`.
+    pub fn max_datagram_size(&self, friend: &str) -> Option<usize> {
+        let conn = self.connection(friend).ok()?;
+        Some(conn.max_datagram_size()?.min(DEFAULT_MAX_DATAGRAM))
+    }
+
+    fn connection(&self, friend: &str) -> Result<quinn::Connection, NetError> {
+        lock(&self.inner.conns)
+            .get(friend)
+            .map(|a| a.conn.clone())
+            .ok_or_else(|| NetError::NotConnected(friend.to_string()))
+    }
+
+    pub fn is_connected(&self, friend: &str) -> bool {
+        self.inner.is_connected(friend)
+    }
+
+    /// Which side started the active connection to `friend`.
+    pub fn connection_side(&self, friend: &str) -> Option<ConnSide> {
+        lock(&self.inner.conns).get(friend).map(|a| a.side)
+    }
+
+    /// Fingerprint currently pinned for `friend` in the trust store.
+    pub fn pinned_fingerprint(&self, friend: &str) -> Option<Fingerprint> {
+        lock(&self.inner.trust)
+            .friends()
+            .iter()
+            .find(|f| f.name == friend)
+            .and_then(|f| f.fingerprint)
+    }
+
+    /// Clean shutdown: sends `Bye`, closes every connection and the endpoint.
+    pub async fn shutdown(&self) {
+        let _ = self.inner.shutdown.send(true);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !lock(&self.inner.conns).is_empty() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        self.inner.endpoint.close(CODE_NORMAL.into(), b"shutdown");
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.inner.endpoint.wait_idle()).await;
+    }
+}
+
+// ---------------------------------------------------------------- tasks
+
+async fn accept_loop(inner: Arc<Inner>) {
+    let mut shutdown = inner.shutdown.subscribe();
+    loop {
+        let incoming = tokio::select! {
+            i = inner.endpoint.accept() => match i { Some(i) => i, None => return },
+            _ = shutdown.changed() => return,
+        };
+        let addr = incoming.remote_address();
+        if !inner.is_friend_ip(addr.ip()) {
+            tracing::warn!(%addr, "refusing connection from non-friend address");
+            incoming.refuse();
+            inner.emit(NetEvent::Rejected {
+                addr,
+                reason: "address is not a friend".into(),
+            });
+            continue;
+        }
+        let inner = inner.clone();
+        tokio::spawn(async move {
+            match incoming.await {
+                Ok(conn) => establish(inner, conn, ConnSide::Accepted).await,
+                Err(e) => tracing::debug!(%addr, "inbound handshake failed: {e}"),
+            }
+        });
+    }
+}
+
+/// Keeps one outgoing connection to a friend alive, with backoff (D-007).
+async fn supervise(inner: Arc<Inner>, friend: String, target: SocketAddr) {
+    let mut shutdown = inner.shutdown.subscribe();
+    let mut attempt: u32 = 0;
+    let mut connected_since: Option<Instant> = None;
+    let mut ready_to_dial = true;
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        if inner.is_connected(&friend) {
+            connected_since.get_or_insert_with(Instant::now);
+            ready_to_dial = false;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                _ = shutdown.changed() => {}
+            }
+            continue;
+        }
+        if let Some(since) = connected_since.take() {
+            // Connection lost.
+            if since.elapsed() >= STABLE_AFTER {
+                attempt = 0;
+            }
+            ready_to_dial = false;
+        }
+        if !ready_to_dial {
+            attempt += 1;
+            let delay = backoff_delay(attempt);
+            inner.emit(NetEvent::Reconnecting {
+                friend: friend.clone(),
+                attempt,
+                delay,
+            });
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                _ = shutdown.changed() => break,
+            }
+            ready_to_dial = true;
+            continue; // re-check: an inbound connection may have arrived meanwhile
+        }
+        // Dial.
+        tracing::info!(%friend, %target, "dialing");
+        let connecting = match inner.endpoint.connect(target, SERVER_NAME) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(%friend, "cannot start connection: {e}");
+                ready_to_dial = false;
+                continue;
+            }
+        };
+        let result = tokio::select! {
+            r = connecting => r,
+            _ = shutdown.changed() => break,
+        };
+        match result {
+            Ok(conn) => {
+                establish(inner.clone(), conn, ConnSide::Dialed).await;
+                if !inner.is_connected(&friend) {
+                    // Rejected or dropped right away.
+                    ready_to_dial = false;
+                } else {
+                    connected_since = Some(Instant::now());
+                }
+            }
+            Err(e) => {
+                tracing::debug!(%friend, "dial failed: {e}");
+                ready_to_dial = false;
+            }
+        }
+    }
+    lock(&inner.dialing).remove(&friend);
+}
+
+fn peer_fingerprint(conn: &quinn::Connection) -> Option<Fingerprint> {
+    let identity = conn.peer_identity()?;
+    let certs = identity.downcast::<Vec<CertificateDer<'static>>>().ok()?;
+    certs.first().map(|c| Fingerprint::of_cert_der(c.as_ref()))
+}
+
+/// Post-handshake: trust decision, control stream, duplicate resolution, then runs
+/// the connection until it ends (for accepted connections) or spawns the run task
+/// (for dialed ones, so the supervisor can keep watching).
+async fn establish(inner: Arc<Inner>, conn: quinn::Connection, side: ConnSide) {
+    let addr = conn.remote_address();
+    let Some(peer_fp) = peer_fingerprint(&conn) else {
+        conn.close(CODE_PROTOCOL.into(), b"no certificate");
+        return;
+    };
+    let decision = lock(&inner.trust).check_peer(addr.ip(), &peer_fp);
+    let (friend, newly_pinned) = match decision {
+        PeerDecision::Accept { friend, newly_pinned } => (friend, newly_pinned),
+        PeerDecision::RejectUnknownAddress => {
+            tracing::warn!(%addr, "rejecting connection from non-friend address");
+            conn.close(CODE_REJECTED.into(), b"not a friend");
+            inner.emit(NetEvent::Rejected {
+                addr,
+                reason: "address is not a friend".into(),
+            });
+            return;
+        }
+        PeerDecision::RejectFingerprintMismatch {
+            friend,
+            expected,
+            presented,
+        } => {
+            tracing::warn!(%friend, "fingerprint mismatch: connection refused, pin kept");
+            conn.close(CODE_MISMATCH.into(), b"fingerprint mismatch");
+            inner.emit(NetEvent::FingerprintMismatch {
+                friend,
+                expected,
+                presented,
+            });
+            return;
+        }
+    };
+    if newly_pinned {
+        lock(&inner.unreported_pins).insert(friend.clone());
+    }
+
+    // Control stream: opened by the dialer (its first frame is a Heartbeat so the
+    // acceptor sees the stream), accepted by the other side.
+    let setup = tokio::time::timeout(CONTROL_SETUP_TIMEOUT, async {
+        match side {
+            ConnSide::Dialed => {
+                let (mut send, recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+                let frame = ControlMessage::Heartbeat
+                    .encode_frame()
+                    .map_err(|e| e.to_string())?;
+                send.write_all(&frame).await.map_err(|e| e.to_string())?;
+                Ok::<_, String>((send, recv))
+            }
+            ConnSide::Accepted => conn.accept_bi().await.map_err(|e| e.to_string()),
+        }
+    })
+    .await;
+    let (send, recv) = match setup {
+        Ok(Ok(streams)) => streams,
+        Ok(Err(e)) => {
+            tracing::debug!(%friend, "control stream setup failed: {e}");
+            conn.close(CODE_PROTOCOL.into(), b"no control stream");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(%friend, "control stream setup timed out");
+            conn.close(CODE_PROTOCOL.into(), b"control stream timeout");
+            return;
+        }
+    };
+
+    // Register, resolving simultaneous connections (inv-simultaneous-conn-lowest-fp).
+    let id = inner.next_id.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::unbounded_channel();
+    {
+        let mut conns = lock(&inner.conns);
+        if let Some(old) = conns.get(&friend) {
+            // Same side: the new one is a fresh attempt (peer restarted), it wins.
+            // Different sides: both dialed; keep the one chosen by the fingerprint rule.
+            let new_wins = old.side == side || keep_connection(&inner.local_fp, &peer_fp, side);
+            if new_wins {
+                old.conn.close(CODE_SUPERSEDED.into(), b"superseded");
+            } else {
+                tracing::info!(%friend, "duplicate connection dropped (lowest-fingerprint rule)");
+                conn.close(CODE_SUPERSEDED.into(), b"superseded");
+                return;
+            }
+        }
+        conns.insert(
+            friend.clone(),
+            Active {
+                id,
+                conn: conn.clone(),
+                side,
+                tx,
+            },
+        );
+    }
+    let newly_pinned = lock(&inner.unreported_pins).remove(&friend) || newly_pinned;
+    tracing::info!(%friend, ?side, newly_pinned, "connected");
+    inner.emit(NetEvent::Connected {
+        friend: friend.clone(),
+        fingerprint: peer_fp,
+        newly_pinned,
+    });
+    let task = run_connection(inner, conn, friend, id, send, recv, rx);
+    match side {
+        ConnSide::Dialed => {
+            tokio::spawn(task);
+        }
+        ConnSide::Accepted => task.await,
+    }
+}
+
+async fn run_connection(
+    inner: Arc<Inner>,
+    conn: quinn::Connection,
+    friend: String,
+    id: u64,
+    send: quinn::SendStream,
+    recv: quinn::RecvStream,
+    rx: mpsc::UnboundedReceiver<ControlMessage>,
+) {
+    let shutdown = inner.shutdown.subscribe();
+    tokio::select! {
+        _ = write_loop(send, rx, shutdown) => {}
+        _ = read_loop(recv, &inner, &friend) => {}
+        _ = datagram_loop(&conn, &inner, &friend) => {}
+        _ = conn.closed() => {}
+    }
+    conn.close(CODE_NORMAL.into(), b"bye");
+    let was_active = {
+        let mut conns = lock(&inner.conns);
+        if conns.get(&friend).is_some_and(|a| a.id == id) {
+            conns.remove(&friend);
+            true
+        } else {
+            false
+        }
+    };
+    if was_active {
+        tracing::info!(%friend, "disconnected");
+        inner.emit(NetEvent::Disconnected { friend });
+    }
+}
+
+async fn write_frame(send: &mut quinn::SendStream, msg: &ControlMessage) -> bool {
+    match msg.encode_frame() {
+        Ok(frame) => send.write_all(&frame).await.is_ok(),
+        Err(e) => {
+            tracing::warn!("cannot encode control message: {e}");
+            true // drop this message, keep the stream
+        }
+    }
+}
+
+async fn write_loop(
+    mut send: quinn::SendStream,
+    mut rx: mpsc::UnboundedReceiver<ControlMessage>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut beat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    beat.tick().await;
+    loop {
+        tokio::select! {
+            msg = rx.recv() => {
+                let Some(msg) = msg else { return };
+                if !write_frame(&mut send, &msg).await { return; }
+            }
+            _ = beat.tick() => {
+                if !write_frame(&mut send, &ControlMessage::Heartbeat).await { return; }
+            }
+            _ = shutdown.changed() => {
+                if write_frame(&mut send, &ControlMessage::Bye).await && send.finish().is_ok() {
+                    let _ = tokio::time::timeout(Duration::from_millis(500), send.stopped()).await;
+                }
+                return;
+            }
+        }
+    }
+}
+
+async fn read_loop(mut recv: quinn::RecvStream, inner: &Inner, friend: &str) {
+    let mut decoder = FrameDecoder::new(MAX_CONTROL_FRAME);
+    let mut buf = vec![0u8; 4096];
+    loop {
+        match recv.read(&mut buf).await {
+            Ok(Some(n)) => decoder.push(&buf[..n]),
+            Ok(None) | Err(_) => return,
+        }
+        loop {
+            match decoder.next_message() {
+                Ok(Some(ControlMessage::Heartbeat)) => {}
+                Ok(Some(msg)) => {
+                    let bye = matches!(msg, ControlMessage::Bye);
+                    inner.emit(NetEvent::Control {
+                        friend: friend.to_string(),
+                        msg,
+                    });
+                    if bye {
+                        return;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!(%friend, "invalid control frame: {e}");
+                    return;
+                }
+            }
+        }
+    }
+}
+
+async fn datagram_loop(conn: &quinn::Connection, inner: &Inner, friend: &str) {
+    while let Ok(bytes) = conn.read_datagram().await {
+        match MediaDatagram::decode(&bytes) {
+            Ok(dg) => inner.emit(NetEvent::Datagram {
+                friend: friend.to_string(),
+                dg,
+            }),
+            Err(e) => tracing::debug!(%friend, "dropping malformed datagram: {e}"),
+        }
+    }
+}

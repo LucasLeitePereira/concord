@@ -48,3 +48,15 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - `Lost` indefinido no underrun (braço ONTO do T-004): avança o seq sem parar, então deriva de relógio ou pausa do remetente vira silêncio permanente.
 - `Empty` imediato (braço CTRL): uma travada curta de rede corta o áudio seco, sem PLC.
 **Data:** 2026-10-22
+
+## D-007 Conexão QUIC: TLS mútuo com verificação própria, heartbeat 2 s, backoff 1→15 s
+**Conceitos:** peer-connection, identity-fingerprint, friend, inv-only-friends-connect, inv-fingerprint-tofu, inv-simultaneous-conn-lowest-fp
+**Decisão:**
+- `quinn` 0.11 + `rustls` 0.23 com provedor `ring`, o mesmo do rcgen. ALPN `sala/1`.
+- TLS mútuo: os dois lados apresentam o certificado autoassinado. Os verificadores próprios conferem só a assinatura do handshake. A confiança é decidida depois do handshake por `TrustStore::check_peer` (IP canônico + fingerprint do certificado do par). Recusa = fechar a conexão com código de aplicação.
+- Entrada de IP desconhecido: recusar já no `Incoming` (`refuse()`), antes do handshake.
+- Vida da conexão: keep-alive do QUIC a cada 2 s, `max_idle_timeout` de 6 s, e `ControlMessage::Heartbeat` a cada 2 s no stream de controle.
+- Reconexão: quem discou volta a discar com backoff 1, 2, 4, 8, 15, 15… s, zerado ao conectar. A UI recebe `Reconnecting`.
+- Stream de controle: um bidirecional, aberto por quem discou. A 1ª mensagem de cada lado é `Hello`.
+**Alternativa descartada:** verificar o fingerprint dentro do verificador do rustls. O verificador não sabe qual amigo está do outro lado na entrada, e o TOFU precisa gravar estado.
+**Data:** 2026-10-22

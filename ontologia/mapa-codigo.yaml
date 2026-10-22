@@ -23,8 +23,8 @@ mapa:
     codigo: ["sala/crates/core/src/identity.rs (Fingerprint, LocalIdentity)"]
     testes: [sala/crates/core/tests/acceptance_identity.rs]
   peer-connection:
-    codigo: ["sala/crates/core/src/identity.rs (TrustStore::check_peer, PeerDecision, keep_connection)"]
-    testes: [sala/crates/core/tests/acceptance_identity.rs]
+    codigo: ["sala/crates/core/src/net.rs (Net, NetEvent, NetError, trust_store_from_config)", "sala/crates/core/src/identity.rs (TrustStore::check_peer, PeerDecision, keep_connection)"]
+    testes: [sala/crates/core/tests/net.rs, sala/crates/core/tests/acceptance_identity.rs]
   friend:
     codigo: ["sala/crates/core/src/config.rs (Friend)", "sala/crates/core/src/identity.rs (FriendEntry)"]
     testes: ["sala/crates/core/src/config.rs (mod tests)"]
@@ -35,4 +35,4 @@ mapa:
     codigo: ["sala/crates/core/src/config.rs (Profile)", "sala/crates/core/src/cli.rs (CliArgs)"]
     testes: ["sala/crates/core/src/config.rs (mod tests)", "sala/crates/core/src/cli.rs (mod tests)"]
   core-process:
-    codigo: [sala/crates/core/src/main.rs]
+    codigo: ["sala/crates/core/src/main.rs (perfil + config + identidade + net; grava pin TOFU no config)"]
