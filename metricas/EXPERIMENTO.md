@@ -47,4 +47,5 @@ Os dois braços usam o mesmo agente (`pleno`/sonnet), a mesma memória, o mesmo 
 - **Limitações declaradas:** n = 8 (poder baixo, resultado indicativo), 1 execução por braço, um só modelo, o sênior é autor da ontologia e dos testes ocultos (risco de viés, mitigado pela revisão cega e por testes derivados da spec) e as tarefas não são independentes (o código mergeado de um par vira base do próximo).
 
 ## Desvios
-_(nenhum)_
+- **2026-10-22 — concorrência entre pares.** Os pares T-003 e T-004 rodam em duas filas paralelas. Dentro de cada par, os braços continuam em sequência. Isso afeta `duracao_s` (métrica secundária), mas não tokens nem tool calls. Motivo: tempo de parede, numa máquina de 4 núcleos.
+- **2026-10-22 — vazamento potencial.** `metricas/ab/` (os testes ocultos) entrou no commit base. Mitigação: `metricas/` e `ideia/` foram apagadas de todos os worktrees, e os transcripts são auditados à procura de acessos a "hidden"/"metricas".
