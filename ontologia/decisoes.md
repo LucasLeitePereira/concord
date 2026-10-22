@@ -25,3 +25,14 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 **Decisão:** construir e testar em Windows 11 nativo com toolchain MSVC. O produto depende de WGC, WASAPI, named pipes e da bandeja.
 **Alternativa descartada:** WSL2 com cross-compile (não testa nenhuma API nativa).
 **Data:** 2026-10-22
+
+## D-005 Perfis de teste e porta opcional por amigo
+**Conceitos:** profile, config, friend
+**Decisão:**
+- Sem `--profile`, os dados ficam em `%APPDATA%\Sala` e a porta é 47800.
+- `--profile <nome>` usa `%APPDATA%\Sala\profiles\<nome>`. A porta padrão é `a`→47801, `b`→47802 e qualquer outro nome →47803. O nome aceita só `[a-z0-9-]`.
+- `Friend` ganha o campo opcional `port` (padrão 47800). Sem ele, duas instâncias na mesma máquina não conseguem discar uma para a outra.
+- Na 1ª execução, a config do perfil `a` vem com o amigo "b" em 127.0.0.1:47802, e vice-versa.
+- A raiz `%APPDATA%` pode ser trocada pela variável `SALA_APPDATA` (usada em testes).
+**Alternativa descartada:** porta única com IPs de loopback diferentes (127.0.0.2). No Windows isso exige configuração extra e não testa a porta configurável.
+**Data:** 2026-10-22

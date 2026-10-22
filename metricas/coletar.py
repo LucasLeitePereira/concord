@@ -30,6 +30,8 @@ with open(os.path.join(AQUI, "precos.json"), encoding="utf-8") as _f:
 
 EDITORES = ("Edit", "Write", "NotebookEdit")
 TERMOS_BUSCA = ("grep", "rg ", "find ", "Select-String", "Get-ChildItem")
+# "ontologia" como segmento de caminho/palavra (com ou sem barra final)
+RE_ONTOLOGIA = re.compile(r"(?<![A-Za-z0-9_-])ontologia(?![A-Za-z0-9_-])")
 
 
 def custo(modelo, u):
@@ -108,7 +110,7 @@ def medir(arquivo):
                 alvo = str(inp.get("command", "")).split("\n", 1)[0]
             else:
                 alvo = ""
-            if "ontologia/" in alvo.replace("\\\\", "/").replace("\\", "/"):
+            if RE_ONTOLOGIA.search(alvo.replace("\\\\", "/").replace("\\", "/")):
                 leituras_onto += 1
             if nome == "Read" and inp.get("file_path"):
                 lidos.add(inp["file_path"])

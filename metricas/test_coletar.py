@@ -131,6 +131,12 @@ class TestMedir(Base):
                               tu("Grep", pattern="id:", path="ontologia/dominio.yaml")], U["m1"])
         self.assertEqual(coletar.medir(self.agente("a1", l))["leituras_ontologia"], 1)
 
+    def test_grep_na_pasta_ontologia_sem_barra_final(self):
+        # regressão: Grep com path "...\\ontologia" (sem barra) não era contado
+        l = linhas_msg("m1", [tu("Grep", pattern="id: x", path="D:\\TI\\concord\\ab\\T-003-onto\\ontologia"),
+                              tu("Read", file_path="sala/src/ontologiaX.rs")], U["m1"])
+        self.assertEqual(coletar.medir(self.agente("a1", l))["leituras_ontologia"], 1)
+
     def test_powershell_busca(self):
         l = linhas_msg("m1", [tu("PowerShell", command="Select-String foo *.rs"),
                               tu("PowerShell", command="Get-Date")], U["m1"])

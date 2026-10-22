@@ -9,7 +9,8 @@ conceitos:
     atributos:
       - {nome: name, tipo: String, obrigatorio: true}
       - {nome: address, tipo: "IpAddr (100.x.y.z do Tailscale; 127.0.0.1 em testes)", obrigatorio: true}
-      - {nome: fingerprint, tipo: "Option<Fingerprint>", obrigatorio: false, nota: "preenchido na 1ª conexão (TOFU)"}
+      - {nome: port, tipo: "Option<u16>", obrigatorio: false, nota: "padrão 47800; ver D-005"}
+      - {nome: fingerprint, tipo: "Option<Fingerprint> (hex no config.toml)", obrigatorio: false, nota: "preenchido na 1ª conexão (TOFU)"}
     estados: [offline, online, in_call, reconnecting]
     secao: "§4, §6"
 
