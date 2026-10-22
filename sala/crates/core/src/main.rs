@@ -1,10 +1,17 @@
 use std::net::{Ipv4Addr, SocketAddr};
+use std::time::{Duration, Instant};
 
+use sala_core::audio_device::{AudioInput, Sink};
 use sala_core::cli::CliArgs;
 use sala_core::config::{Config, Profile};
 use sala_core::identity::LocalIdentity;
 use sala_core::net::{Net, NetEvent, trust_store_from_config};
-use sala_protocol::{Capabilities, ControlMessage, PROTOCOL_VERSION};
+use sala_core::voice::{SineSource, VoiceEngine};
+use sala_protocol::{
+    AudioStream, Capabilities, ControlMessage, MediaDatagram, PROTOCOL_VERSION, max_audio_payload,
+};
+use tokio::sync::mpsc;
+use tokio::time::{MissedTickBehavior, interval};
 
 fn main() {
     tracing_subscriber::fmt().with_target(false).init();
@@ -39,14 +46,102 @@ async fn run() -> Result<(), String> {
         }
     }
 
+    // Voice: microphone (device or synthetic) -> engine -> Net; Net -> engine -> sink.
+    let mut engine = VoiceEngine::new(&config.audio).map_err(|e| format!("opus: {e}"))?;
+    let (cap_tx, mut cap_rx) = mpsc::channel::<Vec<f32>>(16);
+    let _input = if args.synthetic_audio {
+        let tx = cap_tx.clone();
+        tokio::spawn(async move {
+            let mut src = SineSource::standard();
+            let mut tick = interval(Duration::from_millis(20));
+            tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                if tx.try_send(src.next_frame()).is_err() && tx.is_closed() {
+                    break;
+                }
+            }
+        });
+        None
+    } else {
+        match AudioInput::start(&config.audio.input_device, cap_tx.clone()) {
+            Ok(i) => Some(i),
+            Err(e) => {
+                tracing::warn!("no audio input ({e}); not transmitting voice");
+                None
+            }
+        }
+    };
+    let sink = if args.synthetic_audio { Sink::Null } else { Sink::open(&config.audio.output_device) };
+    tracing::info!(synthetic = args.synthetic_audio, null_sink = sink.is_null(), "voice ready");
+    let started = Instant::now();
+    let mut playout = interval(Duration::from_millis(20));
+    playout.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut stats_tick = interval(Duration::from_secs(2));
+    let mut send_errors: u64 = 0;
+
     loop {
         let event = tokio::select! {
             e = events.recv() => match e { Some(e) => e, None => break },
+            Some(mut pcm) = cap_rx.recv() => {
+                match engine.process_capture(&mut pcm) {
+                    Ok(Some(f)) => {
+                        let peers: Vec<String> = engine.peer_names().map(str::to_string).collect();
+                        for peer in peers {
+                            let Some(max) = net.max_datagram_size(&peer) else { continue };
+                            if f.payload.len() > max_audio_payload(max) {
+                                send_errors += 1;
+                                continue;
+                            }
+                            let dg = MediaDatagram::Audio {
+                                stream: AudioStream::Voice,
+                                seq: f.seq,
+                                timestamp: f.timestamp,
+                                payload: f.payload.clone(),
+                            };
+                            if net.send_datagram(&peer, &dg).is_err() {
+                                send_errors += 1;
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("opus encode failed: {e}"),
+                }
+                continue;
+            }
+            _ = playout.tick() => {
+                let now_ms = started.elapsed().as_millis() as u64;
+                sink.play(engine.playout_tick(now_ms));
+                continue;
+            }
+            _ = stats_tick.tick() => {
+                let s = engine.stats();
+                tracing::info!(sent = s.sent, skipped = s.skipped, send_errors, "voice tx");
+                let names: Vec<String> = engine.peer_names().map(str::to_string).collect();
+                for n in names {
+                    if let Some(p) = engine.peer_stats(&n) {
+                        tracing::info!(
+                            friend = %n,
+                            received = p.jitter.received,
+                            played = p.jitter.played,
+                            lost = p.jitter.lost,
+                            late = p.jitter.late_dropped,
+                            plc = p.plc_frames,
+                            fec = p.fec_frames,
+                            "voice rx"
+                        );
+                    }
+                }
+                continue;
+            }
             _ = tokio::signal::ctrl_c() => break,
         };
         match event {
             NetEvent::Connected { friend, fingerprint, newly_pinned } => {
                 tracing::info!(%friend, fingerprint = %fingerprint.to_hex(), newly_pinned, "event: connected");
+                if let Err(e) = engine.add_peer(&friend) {
+                    tracing::warn!(%friend, "cannot start voice: {e}");
+                }
                 let hello = ControlMessage::Hello {
                     name: config.name.clone(),
                     app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -85,8 +180,17 @@ async fn run() -> Result<(), String> {
                 ControlMessage::Chat { id, .. } => tracing::info!(%friend, id, "event: Chat"),
                 other => tracing::info!(%friend, "event: control {other:?}"),
             },
-            NetEvent::Datagram { friend, .. } => tracing::trace!(%friend, "event: datagram"),
-            NetEvent::Disconnected { friend } => tracing::info!(%friend, "event: disconnected"),
+            NetEvent::Datagram { friend, dg } => match dg {
+                MediaDatagram::Audio { stream: AudioStream::Voice, seq, timestamp, payload } => {
+                    let now_ms = started.elapsed().as_millis() as u64;
+                    engine.push_datagram(&friend, seq, timestamp, payload, now_ms);
+                }
+                _ => tracing::trace!(%friend, "event: datagram"),
+            },
+            NetEvent::Disconnected { friend } => {
+                engine.remove_peer(&friend);
+                tracing::info!(%friend, "event: disconnected");
+            }
             NetEvent::Reconnecting { friend, attempt, delay } => {
                 tracing::info!(%friend, attempt, ?delay, "event: reconnecting");
             }

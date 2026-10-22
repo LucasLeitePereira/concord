@@ -277,7 +277,7 @@ invariantes:
   - id: inv-mix-no-clipping
     conceitos: [soundboard, voice-frame]
     regra: "Mixagem de som + voz nunca estoura: amostras finais limitadas a [-1.0, 1.0] (limitador ou clamp)."
-    testado_em: ""
+    testado_em: "sala/crates/core/src/voice.rs::mix_of_peers_is_clamped, volume_is_clamped_and_output_never_clips (soundboard: pendente F5)"
   - id: inv-one-sound-at-a-time
     conceitos: [soundboard, sound]
     regra: "No MVP, tocar um som interrompe o que estiver tocando."
@@ -285,7 +285,7 @@ invariantes:
   - id: inv-deafen-implies-mute
     conceitos: [call, voice-activation]
     regra: "Ensurdecer também muta o microfone; desensurdecer restaura o estado de mudo anterior."
-    testado_em: ""
+    testado_em: "sala/crates/core/src/voice.rs::deafen_mutes_and_undeafen_restores_previous_mute"
   - id: inv-no-external-calls
     conceitos: [core-process, ui-process]
     regra: "Nenhuma chamada de rede a serviços externos (sem telemetria, sem fontes remotas); só conexões com Friends."

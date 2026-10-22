@@ -14,9 +14,9 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 **Alternativa descartada:** async-std/smol (o quinn é de primeira classe só no tokio).
 **Data:** 2026-10-22
 
-## D-003 Opus: crate `opus` (audiopus_sys), compilado com CMake
+## D-003 Opus: crate `opus` 0.4 (opusic-sys), compilado com CMake
 **Conceitos:** voice-frame
-**Decisão:** usar a crate `opus`, que expõe FEC, DTX, bitrate e o modo VOIP. O libopus é compilado estaticamente pelo `audiopus_sys`, que exige CMake no toolchain.
+**Decisão:** usar a crate `opus`, que expõe FEC, DTX, bitrate e o modo VOIP. O libopus é compilado estaticamente pelo `opusic-sys`, que exige CMake no toolchain. Captura e reprodução com `cpal` 0.18.
 **Alternativa descartada:** Opus em Rust puro (imaturo, sem FEC/DTX completos).
 **Data:** 2026-10-22
 

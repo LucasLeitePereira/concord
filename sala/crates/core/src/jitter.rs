@@ -225,6 +225,17 @@ impl JitterBuffer {
         }
     }
 
+    /// Payload of the slot that the next `pop` will serve, if buffered and playout
+    /// is running. Right after a `Lost` caused by a hole this is the frame that
+    /// follows the hole, which the decoder uses for in-band FEC recovery. During
+    /// an underrun (not playing) it is `None`: the frame there is not a successor.
+    pub fn peek_next(&self) -> Option<&[u8]> {
+        if !self.playing {
+            return None;
+        }
+        self.frames.get(&self.next_play).map(Vec::as_slice)
+    }
+
     /// Current adaptive target delay in milliseconds.
     pub fn target_delay_ms(&self) -> u32 {
         let extra = (2.0 * self.jitter_ms).round() as u32;

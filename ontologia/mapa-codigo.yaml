@@ -17,8 +17,16 @@ mapa:
   chat-message:
     codigo: ["sala/crates/protocol/src/lib.rs (ControlMessage::Chat, ChatEntry)"]
   jitter-buffer:
-    codigo: ["sala/crates/core/src/jitter.rs (JitterBuffer, Pop, JitterStats)"]
+    codigo: ["sala/crates/core/src/jitter.rs (JitterBuffer, Pop, JitterStats, peek_next p/ FEC)"]
     testes: [sala/crates/core/tests/acceptance_jitter.rs, "sala/crates/core/src/jitter.rs (mod tests)"]
+  voice-frame:
+    codigo: ["sala/crates/core/src/voice.rs (VoiceEncoder, VoiceDecoder, EncodedFrame, VoiceEngine)", "sala/crates/core/src/audio_device.rs (AudioInput, AudioOutput, Sink, list_devices)"]
+    testes: ["sala/crates/core/src/voice.rs (mod tests)"]
+  voice-activation:
+    codigo: ["sala/crates/core/src/voice.rs (Activation)"]
+    testes: ["sala/crates/core/src/voice.rs (mod tests)"]
+  call:
+    codigo: ["sala/crates/core/src/voice.rs (VoiceEngine: peers, volume, loopback)", "sala/crates/core/src/main.rs (sessão de voz por amigo em Connected/Disconnected)"]
   identity-fingerprint:
     codigo: ["sala/crates/core/src/identity.rs (Fingerprint, LocalIdentity)"]
     testes: [sala/crates/core/tests/acceptance_identity.rs]
