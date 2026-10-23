@@ -43,6 +43,8 @@
 - Hora local no log: feature `local-time` do `tracing-subscriber` + `LocalTime::rfc_3339()` funciona no Windows/tokio.
 - Duas instâncias que se discam em teste: porta livre via `UdpSocket::bind("127.0.0.1:0")`, ler e soltar.
 
+- sala-ui (Tauri 2 sem tauri-cli): frontend em `crates/ui/web/` usa `window.__TAURI__` (withGlobalTauri); registre o ouvinte antes de pedir `link_state`. Build frio ≈ 12 min: rode clippy e test separados ou em background.
+
 ## Convenções do projeto (Sala)
 - Spec: `ideia/sala-handoff/PLANO-CLAUDE-CODE.md`; design: `ideia/sala-handoff/design/`.
 - Workspace Cargo em `sala/` (`crates/protocol`, `crates/core` → bin `sala-core`, depois `crates/ui`).
