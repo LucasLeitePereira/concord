@@ -49,7 +49,7 @@ powershell -File scripts/build-installer.ps1           # gera target/installer/C
 ```
 - **Pronto** = clippy limpo + testes verdes + teste manual do que for visual.
 - `f2_game_mode_end_to_end` e `room_friends_and_call_stats_over_loopback` (f3_settings) às vezes estouram o tempo com a máquina carregada; rode de novo isolado antes de concluir que quebrou.
-- Teste manual com 2 instâncias no mesmo PC: `sala-core.exe --profile a` e `--profile b` (portas 47801/47802, já amigos um do outro em 127.0.0.1). `--synthetic-audio` usa um tom no lugar do microfone. Dados ficam em `%APPDATA%\Sala\[profiles\<p>\]` (config.toml, identidade, logs).
+- Teste manual com 2 instâncias no mesmo PC: `sala-core.exe --profile a` e `--profile b` (portas 47801/47802, já amigos um do outro em 127.0.0.1). `--synthetic-audio` usa um tom no lugar do microfone. Dados ficam em `%APPDATA%\Concord\[profiles\<p>\]` (config.toml, identidade, logs); na primeira resolução, `Sala` é renomeada para `Concord` quando o destino ainda não existe.
 - Release: suba a versão em `installer/concord.iss` (`AppVersion`) e nos `Cargo.toml`, gere o instalador e rode `gh release create vX.Y.Z <setup.exe>`.
 
 ## 5. Regras do projeto (não negociáveis)

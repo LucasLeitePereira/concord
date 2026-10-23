@@ -19,7 +19,9 @@ pub enum ConfigError {
     InvalidProfileName(String),
     #[error("cannot locate the data root: neither SALA_APPDATA nor APPDATA is set")]
     NoDataRoot,
-    #[error("friend {friend:?} has an invalid address {address:?}: expected an IP such as 100.64.0.1")]
+    #[error(
+        "friend {friend:?} has an invalid address {address:?}: expected an IP such as 100.64.0.1"
+    )]
     InvalidAddress { friend: String, address: String },
     #[error("I/O error on {path}: {source}")]
     Io {
@@ -45,7 +47,7 @@ fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> ConfigError + '_ {
 /// Instance isolation: data directory and default port (D-005).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
-    /// `None` = default profile (`%APPDATA%\Sala`).
+    /// `None` = default profile (`%APPDATA%\Concord`).
     pub name: Option<String>,
     pub data_dir: PathBuf,
     pub port: u16,
@@ -63,7 +65,15 @@ impl Profile {
 
     /// Like [`Profile::resolve`] but with an explicit root (stands in for `%APPDATA%`).
     pub fn resolve_in(root: &Path, name: Option<&str>) -> Result<Profile, ConfigError> {
-        let base = root.join("Sala");
+        Self::resolve_in_with_rename(root, name, |from, to| fs::rename(from, to))
+    }
+
+    fn resolve_in_with_rename(
+        root: &Path,
+        name: Option<&str>,
+        rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+    ) -> Result<Profile, ConfigError> {
+        let base = resolve_data_base_with(root, rename);
         match name {
             None => Ok(Profile {
                 name: None,
@@ -93,6 +103,31 @@ impl Profile {
 
     pub fn config_path(&self) -> PathBuf {
         self.data_dir.join("config.toml")
+    }
+}
+
+fn resolve_data_base_with(
+    root: &Path,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> PathBuf {
+    let legacy = root.join("Sala");
+    let current = root.join("Concord");
+    let has_legacy = legacy.exists();
+    let has_current = current.exists();
+
+    match (has_legacy, has_current) {
+        (true, true) => {
+            tracing::warn!(legacy = %legacy.display(), current = %current.display(), "both legacy and current data directories exist; using Concord and leaving Sala untouched");
+            current
+        }
+        (true, false) => match rename(&legacy, &current) {
+            Ok(()) => current,
+            Err(error) => {
+                tracing::warn!(legacy = %legacy.display(), current = %current.display(), %error, "could not migrate data directory; using Sala for this run");
+                legacy
+            }
+        },
+        (false, _) => current,
     }
 }
 
@@ -183,10 +218,17 @@ impl Default for GameModeConfig {
         GameModeConfig {
             auto_detect: true,
             games: vec!["valorant.exe".into(), "cs2.exe".into()],
-            exclude: ["explorer.exe", "chrome.exe", "msedge.exe", "firefox.exe", "vlc.exe", "mpv.exe"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            exclude: [
+                "explorer.exe",
+                "chrome.exe",
+                "msedge.exe",
+                "firefox.exe",
+                "vlc.exe",
+                "mpv.exe",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
             keep_sharing_in_game_mode: false,
         }
     }
@@ -299,7 +341,9 @@ impl Config {
         }
         let v = self.audio.input_volume;
         if v > MAX_INPUT_VOLUME_PERCENT {
-            tracing::warn!("audio.input_volume = {v} is above {MAX_INPUT_VOLUME_PERCENT}; using {MAX_INPUT_VOLUME_PERCENT}");
+            tracing::warn!(
+                "audio.input_volume = {v} is above {MAX_INPUT_VOLUME_PERCENT}; using {MAX_INPUT_VOLUME_PERCENT}"
+            );
             self.audio.input_volume = MAX_INPUT_VOLUME_PERCENT;
         }
         for f in &self.friends {
@@ -352,7 +396,10 @@ impl Config {
         let mut s = String::new();
         s.push_str("# Configuração do Sala. Apague uma linha para voltar ao valor padrão.\n\n");
         s.push_str(&format!("name = {}\n", q(&self.name)));
-        s.push_str(&format!("port = {}   # porta UDP em que você escuta\n\n", self.port));
+        s.push_str(&format!(
+            "port = {}   # porta UDP em que você escuta\n\n",
+            self.port
+        ));
 
         s.push_str("# Amigos: só quem estiver aqui pode conectar. Adicione um bloco [[friends]] por amigo.\n");
         for f in &self.friends {
@@ -360,11 +407,15 @@ impl Config {
             s.push_str(&format!("name = {}\n", q(&f.name)));
             s.push_str(&format!("address = {}\n", q(&f.address)));
             if let Some(p) = f.port {
-                s.push_str(&format!("port = {p}   # porta do amigo (padrão {DEFAULT_PORT})\n"));
+                s.push_str(&format!(
+                    "port = {p}   # porta do amigo (padrão {DEFAULT_PORT})\n"
+                ));
             }
             match &f.fingerprint {
                 Some(fp) => s.push_str(&format!("fingerprint = {}\n", q(fp))),
-                None => s.push_str("# fingerprint é preenchido automaticamente na primeira conexão\n"),
+                None => {
+                    s.push_str("# fingerprint é preenchido automaticamente na primeira conexão\n")
+                }
             }
             s.push('\n');
         }
@@ -376,14 +427,23 @@ impl Config {
         s.push_str("[audio]\n");
         s.push_str(&format!("input_device = {}\n", q(&a.input_device)));
         s.push_str(&format!("output_device = {}\n", q(&a.output_device)));
-        s.push_str(&format!("bitrate_kbps = {}   # de 32 a 128\n", a.bitrate_kbps));
+        s.push_str(&format!(
+            "bitrate_kbps = {}   # de 32 a 128\n",
+            a.bitrate_kbps
+        ));
         let mode = match a.mode {
             AudioMode::VoiceActivity => "voice_activity",
             AudioMode::PushToTalk => "push_to_talk",
         };
         s.push_str(&format!("mode = {}   # ou \"push_to_talk\"\n", q(mode)));
-        s.push_str(&format!("vad_threshold = {}   # dB; ative a voz acima deste nível\n", a.vad_threshold));
-        s.push_str(&format!("input_volume = {}   # % de ganho do microfone, de 0 a 200\n", a.input_volume));
+        s.push_str(&format!(
+            "vad_threshold = {}   # dB; ative a voz acima deste nível\n",
+            a.vad_threshold
+        ));
+        s.push_str(&format!(
+            "input_volume = {}   # % de ganho do microfone, de 0 a 200\n",
+            a.input_volume
+        ));
         s.push_str(&format!("noise_suppression = {}\n\n", a.noise_suppression));
 
         let h = &self.hotkeys;
@@ -429,10 +489,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_ROOT_ID: AtomicU64 = AtomicU64::new(0);
 
     /// Fresh temp root per test (never the real %APPDATA%).
     fn temp_root(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sala-test-{}-{tag}", std::process::id()));
+        let id = TEMP_ROOT_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("sala-test-{}-{tag}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -446,7 +510,7 @@ mod tests {
     fn default_profile_paths_and_port() {
         let root = temp_root("defprof");
         let pr = p(&root, None);
-        assert_eq!(pr.data_dir, root.join("Sala"));
+        assert_eq!(pr.data_dir, root.join("Concord"));
         assert_eq!(pr.port, 47800);
         assert_eq!(pr.name, None);
     }
@@ -454,18 +518,102 @@ mod tests {
     #[test]
     fn profiles_a_b_other_are_distinct() {
         let root = temp_root("profs");
-        let (a, b, c) = (p(&root, Some("a")), p(&root, Some("b")), p(&root, Some("xyz-1")));
+        let (a, b, c) = (
+            p(&root, Some("a")),
+            p(&root, Some("b")),
+            p(&root, Some("xyz-1")),
+        );
         assert_eq!((a.port, b.port, c.port), (47801, 47802, 47803));
         assert_ne!(a.data_dir, b.data_dir);
-        assert_eq!(a.data_dir, root.join("Sala").join("profiles").join("a"));
+        assert_eq!(a.data_dir, root.join("Concord").join("profiles").join("a"));
     }
 
+    #[test]
+    fn migrates_legacy_directory_and_all_contents() {
+        let root = temp_root("migration");
+        let old = root.join("Sala");
+        fs::create_dir_all(old.join("profiles").join("a")).unwrap();
+        fs::write(old.join("config.toml"), "legacy-config").unwrap();
+        fs::write(
+            old.join("profiles").join("a").join("identity"),
+            "identity-data",
+        )
+        .unwrap();
+        fs::write(old.join("logs.txt"), "log-data").unwrap();
+
+        let profile = p(&root, Some("a"));
+        let current = root.join("Concord");
+        assert_eq!(profile.data_dir, current.join("profiles").join("a"));
+        assert!(!old.exists());
+        assert_eq!(
+            fs::read_to_string(current.join("config.toml")).unwrap(),
+            "legacy-config"
+        );
+        assert_eq!(
+            fs::read_to_string(current.join("profiles/a/identity")).unwrap(),
+            "identity-data"
+        );
+        assert_eq!(
+            fs::read_to_string(current.join("logs.txt")).unwrap(),
+            "log-data"
+        );
+    }
+
+    #[test]
+    fn existing_concord_wins_and_leaves_sala_untouched() {
+        let root = temp_root("both-dirs");
+        fs::create_dir_all(root.join("Sala")).unwrap();
+        fs::write(root.join("Sala/keep.txt"), "legacy").unwrap();
+        fs::create_dir_all(root.join("Concord")).unwrap();
+        fs::write(root.join("Concord/keep.txt"), "current").unwrap();
+
+        let profile = p(&root, None);
+        assert_eq!(profile.data_dir, root.join("Concord"));
+        assert_eq!(
+            fs::read_to_string(root.join("Sala/keep.txt")).unwrap(),
+            "legacy"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Concord/keep.txt")).unwrap(),
+            "current"
+        );
+    }
+
+    #[test]
+    fn no_existing_directory_resolves_to_concord_without_creating_it() {
+        let root = temp_root("fresh");
+        let profile = p(&root, None);
+        assert_eq!(profile.data_dir, root.join("Concord"));
+        assert!(!root.join("Concord").exists());
+    }
+
+    #[test]
+    fn failed_migration_falls_back_to_sala_and_keeps_data() {
+        let root = temp_root("migration-fail");
+        let old = root.join("Sala");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("keep.txt"), "legacy").unwrap();
+        let profile = Profile::resolve_in_with_rename(&root, None, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated lock",
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(profile.data_dir, old);
+        assert_eq!(fs::read_to_string(old.join("keep.txt")).unwrap(), "legacy");
+        assert!(!root.join("Concord").exists());
+    }
     #[test]
     fn invalid_profile_names_rejected() {
         let root = temp_root("badname");
         for bad in ["", "A", "a b", "../x", "a/b", "é"] {
             assert!(
-                matches!(Profile::resolve_in(&root, Some(bad)), Err(ConfigError::InvalidProfileName(_))),
+                matches!(
+                    Profile::resolve_in(&root, Some(bad)),
+                    Err(ConfigError::InvalidProfileName(_))
+                ),
                 "{bad:?} should be rejected"
             );
         }
@@ -523,8 +671,18 @@ mod tests {
         assert_eq!(b.friends[0].name, "a");
         assert_eq!(b.friends[0].effective_port(), 47801);
         // negative control: default profile and other names have no friends
-        assert!(Config::load_or_create(&p(&root, None)).unwrap().friends.is_empty());
-        assert!(Config::load_or_create(&p(&root, Some("zz"))).unwrap().friends.is_empty());
+        assert!(
+            Config::load_or_create(&p(&root, None))
+                .unwrap()
+                .friends
+                .is_empty()
+        );
+        assert!(
+            Config::load_or_create(&p(&root, Some("zz")))
+                .unwrap()
+                .friends
+                .is_empty()
+        );
     }
 
     #[test]
@@ -573,10 +731,20 @@ mod tests {
         let d = AudioConfig::default();
         assert_eq!((d.input_volume, d.vad_threshold), (100, -50));
         // Old config without the field (and with the old threshold kept).
-        let old = Config::from_toml_str("[audio]\nvad_threshold = -45\nbitrate_kbps = 64\n", Path::new("x")).unwrap();
-        assert_eq!((old.audio.input_volume, old.audio.vad_threshold), (100, -45));
+        let old = Config::from_toml_str(
+            "[audio]\nvad_threshold = -45\nbitrate_kbps = 64\n",
+            Path::new("x"),
+        )
+        .unwrap();
+        assert_eq!(
+            (old.audio.input_volume, old.audio.vad_threshold),
+            (100, -45)
+        );
         let load = |v: u32| {
-            Config::from_toml_str(&format!("[audio]\ninput_volume = {v}\n"), Path::new("x")).unwrap().audio.input_volume
+            Config::from_toml_str(&format!("[audio]\ninput_volume = {v}\n"), Path::new("x"))
+                .unwrap()
+                .audio
+                .input_volume
         };
         assert_eq!(load(0), 0);
         assert_eq!(load(150), 150);

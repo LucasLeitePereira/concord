@@ -153,3 +153,10 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Ao sair (Fechar a Sala ou Ctrl+C), o núcleo roda `tailscale down` e fecha o `tailscale-ipn.exe`, por pedido do usuário. Com `--profile` (testes), o Tailscale não é tocado, nem na entrada nem na saída.
 - No release, o `sala-core.exe` usa o subsistema `windows` (sem janela de terminal); o log vai só para o arquivo. O build de debug mantém o console.
 - Aviso do SmartScreen ("fornecedor desconhecido"): só some com assinatura de código. Ver AGENTS.md.
+
+## D-019 — T-022: pasta de dados Concord com migração de Sala
+- A raiz padrão passa a ser `%APPDATA%\Concord`; `SALA_APPDATA` continua definindo a raiz de teste. Perfis ficam em `Concord\profiles\<nome>`.
+- Na resolução do perfil, se só `Sala` existir, renomeá-la inteira para `Concord`. Se `Concord` já existir, usá-la sem tocar em `Sala` (e avisar se ambas existirem). Se a renomeação falhar, avisar e usar `Sala` apenas nesta execução, tentando novamente no próximo início.
+- Nunca apagar nem sobrescrever dados.
+- **Alternativa descartada:** copiar arquivos e remover a pasta antiga, pois duplicaria estado e poderia perder dados em falha parcial; renomear a pasta preserva o conteúdo como uma unidade.
+- **Data:** 2026-10-23
