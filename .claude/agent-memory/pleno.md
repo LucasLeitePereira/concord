@@ -19,13 +19,16 @@
 - Buffer de tempo real (jitter etc.): além de perda/reordenação, teste deriva de relógio, pausa do remetente (DTX/mudo) e ressincronização; simule pausa com salto de timestamp (senão o estimador sobe o alvo) e calcule a retomada com `target_delay_ms()`.
 - QUIC/quinn: `accept_bi` do outro lado só retorna quando chega dado no stream → escreva um frame logo após `open_bi`.
 - Diretório temporário de teste no Windows: relógio tem baixa resolução (nanos repetem) → nome com contador atômico.
+- Teste com duas threads/instâncias concorrentes: não presuma quem chega primeiro (ex.: dois `RegisterHotKey` iguais — a recusa sai em qualquer um dos lados). Rode testes de concorrência 5–8× antes de entregar.
 - Helper de teste `wait_for` que descarta eventos não casados esconde contagens: drene e conte antes.
 - cpal 0.18 difere do que o modelo lembra (SampleRate=u32, nome via `description()?.name()`, `device_by_id`; importar trait `cpal::Sample`): consulte `~/.cargo/registry/src/*/cpal-0.18.*/examples`. Build inicial opus+cpal ≈ 2 min.
 - Scripts que escrevem em pastas de entrega não podem apagar pastas onde o usuário já roda coisas: monte em diretório temporário.
 
 - Win32 (`windows-sys`): chamada que reentra no `wndproc` (`DestroyWindow`, `TrackPopupMenu`) quebra `RefCell` emprestado → `try_borrow_mut` e soltar o empréstimo antes; texto de menu vindo do usuário: escapar `&` como `&&`; constantes ausentes (`NIN_BALLOONUSERCLICK` = `WM_USER + 5`) definir à mão.
-- Named pipe tokio: cliente pode levar `ERROR_PIPE_BUSY` (231) entre instâncias → retry curto. Teste que usa exe de example: `cargo test --test X` não compila examples → construa sob demanda ou falhe com mensagem clara.
+- Named pipe tokio: cliente pode levar `ERROR_PIPE_BUSY` (231) entre instâncias → retry curto. Teste que usa exe de example: sempre `cargo build --example X` no helper (incremental, barato) — exe velho quebra quando o protocolo muda.
 - `SetForegroundWindow` de processo lançado pelo harness falha sem Alt sintético antes; `cargo test --lib` não recompila examples (`cargo build --example X` antes do teste `--ignored`).
+
+- Teste manual de auto-detecção: o terminal do harness maximizado conta como jogo → ponha `windowsterminal.exe` no `exclude` do perfil de teste (e restaure). Atalho global sintético: `keybd_event` via `Add-Type` no PowerShell funciona com `RegisterHotKey`.
 
 ## Atalhos / padrões que funcionaram
 - Controle negativo em todo teste de lógica crítica (barato: mutar 1 linha com backup `cp`, rodar `cargo test -p sala-core --lib <mód>`, restaurar); o caso de controle tem de ser negativo só pela regra testada (ex.: `explorer.exe` em tela cheia, não em janela); repetir testes de rede/concorrência N vezes para pegar flakiness.

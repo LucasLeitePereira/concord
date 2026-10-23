@@ -217,32 +217,34 @@ mod tests {
     }
 
     /// Controle negativo: registering the same combination twice (two
-    /// platform threads) must report the refusal as an event.
+    /// platform threads) must report the refusal as an event. The two threads
+    /// register concurrently, so whichever loses the race reports it.
     #[test]
     fn duplicate_registration_reports_failure() {
         let hk: Hotkey = "Ctrl+Alt+Shift+F23".parse().unwrap();
-        let (a, _ea) = Platform::start().unwrap();
+        let (a, mut ea) = Platform::start().unwrap();
         let (b, mut eb) = Platform::start().unwrap();
         a.set_hotkeys(vec![(HotkeyAction::ToggleMute, hk)]);
         b.set_hotkeys(vec![(HotkeyAction::ToggleDeafen, hk)]);
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let ev = loop {
-            match eb.try_recv() {
-                Ok(ev) => break ev,
-                Err(_) => {
-                    assert!(std::time::Instant::now() < deadline, "no failure event");
-                    std::thread::sleep(Duration::from_millis(20));
-                }
+            if let Ok(ev) = ea.try_recv() {
+                break ev;
             }
+            if let Ok(ev) = eb.try_recv() {
+                break ev;
+            }
+            assert!(std::time::Instant::now() < deadline, "no failure event");
+            std::thread::sleep(Duration::from_millis(20));
         };
-        assert_eq!(
-            ev,
-            PlatformEvent::HotkeyRegistrationFailed {
-                action: HotkeyAction::ToggleDeafen,
-                hotkey: hk,
-                error_code: 1409, // ERROR_HOTKEY_ALREADY_REGISTERED
-            }
-        );
+        let PlatformEvent::HotkeyRegistrationFailed { action, hotkey, error_code } = ev else {
+            panic!("unexpected event: {ev:?}");
+        };
+        assert!(matches!(action, HotkeyAction::ToggleMute | HotkeyAction::ToggleDeafen));
+        assert_eq!(hotkey, hk);
+        assert_eq!(error_code, 1409); // ERROR_HOTKEY_ALREADY_REGISTERED
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(ea.try_recv().is_err() && eb.try_recv().is_err(), "only the loser reports");
         drop(a);
         drop(b);
     }

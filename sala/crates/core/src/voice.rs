@@ -384,8 +384,12 @@ impl VoiceEngine {
         self.stats
     }
 
-    /// Starts (or restarts) the receive side of a call with `friend`.
+    /// Starts the receive side of a call with `friend`. An existing peer is kept
+    /// (jitter buffer and volume survive a replacement connection).
     pub fn add_peer(&mut self, friend: &str) -> Result<(), opus::Error> {
+        if self.peers.contains_key(friend) {
+            return Ok(());
+        }
         let peer =
             Peer { jitter: JitterBuffer::default(), decoder: VoiceDecoder::new()?, volume: 1.0 };
         self.peers.insert(friend.to_string(), peer);
@@ -814,5 +818,16 @@ mod tests {
         assert!(st.plc_frames + st.fec_frames >= st.jitter.lost.saturating_sub(3 * 2));
         assert!(st.fec_frames > 0, "isolated holes must use FEC");
         assert!(out_energy > 50.0, "audio must keep flowing: {out_energy}");
+    }
+
+    #[test]
+    fn add_peer_twice_keeps_the_existing_peer() {
+        let mut e = VoiceEngine::new(&AudioConfig::default()).unwrap();
+        e.add_peer("a").unwrap();
+        e.push_datagram("a", 1, 0, vec![0u8; 3], 0);
+        e.set_peer_volume("a", 0.5);
+        e.add_peer("a").unwrap();
+        assert_eq!(e.peer_stats("a").unwrap().jitter.received, 1, "buffer survives");
+        assert_eq!(e.peers["a"].volume, 0.5);
     }
 }

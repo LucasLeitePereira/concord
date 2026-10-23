@@ -245,6 +245,10 @@ pub enum UiToCore {
     HangUp,
     EnterGameMode,
     OpenViewer,
+    /// Show the UI (a second `sala-core` instance sends it; leaves game mode if needed).
+    OpenUi,
+    /// Manual exit from game mode (the UI is relaunched).
+    ExitGameMode,
 }
 
 /// Events/state from the core to the UI (IPC).
@@ -256,6 +260,14 @@ pub enum CoreToUi {
     Status { muted: bool, deafened: bool, game_mode: bool },
     Error { message: String },
     Shutdown,
+    /// A friend's connection became active.
+    PeerConnected { friend: String },
+    PeerDisconnected { friend: String },
+    PeerReconnecting { friend: String, attempt: u32 },
+    /// The `Status` a friend announced (also sent on `GetState`).
+    PeerStatus { friend: String, muted: bool, deafened: bool, game_mode: bool, sharing: bool },
+    /// A friend presented a different certificate than the pinned one.
+    FingerprintMismatch { friend: String },
 }
 
 /// Encodes an IPC message as exactly one JSON line terminated by `\n`.
@@ -475,6 +487,8 @@ mod tests {
             UiToCore::HangUp,
             UiToCore::EnterGameMode,
             UiToCore::OpenViewer,
+            UiToCore::OpenUi,
+            UiToCore::ExitGameMode,
         ];
         for c in cmds {
             let l = encode_ipc_line(&c).unwrap();
@@ -494,6 +508,11 @@ mod tests {
             CoreToUi::Status { muted: true, deafened: true, game_mode: false },
             CoreToUi::Error { message: "x".into() },
             CoreToUi::Shutdown,
+            CoreToUi::PeerConnected { friend: "bia".into() },
+            CoreToUi::PeerDisconnected { friend: "bia".into() },
+            CoreToUi::PeerReconnecting { friend: "bia".into(), attempt: 3 },
+            CoreToUi::PeerStatus { friend: "bia".into(), muted: true, deafened: false, game_mode: true, sharing: false },
+            CoreToUi::FingerprintMismatch { friend: "bia".into() },
         ];
         for ev in evs {
             let l = encode_ipc_line(&ev).unwrap();

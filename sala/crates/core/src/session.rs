@@ -20,10 +20,10 @@ use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
 
 use crate::audio_device::{AudioInput, Sink};
-use crate::config::{Config, Profile};
+use crate::config::{AudioMode, Config, Profile};
 use crate::identity::LocalIdentity;
 use crate::net::{Net, NetError, NetEvent, trust_store_from_config};
-use crate::voice::{SineSource, VoiceEngine};
+use crate::voice::{Activation, SineSource, VoiceEngine};
 
 /// Where captured audio comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,15 +46,79 @@ pub struct VoiceCounters {
     pub late_dropped: u64,
 }
 
-#[derive(Default)]
+/// The four `Status` flags (local or of a friend).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatusFlags {
+    pub muted: bool,
+    pub deafened: bool,
+    pub game_mode: bool,
+    pub sharing: bool,
+}
+
+impl StatusFlags {
+    fn to_message(self) -> ControlMessage {
+        ControlMessage::Status {
+            muted: self.muted,
+            deafened: self.deafened,
+            game_mode: self.game_mode,
+            sharing: self.sharing,
+        }
+    }
+}
+
+/// What the layer above (UI/tray) must hear about, in order, per session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionEvent {
+    Connected { friend: String },
+    Disconnected { friend: String },
+    Reconnecting { friend: String, attempt: u32 },
+    /// A friend announced a new `Status`.
+    PeerStatus { friend: String, status: StatusFlags },
+    /// Chat received (already stored in the history).
+    ChatReceived { friend: String, entry: ChatEntry },
+    FingerprintMismatch { friend: String },
+}
+
+/// Commands for the loop, which owns the `VoiceEngine`.
+enum EngineCmd {
+    Muted(bool),
+    Deafened(bool),
+    Ptt(bool),
+}
+
 struct State {
     history: HashMap<String, Vec<ChatEntry>>,
     voice: HashMap<String, VoiceCounters>,
+    peers: HashMap<String, StatusFlags>,
+    /// Mirror of the engine Activation (same operations, same order), so
+    /// that `local_status()` is exact right after a `set_*` call
+    /// (`inv-deafen-implies-mute` lives in `Activation`).
+    local: Activation,
+    game_mode: bool,
+}
+
+impl State {
+    fn local_status(&self) -> StatusFlags {
+        StatusFlags {
+            muted: self.local.muted(),
+            deafened: self.local.deafened(),
+            game_mode: self.game_mode,
+            sharing: false,
+        }
+    }
 }
 
 struct Shared {
     state: Mutex<State>,
     next_chat_id: AtomicU64,
+    events: mpsc::UnboundedSender<SessionEvent>,
+    friends: Vec<String>,
+}
+
+impl Shared {
+    fn emit(&self, ev: SessionEvent) {
+        let _ = self.events.send(ev);
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -75,6 +139,8 @@ pub struct Session {
     shared: Arc<Shared>,
     stop: watch::Sender<bool>,
     task: Mutex<Option<JoinHandle<()>>>,
+    commands: mpsc::UnboundedSender<EngineCmd>,
+    events: Mutex<Option<mpsc::UnboundedReceiver<SessionEvent>>>,
 }
 
 impl Session {
@@ -95,9 +161,19 @@ impl Session {
             }
         }
         let engine = VoiceEngine::new(&config.audio).map_err(|e| format!("opus: {e}"))?;
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State {
+                history: HashMap::new(),
+                voice: HashMap::new(),
+                peers: HashMap::new(),
+                local: Activation::new(AudioMode::VoiceActivity, 0),
+                game_mode: false,
+            }),
             next_chat_id: AtomicU64::new(unix_ms().saturating_mul(1000)),
+            events: events_tx,
+            friends: config.friends.iter().map(|f| f.name.clone()).collect(),
         });
         let (stop, stop_rx) = watch::channel(false);
         let task = tokio::spawn(run_loop(
@@ -108,6 +184,7 @@ impl Session {
             engine,
             source,
             shared.clone(),
+            cmd_rx,
             stop_rx,
         ));
         Ok(Session {
@@ -115,7 +192,66 @@ impl Session {
             shared,
             stop,
             task: Mutex::new(Some(task)),
+            commands: cmd_tx,
+            events: Mutex::new(Some(events_rx)),
         })
+    }
+
+    /// The stream of [`SessionEvent`]s; the first call gets it, later calls `None`.
+    pub fn take_events(&self) -> Option<mpsc::UnboundedReceiver<SessionEvent>> {
+        lock(&self.events).take()
+    }
+
+    /// Local mute/deafen/game-mode flags (what the friends were told).
+    pub fn local_status(&self) -> StatusFlags {
+        lock(&self.shared.state).local_status()
+    }
+
+    /// Last `Status` announced by a friend; `None` while not connected.
+    pub fn peer_status(&self, friend: &str) -> Option<StatusFlags> {
+        lock(&self.shared.state).peers.get(friend).copied()
+    }
+
+    /// Applies `change` to the local state under the lock, forwards `cmd` to
+    /// the loop (same order) and tells every connected friend.
+    fn change_local(&self, cmd: Option<EngineCmd>, change: impl FnOnce(&mut State)) {
+        let mut state = lock(&self.shared.state);
+        let before = state.local_status();
+        change(&mut state);
+        if let Some(cmd) = cmd {
+            let _ = self.commands.send(cmd);
+        }
+        let after = state.local_status();
+        if after != before {
+            let msg = after.to_message();
+            for f in &self.shared.friends {
+                if self.net.is_connected(f)
+                    && let Err(e) = self.net.send_control(f, msg.clone())
+                {
+                    tracing::warn!(friend = %f, "cannot send status: {e}");
+                }
+            }
+        }
+    }
+
+    /// While deafened the request is remembered and applies when deafen ends.
+    pub fn set_muted(&self, muted: bool) {
+        self.change_local(Some(EngineCmd::Muted(muted)), |s| s.local.set_muted(muted));
+    }
+
+    /// Deafening also mutes; undeafening restores the previous mute state.
+    pub fn set_deafened(&self, deafened: bool) {
+        self.change_local(Some(EngineCmd::Deafened(deafened)), |s| s.local.set_deafened(deafened));
+    }
+
+    /// Push-to-talk key state (only matters when `audio.mode = push_to_talk`).
+    pub fn set_ptt(&self, pressed: bool) {
+        let _ = self.commands.send(EngineCmd::Ptt(pressed));
+    }
+
+    /// Game mode flag, announced to the friends (`Status`).
+    pub fn set_game_mode(&self, on: bool) {
+        self.change_local(None, |s| s.game_mode = on);
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -124,6 +260,11 @@ impl Session {
 
     pub fn is_connected(&self, friend: &str) -> bool {
         self.net.is_connected(friend)
+    }
+
+    /// Configured friends that are connected now, in config order.
+    pub fn connected_friends(&self) -> Vec<String> {
+        self.shared.friends.iter().filter(|f| self.net.is_connected(f)).cloned().collect()
     }
 
     /// Sends a chat message and appends it to the history (`from_self = true`).
@@ -213,6 +354,7 @@ async fn run_loop(
     mut engine: VoiceEngine,
     source: AudioSource,
     shared: Arc<Shared>,
+    mut commands: mpsc::UnboundedReceiver<EngineCmd>,
     mut stop: watch::Receiver<bool>,
 ) {
     // Voice: microphone (device or synthetic) -> engine -> Net; Net -> engine -> sink.
@@ -298,12 +440,29 @@ async fn run_loop(
                 }
                 continue;
             }
+            Some(cmd) = commands.recv() => {
+                let act = engine.activation_mut();
+                match cmd {
+                    EngineCmd::Muted(m) => act.set_muted(m),
+                    EngineCmd::Deafened(d) => act.set_deafened(d),
+                    EngineCmd::Ptt(p) => act.set_ptt(p),
+                }
+                continue;
+            }
             _ = stop.changed() => break,
         };
         match event {
             NetEvent::Connected { friend, fingerprint, newly_pinned } => {
                 tracing::info!(%friend, fingerprint = %fingerprint.to_hex(), newly_pinned, "event: connected");
-                lock(&shared.state).history.insert(friend.clone(), Vec::new());
+                // A repeated Connected (replacement connection) keeps history and voice.
+                let (local, first) = {
+                    let mut st = lock(&shared.state);
+                    let first = !st.history.contains_key(&friend);
+                    if first {
+                        st.history.insert(friend.clone(), Vec::new());
+                    }
+                    (st.local_status(), first)
+                };
                 if let Err(e) = engine.add_peer(&friend) {
                     tracing::warn!(%friend, "cannot start voice: {e}");
                 }
@@ -313,12 +472,7 @@ async fn run_loop(
                     protocol_version: PROTOCOL_VERSION,
                     capabilities: Capabilities::default(),
                 };
-                let status = ControlMessage::Status {
-                    muted: false,
-                    deafened: false,
-                    game_mode: false,
-                    sharing: false,
-                };
+                let status = local.to_message();
                 for msg in [hello, status] {
                     if let Err(e) = net.send_control(&friend, msg) {
                         tracing::warn!(%friend, "cannot send: {e}");
@@ -333,6 +487,9 @@ async fn run_loop(
                         Err(e) => tracing::error!(%friend, "cannot save pinned fingerprint: {e}"),
                     }
                 }
+                if first {
+                    shared.emit(SessionEvent::Connected { friend });
+                }
             }
             NetEvent::Control { friend, msg } => match msg {
                 ControlMessage::Hello { name, app_version, protocol_version, .. } => {
@@ -340,15 +497,20 @@ async fn run_loop(
                 }
                 ControlMessage::Status { muted, deafened, game_mode, sharing } => {
                     tracing::info!(%friend, muted, deafened, game_mode, sharing, "event: Status");
+                    let status = StatusFlags { muted, deafened, game_mode, sharing };
+                    lock(&shared.state).peers.insert(friend.clone(), status);
+                    shared.emit(SessionEvent::PeerStatus { friend, status });
                 }
                 // Never log chat text: id and size only.
                 ControlMessage::Chat { id, text, sent_at } => {
                     tracing::info!(%friend, id, len = text.len(), "event: Chat");
+                    let entry = ChatEntry { id, from_self: false, text, sent_at };
                     lock(&shared.state)
                         .history
-                        .entry(friend)
+                        .entry(friend.clone())
                         .or_default()
-                        .push(ChatEntry { id, from_self: false, text, sent_at });
+                        .push(entry.clone());
+                    shared.emit(SessionEvent::ChatReceived { friend, entry });
                 }
                 ControlMessage::Bye => tracing::info!(%friend, "event: Bye"),
                 other => tracing::info!(%friend, "event: control {other:?}"),
@@ -364,11 +526,17 @@ async fn run_loop(
                 publish_voice_counters(&engine, &shared);
                 engine.remove_peer(&friend);
                 // End of call: the chat history is discarded (inv-chat-never-on-disk).
-                lock(&shared.state).history.remove(&friend);
+                {
+                    let mut st = lock(&shared.state);
+                    st.history.remove(&friend);
+                    st.peers.remove(&friend);
+                }
                 tracing::info!(%friend, "event: disconnected");
+                shared.emit(SessionEvent::Disconnected { friend });
             }
             NetEvent::Reconnecting { friend, attempt, delay } => {
                 tracing::info!(%friend, attempt, ?delay, "event: reconnecting");
+                shared.emit(SessionEvent::Reconnecting { friend, attempt });
             }
             NetEvent::Rejected { addr, reason } => {
                 tracing::warn!(%addr, %reason, "event: rejected");
@@ -380,6 +548,7 @@ async fn run_loop(
                     presented = %presented.to_hex(),
                     "event: FINGERPRINT MISMATCH, connection refused"
                 );
+                shared.emit(SessionEvent::FingerprintMismatch { friend });
             }
         }
     }

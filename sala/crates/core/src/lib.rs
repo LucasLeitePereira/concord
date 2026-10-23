@@ -1,5 +1,7 @@
 //! sala-core library: all business logic lives here; `main.rs` is a thin entry point.
 
+#[cfg(windows)]
+pub mod app;
 pub mod audio_device;
 pub mod cli;
 pub mod config;

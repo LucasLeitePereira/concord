@@ -43,8 +43,8 @@ mapa:
     codigo: ["sala/crates/core/src/config.rs (Profile)", "sala/crates/core/src/cli.rs (CliArgs)"]
     testes: ["sala/crates/core/src/config.rs (mod tests)", "sala/crates/core/src/cli.rs (mod tests)"]
   core-process:
-    codigo: ["sala/crates/core/src/session.rs (Session: laço net→voz/chat, Hello/Status, grava pin TOFU)", "sala/crates/core/src/main.rs (fino: args, perfil, Session::start)"]
-    testes: [sala/crates/core/tests/f1_integration.rs]
+    codigo: ["sala/crates/core/src/session.rs (Session: laço net→voz/chat, Hello/Status, grava pin TOFU; controle set_muted/set_deafened/set_ptt/set_game_mode, StatusFlags, SessionEvent)", "sala/crates/core/src/app.rs (orquestrador D-012: Controller, UiHost, PlatformApi, run, notify_running_instance)", "sala/crates/core/src/main.rs (fino: args, perfil, init_logging com rotação diária, app::run, 2ª instância → OpenUi)"]
+    testes: [sala/crates/core/tests/f1_integration.rs, sala/crates/core/tests/f2_game_mode.rs]
   chat-history:
     codigo: ["sala/crates/core/src/session.rs (State::history, send_chat, chat_history)"]
     testes: [sala/crates/core/tests/f1_integration.rs]
@@ -52,7 +52,8 @@ mapa:
     codigo: ["sala/crates/core/src/game_detector.rs (GameRules, Hysteresis, GameDetector, ForegroundSample, Origin)", "sala/crates/core/src/platform/foreground.rs (probe: janela em 1º plano via Win32)"]
     testes: [sala/crates/core/tests/acceptance_game_detector.rs, "sala/crates/core/src/game_detector.rs (mod tests)", "sala/crates/core/examples/fake_game.rs (jogo falso em tela cheia; teste ignorado probe_sees_fake_game)"]
   game-mode:
-    codigo: ["sala/crates/core/src/game_detector.rs (Transition, override manual D-008)", "sala/crates/core/src/platform/mod.rs (HotkeyAction::ToggleGameMode, MenuItem::ToggleGameMode, TrayState)"]
+    testes: [sala/crates/core/tests/f2_game_mode.rs]
+    codigo: ["sala/crates/core/src/app.rs (Controller: sequência entrar/sair D-012, notificação de chat, tique do detector)", "sala/crates/core/src/game_detector.rs (Transition, override manual D-008)", "sala/crates/core/src/platform/mod.rs (HotkeyAction::ToggleGameMode, MenuItem::ToggleGameMode, TrayState)"]
   platform-win32:
     codigo: ["sala/crates/core/src/platform/mod.rs (Platform, PlatformEvent, TrayState, HotkeyAction, MenuItem)", "sala/crates/core/src/platform/window.rs (thread, janela oculta, bandeja, menu, notificação, sondagem PTT/mouse)", "sala/crates/core/src/platform/hotkey.rs (Hotkey, parser)", sala/crates/core/src/platform/icon.rs]
     testes: ["sala/crates/core/src/platform/*.rs (mod tests)"]
