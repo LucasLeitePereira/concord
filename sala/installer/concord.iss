@@ -31,6 +31,8 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 Name: "desktopicon"; Description: "Criar atalho na Área de Trabalho"; Flags: unchecked
 Name: "startup"; Description: "Iniciar o Concord com o Windows"; Flags: unchecked
 
+Name: "installtailscale"; Description: "Baixar e instalar o Tailscale (necessário para conectar com amigos)"; Check: not TailscaleInstalled
+
 [Files]
 Source: "..\target\release\sala-core.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\sala-ui.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -46,6 +48,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Concord"""; Flags: runhidden; StatusMsg: "Configurando o firewall..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Concord"" dir=in action=allow protocol=UDP localport=47800 program=""{app}\sala-core.exe"""; Flags: runhidden; StatusMsg: "Configurando o firewall..."
+Filename: "{tmp}\tailscale-setup.exe"; StatusMsg: "Instalando o Tailscale..."; Flags: waituntilterminated skipifsilent; Tasks: installtailscale; Check: GotTailscaleSetup
 Filename: "{app}\sala-core.exe"; Description: "Abrir o Concord"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
@@ -72,15 +75,67 @@ begin
   Result := True;
 end;
 
+var
+  DownloadPage: TDownloadWizardPage;
+  TailscaleDownloaded: Boolean;
+
+function TailscaleInstalled: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{commonpf}\Tailscale\tailscale.exe')) or
+            FileExists(ExpandConstant('{commonpf32}\Tailscale\tailscale.exe'));
+end;
+
+function GotTailscaleSetup: Boolean;
+begin
+  Result := TailscaleDownloaded;
+end;
+
+function OnDownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
+begin
+  Result := True;
+end;
+
+procedure InitializeWizard;
+begin
+  DownloadPage := CreateDownloadPage('Baixando o Tailscale',
+    'Aguarde enquanto o instalador do Tailscale é baixado...', @OnDownloadProgress);
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (CurPageID = wpReady) and WizardIsTaskSelected('installtailscale') then
+  begin
+    TailscaleDownloaded := False;
+    DownloadPage.Clear;
+    DownloadPage.Add('https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe', 'tailscale-setup.exe', '');
+    DownloadPage.Show;
+    try
+      try
+        DownloadPage.Download;
+        TailscaleDownloaded := True;
+      except
+        SuppressibleMsgBox('Não foi possível baixar o Tailscale. O Concord será instalado mesmo assim; ' +
+          'instale o Tailscale depois em https://tailscale.com/download.', mbInformation, MB_OK, IDOK);
+      end;
+    finally
+      DownloadPage.Hide;
+    end;
+  end;
+end;
+
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  if (CurPageID = wpFinished) and
-     not FileExists(ExpandConstant('{commonpf}\Tailscale\tailscale.exe')) and
-     not FileExists(ExpandConstant('{commonpf32}\Tailscale\tailscale.exe')) then
+  if CurPageID = wpFinished then
   begin
     WizardForm.FinishedLabel.Height := ScaleY(110);
-    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
-      'O Concord usa o Tailscale para conectar você aos amigos. ' +
-      'Instale em https://tailscale.com/download e entre na mesma rede do seu amigo.';
+    if TailscaleInstalled then
+      WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
+        'Abra o Tailscale, entre na sua conta e aceite o convite do seu amigo ' +
+        '(ou convide-o) para ficarem na mesma rede.'
+    else
+      WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
+        'O Concord usa o Tailscale para conectar você aos amigos. ' +
+        'Instale em https://tailscale.com/download e entre na mesma rede do seu amigo.';
   end;
 end;
