@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use sala_core::cli::CliArgs;
-use sala_core::config::{Config, Profile};
+use sala_core::config::{Config, MigrationOutcome, Profile};
 use sala_core::identity::LocalIdentity;
 use sala_core::session::AudioSource;
 use sala_protocol::PROTOCOL_VERSION;
@@ -50,8 +50,14 @@ fn init_logging(profile: &Profile) -> Option<tracing_appender::non_blocking::Wor
 #[tokio::main]
 async fn run() -> Result<(), String> {
     let args = CliArgs::parse(std::env::args().skip(1))?;
-    let profile = Profile::resolve(args.profile.as_deref()).map_err(|e| e.to_string())?;
+    let (profile, migration) = Profile::resolve_with_outcome(args.profile.as_deref()).map_err(|e| e.to_string())?;
     let _log_guard = init_logging(&profile);
+    match migration {
+        MigrationOutcome::Migrated => tracing::info!("migrated legacy Sala data directory to Concord"),
+        MigrationOutcome::Fallback => tracing::warn!("could not migrate Sala data directory; using it for this run and will retry next startup"),
+        MigrationOutcome::BothExist => tracing::warn!("both Sala and Concord data directories exist; using Concord and leaving Sala untouched"),
+        MigrationOutcome::None => {}
+    }
     let config = Config::load_or_create(&profile).map_err(|e| e.to_string())?;
     let identity = LocalIdentity::load_or_create(&profile.data_dir).map_err(|e| e.to_string())?;
     tracing::info!(
