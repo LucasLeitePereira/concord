@@ -165,3 +165,8 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Os binários gerados e referências operacionais passam a concord.exe e concord-ui.exe; pacotes/crates, pipe, prefixo de log, variáveis SALA_* e identificadores internos permanecem com os nomes Sala.
 - O instalador substitui binários antigos durante atualização e encerra processos antigos e novos antes de instalar.
 - **Data:** 2026-10-23
+
+## D-021 — T-024: supressão local com RNNoise
+- O `sala-core` usa `nnnoiseless` 0.5.2 sem features opcionais de I/O; o denoiser processa cada frame mono 48 kHz de 20 ms em dois blocos de 480 amostras, entre ganho e medição/VAD.
+- A opção persistida `audio.noise_suppression` instala o processador no início e o liga/desliga ao vivo em `apply_audio`; a UI só envia `UpdateConfig{audio}` e reflete o estado confirmado pelo core.
+- **Data:** 2026-10-23

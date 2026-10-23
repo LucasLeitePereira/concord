@@ -230,7 +230,8 @@ export function initSettings({ state, send, h, icon }) {
     const connected = state.link === 'connected' && !!cfg;
     if (capturing && !connected) capturing = null;
     const mode = cfg ? cfg.audio.mode : null;
-    const sig = JSON.stringify([cfg && cfg.hotkeys, mode, capturing, connected]);
+    const noiseSuppression = cfg ? cfg.audio.noise_suppression : false;
+    const sig = JSON.stringify([cfg && cfg.hotkeys, mode, noiseSuppression, capturing, connected]);
     if (sig === hkSignature) return;
     hkSignature = sig;
     for (const [id, m] of [['mode-vad', 'voice_activity'], ['mode-ptt', 'push_to_talk']]) {
@@ -238,6 +239,8 @@ export function initSettings({ state, send, h, icon }) {
       b.setAttribute('aria-checked', String(mode === m));
       b.disabled = !connected;
     }
+    $('noise-suppression').checked = noiseSuppression;
+    $('noise-suppression').disabled = !connected;
     const rows = cfg ? HOTKEYS.map(({ field, label }) => hotkeyRow(field, label, cfg.hotkeys[field])) : [];
     if (cfg && mode === 'push_to_talk') {
       rows.push(hotkeyRow('push_to_talk', 'Tecla para falar', cfg.hotkeys.push_to_talk));
@@ -258,6 +261,12 @@ export function initSettings({ state, send, h, icon }) {
       send({ type: 'UpdateConfig', audio: { ...cfg.audio, mode } });
     });
   }
+
+  $('noise-suppression').addEventListener('change', () => {
+    const cfg = state.config;
+    if (!cfg || cfg.audio.noise_suppression === $('noise-suppression').checked) return;
+    send({ type: 'UpdateConfig', audio: { ...cfg.audio, noise_suppression: $('noise-suppression').checked } });
+  });
 
   function renderSettings() {
     const cfg = state.config;

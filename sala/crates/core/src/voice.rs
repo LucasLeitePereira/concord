@@ -10,6 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use opus::{Application, Bitrate, Channels, Decoder, Encoder};
+use nnnoiseless::DenoiseState;
 
 use crate::config::{AudioConfig, AudioMode};
 use crate::jitter::{JitterBuffer, JitterStats, Pop};
@@ -185,10 +186,46 @@ impl Resampler {
     }
 }
 
-/// Extension point for noise suppression (`nnnoiseless`, off by default, not wired yet).
+/// Extension point for noise suppression (`nnnoiseless`, off by default).
 /// Runs on every captured 20 ms frame before activation and encoding.
 pub trait FrameProcessor: Send {
     fn process(&mut self, frame: &mut [f32]);
+}
+
+/// RNNoise frame processor. The model expects 16-bit-scaled samples at 48 kHz.
+pub struct RnnDenoiser {
+    state: Box<DenoiseState<'static>>,
+}
+
+impl RnnDenoiser {
+    pub fn new() -> Self {
+        Self { state: DenoiseState::new() }
+    }
+}
+
+impl Default for RnnDenoiser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameProcessor for RnnDenoiser {
+    fn process(&mut self, frame: &mut [f32]) {
+        if frame.len() != FRAME_SAMPLES {
+            return;
+        }
+        let mut input = [0.0; DenoiseState::FRAME_SIZE];
+        let mut output = [0.0; DenoiseState::FRAME_SIZE];
+        for chunk in frame.as_chunks_mut::<{ DenoiseState::FRAME_SIZE }>().0 {
+            for (dst, src) in input.iter_mut().zip(chunk.iter()) {
+                *dst = (*src * 32768.0).clamp(-32768.0, 32767.0);
+            }
+            self.state.process_frame(&mut output, &input);
+            for (dst, src) in chunk.iter_mut().zip(output.iter()) {
+                *dst = (*src / 32768.0).clamp(-1.0, 1.0);
+            }
+        }
+    }
 }
 
 /// One Opus packet ready for a `MediaDatagram::Audio { stream: Voice, .. }`.
@@ -444,7 +481,7 @@ impl VoiceEngine {
         Ok(Self {
             activation: Activation::new(cfg.mode, cfg.vad_threshold),
             encoder: VoiceEncoder::new(cfg.bitrate_kbps)?,
-            denoiser: None,
+            denoiser: cfg.noise_suppression.then(|| Box::new(RnnDenoiser::new()) as Box<dyn FrameProcessor>),
             peers: HashMap::new(),
             stats: VoiceStats::default(),
             loopback: None,
@@ -461,6 +498,13 @@ impl VoiceEngine {
         self.activation.set_mode(cfg.mode);
         self.activation.set_threshold_db(cfg.vad_threshold);
         self.input_gain = input_gain(cfg.input_volume);
+        if cfg.noise_suppression {
+            if self.denoiser.is_none() {
+                self.denoiser = Some(Box::new(RnnDenoiser::new()));
+            }
+        } else {
+            self.denoiser = None;
+        }
         self.encoder.set_bitrate(cfg.bitrate_kbps)
     }
 
@@ -656,6 +700,76 @@ mod tests {
 
     fn engine() -> VoiceEngine {
         VoiceEngine::new(&AudioConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn rnnoise_reduces_low_level_white_noise() {
+        let mut denoiser = RnnDenoiser::new();
+        let mut state = 0x1234_5678u32;
+        let mut input_energy = 0.0;
+        let mut output_energy = 0.0;
+        for frame_index in 0..50 {
+            let mut input: Vec<f32> = (0..FRAME_SAMPLES)
+                .map(|_| {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    ((state >> 8) as f32 / 16_777_215.0 * 2.0 - 1.0) * 0.03
+                })
+                .collect();
+            let original = input.clone();
+            denoiser.process(&mut input);
+            assert_eq!(input.len(), FRAME_SAMPLES);
+            assert!(input.iter().all(|sample| (-1.0..=1.0).contains(sample)));
+            if frame_index >= 40 {
+                input_energy += rms(&original).powi(2);
+                output_energy += rms(&input).powi(2);
+            }
+        }
+        let reduction_db = 10.0 * (output_energy / input_energy).log10();
+        let input_dbfs = 10.0 * (input_energy / 10.0).log10();
+        let output_dbfs = 10.0 * (output_energy / 10.0).log10();
+        println!("white noise: {input_dbfs:.1} dBFS -> {output_dbfs:.1} dBFS ({reduction_db:.1} dB reduction)");
+        assert!(reduction_db <= -10.0, "noise reduction was {reduction_db:.1} dB");
+    }
+
+    #[test]
+    fn rnnoise_keeps_a_440_hz_tone_nonzero() {
+        let mut denoiser = RnnDenoiser::new();
+        let mut source = SineSource::new(440.0, -20.0);
+        let mut final_rms = 0.0;
+        for _ in 0..50 {
+            let mut frame = source.next_frame();
+            denoiser.process(&mut frame);
+            assert_eq!(frame.len(), FRAME_SAMPLES);
+            assert!(frame.iter().all(|sample| (-1.0..=1.0).contains(sample)));
+            final_rms = rms(&frame);
+        }
+        println!("440 Hz tone output: {:.1} dBFS", 20.0 * final_rms.log10());
+        assert!(final_rms > 1.0e-5, "RNNoise removed the tone: RMS {final_rms}");
+    }
+
+    #[test]
+    fn audio_config_toggles_rnnoise_without_resetting_an_enabled_state() {
+        let mut cfg = AudioConfig { noise_suppression: true, ..AudioConfig::default() };
+        let mut engine = VoiceEngine::new(&cfg).unwrap();
+        assert!(engine.denoiser.is_some(), "enabled at engine creation");
+        let state_ptr = engine.denoiser.as_deref().unwrap() as *const dyn FrameProcessor;
+        engine.apply_audio(&cfg).unwrap();
+        assert_eq!(state_ptr, engine.denoiser.as_deref().unwrap() as *const dyn FrameProcessor);
+
+        cfg.noise_suppression = false;
+        engine.apply_audio(&cfg).unwrap();
+        assert!(engine.denoiser.is_none(), "disabled live");
+        cfg.noise_suppression = true;
+        engine.apply_audio(&cfg).unwrap();
+        assert!(engine.denoiser.is_some(), "re-enabled live");
+    }
+
+    #[test]
+    fn rnnoise_ignores_unexpected_frame_sizes() {
+        let mut denoiser = RnnDenoiser::new();
+        let mut frame = vec![2.0; FRAME_SAMPLES - 1];
+        denoiser.process(&mut frame);
+        assert_eq!(frame, vec![2.0; FRAME_SAMPLES - 1]);
     }
 
     #[test]

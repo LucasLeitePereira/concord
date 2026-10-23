@@ -33,7 +33,7 @@ sala/                      workspace Cargo (nomes internos ainda "sala-*")
   crates/ui/               bin concord-ui.exe: Tauri 2, frontend HTML/CSS/JS puro em web/ (sem npm) — D-016
   installer/concord.iss    Inno Setup (firewall UDP 47800, atalhos, baixa o Tailscale se faltar)
   scripts/                 build-installer.ps1, measure*.ps1
-ontologia/                 domínio (dominio.yaml), mapa conceito→código (mapa-codigo.yaml), decisões D-001..D-020 (decisoes.md)
+ontologia/                 domínio (dominio.yaml), mapa conceito→código (mapa-codigo.yaml), decisões D-001..D-021 (decisoes.md)
 metricas/                  experimento sobre o efeito da ontologia (coletar.py lê transcripts do Claude Code; opcional fora dele)
 .claude/                   agentes e memória do Claude Code; .claude/agent-memory/pleno.md tem armadilhas úteis a qualquer agente
 ```
@@ -68,8 +68,7 @@ Feito: F1 (rede, voz, identidade), F2 (núcleo residente, modo jogo, bandeja, IP
 
 **Próximos passos, por prioridade (decididos pelo usuário):**
 1. **Ajustes de áudio**: dispositivos de entrada e saída (`ListAudioDevices`), sensibilidade com linha arrastável sobre o medidor (`SetMicMeter`/`MicLevel`, `UpdateConfig{audio}`) e botão **"Ouvir minha voz"** (loopback local que passa pelo mesmo ganho e VAD do envio; IPC novo `SetMicTest{on}`). Hoje o limiar fica em `config.toml` (`vad_threshold`; −49 ficou bom no microfone do usuário).
-2. Supressão de ruído: o ponto de extensão existe em `voice.rs` (`set_denoiser`), sem implementação; usar o crate `nnnoiseless`.
-3. F4: compartilhamento de tela (WGC + encoder de hardware via FFmpeg LGPL + visualizador wgpu). F5: mesa de sons. README e CI (GitHub Actions) também ficaram para depois.
+2. F4: compartilhamento de tela (WGC + encoder de hardware via FFmpeg LGPL + visualizador wgpu). F5: mesa de sons. README e CI (GitHub Actions) também ficaram para depois.
 Aviso do Windows (SmartScreen, "fornecedor desconhecido"): o instalador não é assinado. Para tirar o aviso é preciso um certificado de assinatura de código (por exemplo, Certum Open Source, para projeto público) e `signtool`/`SignTool=` no Inno Setup; a reputação no SmartScreen ainda leva algum tempo de downloads para se formar. A decisão e o custo são do usuário.
 
 Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo, teste real entre dois PCs via Tailscale, e o instalador baixando o Tailscale (nunca executado de fato).
