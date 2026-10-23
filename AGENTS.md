@@ -21,7 +21,7 @@ git reset --hard checkpoint-2026-10-23
 ```
 sala/                      workspace Cargo (nomes internos ainda "sala-*")
   crates/protocol/         tipos de rede (bincode) e IPC (JSON por linha); cliente do pipe (feature ipc-client)
-  crates/core/             bin sala-core.exe: núcleo residente (voz, rede QUIC, bandeja/atalhos Win32, modo jogo, IPC)
+  crates/core/             bin concord.exe: núcleo residente (voz, rede QUIC, bandeja/atalhos Win32, modo jogo, IPC)
     src/app.rs             orquestrador único (Controller): atalho, menu, IPC e detector passam por aqui (D-012)
     src/session.rs         sessão com amigos, eventos, chat em memória
     src/voice.rs           captura/reprodução cpal, Opus, VAD, ganho, medidor, jitter buffer
@@ -30,10 +30,10 @@ sala/                      workspace Cargo (nomes internos ainda "sala-*")
     src/game_detector.rs   detector de jogo com histerese (D-008)
     src/platform/          Win32 (bandeja, atalhos globais, PTT, notificação, janela em foco) — D-009
     tests/                 integração: f1_integration, f2_game_mode, f3_settings, ipc, net
-  crates/ui/               bin sala-ui.exe: Tauri 2, frontend HTML/CSS/JS puro em web/ (sem npm) — D-016
+  crates/ui/               bin concord-ui.exe: Tauri 2, frontend HTML/CSS/JS puro em web/ (sem npm) — D-016
   installer/concord.iss    Inno Setup (firewall UDP 47800, atalhos, baixa o Tailscale se faltar)
   scripts/                 build-installer.ps1, measure*.ps1
-ontologia/                 domínio (dominio.yaml), mapa conceito→código (mapa-codigo.yaml), decisões D-001..D-016 (decisoes.md)
+ontologia/                 domínio (dominio.yaml), mapa conceito→código (mapa-codigo.yaml), decisões D-001..D-020 (decisoes.md)
 metricas/                  experimento sobre o efeito da ontologia (coletar.py lê transcripts do Claude Code; opcional fora dele)
 .claude/                   agentes e memória do Claude Code; .claude/agent-memory/pleno.md tem armadilhas úteis a qualquer agente
 ```
@@ -42,14 +42,14 @@ metricas/                  experimento sobre o efeito da ontologia (coletar.py l
 Pré-requisitos: Windows 11, Rust stable MSVC, CMake ≥ 3.x (para `audiopus_sys`), WebView2 (já vem no Win11), Inno Setup 6 para o instalador.
 ```bash
 cd sala
-cargo build --release                                  # gera target/release/sala-core.exe e sala-ui.exe
+cargo build --release                                  # gera target/release/concord.exe e concord-ui.exe
 cargo clippy --workspace --all-targets -- -D warnings  # obrigatório limpo
 cargo test --workspace                                 # obrigatório verde (rode separado do clippy: o build do Tauri é lento)
 powershell -File scripts/build-installer.ps1           # gera target/installer/Concord-Setup-<versão>.exe
 ```
 - **Pronto** = clippy limpo + testes verdes + teste manual do que for visual.
 - `f2_game_mode_end_to_end` e `room_friends_and_call_stats_over_loopback` (f3_settings) às vezes estouram o tempo com a máquina carregada; rode de novo isolado antes de concluir que quebrou.
-- Teste manual com 2 instâncias no mesmo PC: `sala-core.exe --profile a` e `--profile b` (portas 47801/47802, já amigos um do outro em 127.0.0.1). `--synthetic-audio` usa um tom no lugar do microfone. Dados ficam em `%APPDATA%\Concord\[profiles\<p>\]` (config.toml, identidade, logs); na primeira resolução, `Sala` é renomeada para `Concord` quando o destino ainda não existe.
+- Teste manual com 2 instâncias no mesmo PC: `concord.exe --profile a` e `--profile b` (portas 47801/47802, já amigos um do outro em 127.0.0.1). `--synthetic-audio` usa um tom no lugar do microfone. Dados ficam em `%APPDATA%\Concord\[profiles\<p>\]` (config.toml, identidade, logs); na primeira resolução, `Sala` é renomeada para `Concord` quando o destino ainda não existe.
 - Release: suba a versão em `installer/concord.iss` (`AppVersion`) e nos `Cargo.toml`, gere o instalador e rode `gh release create vX.Y.Z <setup.exe>`.
 
 ## 5. Regras do projeto (não negociáveis)
@@ -57,7 +57,7 @@ powershell -File scripts/build-installer.ps1           # gera target/installer/C
 - Sem chamadas externas além do P2P entre amigos (exceção: o instalador baixa o Tailscale oficial).
 - Sem hooks, injeção de DLL ou overlay em jogos. Atalhos usam `RegisterHotKey` e o PTT faz polling (D-009).
 - Protocolo **só cresce por adição**. Campo novo em mensagem de rede bincode vai **no fim** e com desserialização tolerante a ausência. A UI ignora variantes IPC desconhecidas.
-- No modo jogo **só o `sala-core` roda**: a UI é encerrada e reaberta na saída (D-012).
+- No modo jogo **só o `concord.exe` roda**: a UI é encerrada e reaberta na saída (D-012).
 - Código, identificadores e logs em inglês; textos de interface em pt-BR com os nomes Mutar-se/Desmutar-se e Silenciar/Voltar a ouvir (D-013).
 - Toda lógica nova tem teste, de preferência com controle negativo (o teste falha sem a correção). Bug corrigido ganha teste de regressão.
 - Antes de mudar arquitetura, protocolo ou formato persistido, leia `ontologia/decisoes.md` e registre uma decisão nova (D-0NN) curta.
@@ -67,18 +67,16 @@ powershell -File scripts/build-installer.ps1           # gera target/installer/C
 Feito: F1 (rede, voz, identidade), F2 (núcleo residente, modo jogo, bandeja, IPC), F3 parcial (UI: tela Principal; Ajustes com Seu endereço, Seu nome, Amigos, Atalhos e modo de voz), F6 parcial (instalador Inno Setup, release no GitHub).
 
 **Próximos passos, por prioridade (decididos pelo usuário):**
-1. **Renomear para Concord** no que é visível e nos executáveis: `concord.exe` e `concord-ui.exe`; pasta de dados `%APPDATA%\Concord`, migrando `Sala` → `Concord` uma vez. Os crates internos podem continuar `sala-*`. Ajustar `ui_process.rs` (`resolve_ui_exe`), `crates/ui/src/main.rs` (`core_exe_next_to`), `config.rs` (pasta), textos da bandeja em `platform/window.rs` e o instalador.
-2. **Ajustes de áudio**: dispositivos de entrada e saída (`ListAudioDevices`), sensibilidade com linha arrastável sobre o medidor (`SetMicMeter`/`MicLevel`, `UpdateConfig{audio}`) e botão **"Ouvir minha voz"** (loopback local que passa pelo mesmo ganho e VAD do envio; IPC novo `SetMicTest{on}`). Hoje o limiar fica em `config.toml` (`vad_threshold`; −49 ficou bom no microfone do usuário).
-3. Supressão de ruído: o ponto de extensão existe em `voice.rs` (`set_denoiser`), sem implementação; usar o crate `nnnoiseless`.
-4. F4: compartilhamento de tela (WGC + encoder de hardware via FFmpeg LGPL + visualizador wgpu). F5: mesa de sons. README e CI (GitHub Actions) também ficaram para depois.
-
+1. **Ajustes de áudio**: dispositivos de entrada e saída (`ListAudioDevices`), sensibilidade com linha arrastável sobre o medidor (`SetMicMeter`/`MicLevel`, `UpdateConfig{audio}`) e botão **"Ouvir minha voz"** (loopback local que passa pelo mesmo ganho e VAD do envio; IPC novo `SetMicTest{on}`). Hoje o limiar fica em `config.toml` (`vad_threshold`; −49 ficou bom no microfone do usuário).
+2. Supressão de ruído: o ponto de extensão existe em `voice.rs` (`set_denoiser`), sem implementação; usar o crate `nnnoiseless`.
+3. F4: compartilhamento de tela (WGC + encoder de hardware via FFmpeg LGPL + visualizador wgpu). F5: mesa de sons. README e CI (GitHub Actions) também ficaram para depois.
 Aviso do Windows (SmartScreen, "fornecedor desconhecido"): o instalador não é assinado. Para tirar o aviso é preciso um certificado de assinatura de código (por exemplo, Certum Open Source, para projeto público) e `signtool`/`SignTool=` no Inno Setup; a reputação no SmartScreen ainda leva algum tempo de downloads para se formar. A decisão e o custo são do usuário.
 
 Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo, teste real entre dois PCs via Tailscale, e o instalador baixando o Tailscale (nunca executado de fato).
 
 ## 7. Armadilhas conhecidas
 Ver `.claude/agent-memory/pleno.md` (vale para qualquer modelo). As principais:
-- Git Bash converte `/F` e caminhos com `\\` em argumentos de `.exe`: use `taskkill //F` ou lance via `cmd //c`. Não use `taskkill /IM sala-core.exe` enquanto testes rodam, porque mata os processos dos testes.
+- Git Bash converte `/F` e caminhos com `\\` em argumentos de `.exe`: use `taskkill //F` ou lance via `cmd //c`. Não use `taskkill /IM concord.exe` enquanto testes rodam, porque mata os processos dos testes.
 - Nunca dois `cargo build` pesados ao mesmo tempo no mesmo `target/`. A máquina é um i5 de 4 núcleos com 8 GB.
 - O terminal maximizado conta como jogo no teste manual de detecção. Os executáveis do próprio Concord já são excluídos no código.
 - cpal 0.18 tem API diferente da que os modelos lembram: consulte os exemplos no registry local.

@@ -1,4 +1,4 @@
-# Mede RAM e CPU dos processos sala-* (PowerShell 5.1 compativel).
+# Mede RAM e CPU dos processos Concord (PowerShell 5.1 compativel).
 # Uso: .\measure.ps1 [-Seconds 30] [-Interval 1] [-ProcessId 1234,5678] [-Json]
 # CPU e calculada pela variacao de TotalProcessorTime entre amostras:
 #   cpu_maquina = delta_cpu / (delta_tempo * nProcessadoresLogicos)  (% da maquina inteira)
@@ -19,12 +19,12 @@ function Get-Alvos {
     if ($ProcessId.Count -gt 0) {
         return @(Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
     }
-    return @(Get-Process -Name 'sala-*' -ErrorAction SilentlyContinue)
+    return @(Get-Process -Name 'concord*' -ErrorAction SilentlyContinue)
 }
 
 $alvos = Get-Alvos
 if ($alvos.Count -eq 0) {
-    Write-Warning 'Nenhum processo sala-* encontrado.'
+    Write-Warning 'Nenhum processo Concord encontrado.'
     if ($Json) { '[]' }
     exit 0
 }

@@ -99,7 +99,7 @@ fn nid(hwnd: HWND) -> NOTIFYICONDATAW {
 
 impl State {
     fn tooltip(&self) -> String {
-        let mut s = String::from("Sala");
+        let mut s = String::from("Concord");
         if self.tray.game_mode {
             s.push_str(" · modo jogo");
         }
@@ -153,7 +153,7 @@ impl State {
         }
         let mut n = nid(self.hwnd);
         n.uFlags = NIF_INFO;
-        let title = if sender.trim().is_empty() { "Sala" } else { sender };
+        let title = if sender.trim().is_empty() { "Concord" } else { sender };
         copy_wide(&mut n.szInfoTitle, title);
         copy_wide(&mut n.szInfo, NOTIFICATION_BODY);
         n.dwInfoFlags = NIIF_INFO;
@@ -310,7 +310,7 @@ fn escape_amp(s: &str) -> String {
 
 /// Menu content in the order of `ModoJogo.dc.html`.
 pub(super) fn menu_lines(tray: &TrayState, shortcuts: &[(HotkeyAction, Hotkey)]) -> Vec<MenuLine> {
-    let header = if tray.game_mode { "Sala · Modo jogo" } else { "Sala" };
+    let header = if tray.game_mode { "Concord · Modo jogo" } else { "Concord" };
     let call = match &tray.call {
         Some(c) => escape_amp(c),
         None => "Fora de chamada".to_string(),
@@ -325,9 +325,9 @@ pub(super) fn menu_lines(tray: &TrayState, shortcuts: &[(HotkeyAction, Hotkey)])
         MenuLine::Item(MenuItem::ToggleMute, label(mute, HotkeyAction::ToggleMute, shortcuts)),
         MenuLine::Item(MenuItem::ToggleDeafen, label(deafen, HotkeyAction::ToggleDeafen, shortcuts)),
         MenuLine::Item(MenuItem::ToggleGameMode, label(game, HotkeyAction::ToggleGameMode, shortcuts)),
-        MenuLine::Item(MenuItem::OpenSala, "Abrir a Sala".to_string()),
+        MenuLine::Item(MenuItem::OpenSala, "Abrir o Concord".to_string()),
         MenuLine::Separator,
-        MenuLine::Item(MenuItem::QuitSala, "Fechar a Sala".to_string()),
+        MenuLine::Item(MenuItem::QuitSala, "Fechar o Concord".to_string()),
     ]
 }
 
@@ -567,15 +567,15 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                MenuLine::Info("Sala · Modo jogo".into()),
+                MenuLine::Info("Concord · Modo jogo".into()),
                 MenuLine::Info("Em chamada com Pedro · 18 ms".into()),
                 MenuLine::Separator,
                 MenuLine::Item(MenuItem::ToggleMute, "Mutar-se\tCtrl+Shift+M".into()),
                 MenuLine::Item(MenuItem::ToggleDeafen, "Silenciar\tCtrl+Shift+D".into()),
                 MenuLine::Item(MenuItem::ToggleGameMode, "Sair do modo jogo\tCtrl+Shift+G".into()),
-                MenuLine::Item(MenuItem::OpenSala, "Abrir a Sala".into()),
+                MenuLine::Item(MenuItem::OpenSala, "Abrir o Concord".into()),
                 MenuLine::Separator,
-                MenuLine::Item(MenuItem::QuitSala, "Fechar a Sala".into()),
+                MenuLine::Item(MenuItem::QuitSala, "Fechar o Concord".into()),
             ]
         );
     }
@@ -584,7 +584,7 @@ mod tests {
     fn menu_labels_follow_state() {
         let tray = TrayState { muted: true, deafened: true, ..Default::default() };
         let lines = menu_lines(&tray, &[]);
-        assert_eq!(lines[0], MenuLine::Info("Sala".into()));
+        assert_eq!(lines[0], MenuLine::Info("Concord".into()));
         assert_eq!(lines[1], MenuLine::Info("Fora de chamada".into()));
         assert_eq!(lines[3], MenuLine::Item(MenuItem::ToggleMute, "Desmutar-se".into()));
         assert_eq!(lines[4], MenuLine::Item(MenuItem::ToggleDeafen, "Voltar a ouvir".into()));

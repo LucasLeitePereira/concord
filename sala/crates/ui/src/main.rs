@@ -39,9 +39,9 @@ fn resolve_pipe(args: &[String], default: impl FnOnce() -> String) -> (String, b
     }
 }
 
-/// `sala-core.exe` in the same folder as `exe`.
+/// `concord.exe` in the same folder as `exe`.
 fn core_exe_next_to(exe: &Path) -> PathBuf {
-    exe.parent().map(Path::to_path_buf).unwrap_or_default().join("sala-core.exe")
+    exe.parent().map(Path::to_path_buf).unwrap_or_default().join("concord.exe")
 }
 
 /// Checks that `msg` is a known command and turns it into a line.
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn core_exe_is_next_to_ui() {
-        assert_eq!(core_exe_next_to(Path::new(r"C:\sala\sala-ui.exe")), PathBuf::from(r"C:\sala\sala-core.exe"));
+        assert_eq!(core_exe_next_to(Path::new(r"C:\Concord\concord-ui.exe")), PathBuf::from(r"C:\Concord\concord.exe"));
     }
 
     #[test]

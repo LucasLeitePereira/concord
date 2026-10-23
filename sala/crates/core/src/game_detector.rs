@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn rules_never_treat_own_exes_as_game() {
         // Even listed in `games` and covering the monitor.
-        let r = GameRules::new(&["sala-ui.exe".into(), "Concord.exe".into()], &[]);
+        let r = GameRules::new(&["sala-ui.exe".into(), "sala-core.exe".into(), "Concord.exe".into(), "concord-ui.exe".into()], &[]);
         for p in ["C:\\Concord\\sala-ui.exe", "C:\\x\\SALA-CORE.EXE", "D:/c/concord.exe", "concord-ui.exe"] {
             assert!(!r.is_game(Some(&s(p, true))), "{p}");
             assert!(!r.is_game(Some(&s(p, false))), "{p}");

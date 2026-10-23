@@ -13,7 +13,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
-UninstallDisplayIcon={app}\sala-core.exe
+UninstallDisplayIcon={app}\concord.exe
 UninstallDisplayName={#AppName}
 SetupIconFile=..\crates\ui\icons\icon.ico
 OutputDir=..\target\installer
@@ -33,23 +33,27 @@ Name: "startup"; Description: "Iniciar o Concord com o Windows"; Flags: unchecke
 
 Name: "installtailscale"; Description: "Baixar e instalar o Tailscale (necessário para conectar com amigos)"; Check: not TailscaleInstalled
 
+[InstallDelete]
+Type: files; Name: "{app}\sala-core.exe"
+Type: files; Name: "{app}\sala-ui.exe"
+
 [Files]
-Source: "..\target\release\sala-core.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\target\release\sala-ui.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\concord.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\concord-ui.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\crates\ui\icons\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Concord"; Filename: "{app}\sala-core.exe"; IconFilename: "{app}\icon.ico"
-Name: "{autodesktop}\Concord"; Filename: "{app}\sala-core.exe"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
+Name: "{autoprograms}\Concord"; Filename: "{app}\concord.exe"; IconFilename: "{app}\icon.ico"
+Name: "{autodesktop}\Concord"; Filename: "{app}\concord.exe"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Concord"; ValueData: """{app}\sala-core.exe"""; Flags: uninsdeletevalue; Tasks: startup
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Concord"; ValueData: """{app}\concord.exe"""; Flags: uninsdeletevalue; Tasks: startup
 
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Concord"""; Flags: runhidden; StatusMsg: "Configurando o firewall..."
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Concord"" dir=in action=allow protocol=UDP localport=47800 program=""{app}\sala-core.exe"""; Flags: runhidden; StatusMsg: "Configurando o firewall..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Concord"" dir=in action=allow protocol=UDP localport=47800 program=""{app}\concord.exe"""; Flags: runhidden; StatusMsg: "Configurando o firewall..."
 Filename: "{tmp}\tailscale-setup.exe"; StatusMsg: "Instalando o Tailscale..."; Flags: waituntilterminated skipifsilent; Tasks: installtailscale; Check: GotTailscaleSetup
-Filename: "{app}\sala-core.exe"; Description: "Abrir o Concord"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\concord.exe"; Description: "Abrir o Concord"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Concord"""; Flags: runhidden; RunOnceId: "DelFirewallRule"
@@ -59,7 +63,9 @@ procedure KillApp;
 var
   rc: Integer;
 begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM concord-ui.exe', '', SW_HIDE, ewWaitUntilTerminated, rc);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM sala-ui.exe', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM concord.exe', '', SW_HIDE, ewWaitUntilTerminated, rc);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM sala-core.exe', '', SW_HIDE, ewWaitUntilTerminated, rc);
 end;
 

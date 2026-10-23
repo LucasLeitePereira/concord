@@ -160,3 +160,8 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Nunca apagar nem sobrescrever dados.
 - **Alternativa descartada:** copiar arquivos e remover a pasta antiga, pois duplicaria estado e poderia perder dados em falha parcial; renomear a pasta preserva o conteúdo como uma unidade.
 - **Data:** 2026-10-23
+
+## D-020 — T-023: executáveis e nome visível Concord
+- Os binários gerados e referências operacionais passam a concord.exe e concord-ui.exe; pacotes/crates, pipe, prefixo de log, variáveis SALA_* e identificadores internos permanecem com os nomes Sala.
+- O instalador substitui binários antigos durante atualização e encerra processos antigos e novos antes de instalar.
+- **Data:** 2026-10-23

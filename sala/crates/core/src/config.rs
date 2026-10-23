@@ -417,7 +417,7 @@ impl Config {
     /// Parsing the result yields an equal `Config`.
     pub fn to_commented_toml(&self) -> String {
         let mut s = String::new();
-        s.push_str("# Configuração do Sala. Apague uma linha para voltar ao valor padrão.\n\n");
+        s.push_str("# Configuração do Concord. Apague uma linha para voltar ao valor padrão.\n\n");
         s.push_str(&format!("name = {}\n", q(&self.name)));
         s.push_str(&format!("port = {}   # porta UDP em que você escuta\n\n", self.port));
 

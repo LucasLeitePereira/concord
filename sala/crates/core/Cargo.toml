@@ -9,7 +9,7 @@ name = "sala_core"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sala-core"
+name = "concord"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,4 +1,4 @@
-# Roteiro reproduzivel: mede o sala-core no modo jogo (T-014, spec secao 8).
+# Roteiro reproduzivel: mede o Concord core no modo jogo (T-014, spec secao 8).
 # Uso: .\measure-game-mode.ps1 [-Seconds 60] [-Settle 5] [-NoBuild]
 # Sobe os perfis a e b (audio sintetico), manda EnterGameMode ao perfil a e mede o nucleo a.
 param(
@@ -11,15 +11,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $raiz = Split-Path -Parent $PSScriptRoot          # sala/
 $rel = Join-Path $raiz 'target\release'
-$core = Join-Path $rel 'sala-core.exe'
+$core = Join-Path $rel 'concord.exe'
 $fakeUi = Join-Path $rel 'examples\fake_ui.exe'
 $iniciados = @()
 $backups = @{}   # config.toml original de cada perfil (restaurado no finally)
 
 function Encerrar-Tudo {
-    # Tudo que a Sala deixou vivo: nucleos, UI de mentira e o que subimos.
+    # Tudo que o Concord deixou vivo: nucleos, UI de mentira e o que subimos.
     foreach ($p in $iniciados) { try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { } }
-    Get-Process -Name 'sala-*', 'fake_ui' -ErrorAction SilentlyContinue |
+    Get-Process -Name 'concord*', 'fake_ui' -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
@@ -36,7 +36,7 @@ function Esperar-Pipe([string]$nome, [int]$timeoutSeg) {
 # e faria o nucleo entrar no modo jogo sozinho, antes do EnterGameMode explicito.
 function Desligar-AutoDetect {
     foreach ($perfil in 'a', 'b') {
-        $cfg = Join-Path $env:APPDATA "Sala\profiles\$perfil\config.toml"
+        $cfg = Join-Path $env:APPDATA "Concord\profiles\$perfil\config.toml"
         if (-not (Test-Path $cfg)) { continue }   # primeira execucao: o padrao vale
         $original = [IO.File]::ReadAllText($cfg)
         $backups[$cfg] = $original
@@ -49,7 +49,7 @@ try {
     if (-not $NoBuild) {
         Push-Location $raiz
         try {
-            & cargo build --release -p sala-core --bin sala-core --example fake_ui
+            & cargo build --release -p sala-core --bin concord --example fake_ui
             if ($LASTEXITCODE -ne 0) { throw "cargo build falhou ($LASTEXITCODE)" }
         } finally { Pop-Location }
     }
@@ -74,7 +74,7 @@ try {
     }
     Start-Sleep -Seconds 2
     Write-Host "Antes do modo jogo:"
-    Get-Process -Name 'sala-*', 'fake_ui' -ErrorAction SilentlyContinue | Format-Table Id, ProcessName -AutoSize | Out-String | Write-Host
+    Get-Process -Name 'concord*', 'fake_ui' -ErrorAction SilentlyContinue | Format-Table Id, ProcessName -AutoSize | Out-String | Write-Host
 
     # Uma linha JSON por mensagem no pipe do perfil a.
     $cli = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipeA, [System.IO.Pipes.PipeDirection]::InOut)
@@ -98,12 +98,12 @@ try {
     if ($nucleoA.HasExited) { throw 'nucleo a encerrou antes da medicao' }
     & (Join-Path $PSScriptRoot 'measure.ps1') -Seconds $Seconds -Interval 1 -ProcessId $nucleoA.Id
 
-    Write-Host "Processos vivos (sala-* / fake_ui) apos a medicao:"
-    $vivos = @(Get-Process -Name 'sala-*', 'fake_ui' -ErrorAction SilentlyContinue)
+    Write-Host "Processos vivos (Concord / fake_ui) apos a medicao:"
+    $vivos = @(Get-Process -Name 'concord*', 'fake_ui' -ErrorAction SilentlyContinue)
     $vivos | Format-Table Id, ProcessName -AutoSize | Out-String | Write-Host
     # Processos da instancia a: o proprio nucleo + filhos dele (a UI e lancada pelo nucleo).
     $filhos = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($nucleoA.Id)" -ErrorAction SilentlyContinue)
-    $nomesA = @('sala-core') + @($filhos | Where-Object { $_.Name -ne 'conhost.exe' } | ForEach-Object { $_.Name -replace '\.exe$', '' })
+    $nomesA = @('concord') + @($filhos | Where-Object { $_.Name -ne 'conhost.exe' } | ForEach-Object { $_.Name -replace '\.exe$', '' })
     Write-Host ("Processos da instancia a no modo jogo: {0} ({1})" -f $nomesA.Count, ($nomesA -join ', '))
     $cli.Dispose()
 } finally {

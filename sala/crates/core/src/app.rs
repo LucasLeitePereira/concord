@@ -64,7 +64,7 @@ pub enum Trigger {
     Hotkey,
     /// Tray menu entry "Entrar/Sair do modo jogo".
     Menu,
-    /// Tray menu entry "Abrir a Sala".
+    /// Tray menu entry "Abrir o Concord".
     TrayClick,
     /// Click on the chat notification.
     Notification,

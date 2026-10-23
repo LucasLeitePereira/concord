@@ -6,7 +6,7 @@ license.workspace = true
 build = "build.rs"
 
 [[bin]]
-name = "sala-ui"
+name = "concord-ui"
 path = "src/main.rs"
 
 [dependencies]

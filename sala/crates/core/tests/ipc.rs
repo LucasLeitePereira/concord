@@ -178,6 +178,6 @@ async fn ui_process_ignoring_shutdown_is_killed_after_timeout() {
 
 #[tokio::test]
 async fn missing_ui_exe_is_a_typed_error() {
-    let r = UiProcess::spawn(std::path::Path::new(r"C:\definitely\not\here\sala-ui.exe"), "x");
+    let r = UiProcess::spawn(std::path::Path::new(r"C:\definitely\not\here\concord-ui.exe"), "x");
     assert!(matches!(r, Err(UiError::ExeNotFound(_))));
 }

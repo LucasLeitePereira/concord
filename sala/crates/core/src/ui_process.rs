@@ -34,13 +34,16 @@ pub struct UiProcess {
     child: Child,
 }
 
-/// `SALA_UI_EXE`, else `sala-ui.exe` next to the current executable.
+/// `SALA_UI_EXE`, else `concord-ui.exe` next to the current executable.
+fn ui_exe_next_to(exe: &Path) -> PathBuf {
+    exe.parent().map(Path::to_path_buf).unwrap_or_default().join("concord-ui.exe")
+}
+
 pub fn resolve_ui_exe() -> PathBuf {
     if let Some(p) = std::env::var_os("SALA_UI_EXE") {
         return PathBuf::from(p);
     }
-    let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
-    dir.join("sala-ui.exe")
+    ui_exe_next_to(&std::env::current_exe().unwrap_or_default())
 }
 
 impl UiProcess {
@@ -87,5 +90,16 @@ impl UiProcess {
         let _ = self.child.kill();
         let _ = self.child.wait();
         ShutdownOutcome::Killed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_concord_ui_next_to_core() {
+        let core = Path::new(r"C:\Concord\concord.exe");
+        assert_eq!(ui_exe_next_to(core), PathBuf::from(r"C:\Concord\concord-ui.exe"));
     }
 }
