@@ -56,6 +56,46 @@ Quem atualiza é o sênior, ao fim de cada fase, a partir de `tarefas.jsonl`. Co
   - Com a economia mediana de US$ 0,06 por tarefa, o break-even fica em **≈ 14 tarefas de código**. A F1 teve 9 tarefas de dev.
   - Esse cálculo ainda ignora o custo dos bugs a mais do braço ONTO. Na F1 eles custaram uma tarefa de correção (T-004b, US$ 0,28).
 
+### Par 4 — T-010 histerese do detector de jogo (F2, com 2º A/A)
+
+Ordem sorteada: CTRL primeiro, depois ONTO e A/A. Os testes ocultos tinham 16 casos, 7 deles adversariais (nome de arquivo por sufixo, alternância, override manual, `set_config`). Rótulos da revisão cega: X = ONTO, Y = A/A, Z = CTRL.
+
+| métrica | Δ ONTO − CTRL | ruído A/A (T-010) |
+|---|---|---|
+| custo US$ | −0,041 (0,307 × 0,348) | 0,006 |
+| duração s | −67 | 127 |
+| tool calls | 0 (7 × 7) | 0 |
+| chamadas até a 1ª edição | 0 | 1 |
+| tokens até a 1ª edição | +2,6 k | 57 k |
+| bugs na revisão cega | +1 (baixo) | 1 |
+| violações de invariante | 0 | 0 |
+| % testes ocultos | 0 (100 × 100; A/A 100) | 0 |
+
+- **Teto de novo, mesmo com os casos adversariais.** O esqueleto trazia o contrato inteiro de D-008 nos comentários de doc, então os dois braços tinham a mesma informação para os casos difíceis. Nesse desenho, o A/B mede onde a informação está, e não se ela existe.
+- **Bug do ONTO:** uma entrada vazia em `games` casava com um `exe_path` vazio. É robustez que nenhuma spec cobre; o CTRL e o A/A filtraram entradas vazias. O revisor ranqueou CTRL > ONTO > A/A, com a mesma semântica nos três. Fez o merge o CTRL.
+- **O Δ de custo deste par (−0,041) é maior que o ruído do próprio A/A (0,006), mas menor que o ruído do A/A da T-004 (0,054).** Duração, chamadas e tokens até a 1ª edição ficaram dentro do ruído.
+
+**Agregado com 4 pares** (`coletar.py ab`):
+
+| métrica | mediana do Δ | ONTO melhor/pior/empate | p (sinais) | p (Wilcoxon exato) |
+|---|---|---|---|---|
+| custo | −0,051 US$ | 4/0/0 | 0,125 | 0,125 |
+| tool calls | −2 | 3/0/1 | 0,25 | 0,25 |
+| bugs na revisão | +1 | 0/3/1 | 0,25 | 0,25 |
+| % testes ocultos | 0 | 0/0/4 | 1,0 | 1,0 |
+
+**Leitura atualizada:**
+- **H1:** a direção se mantém (ONTO mais barato nos 4 pares, −12 % no par 4). Com n = 4 ainda não há significância. O ganho está todo no custo, não em chamadas até a 1ª edição.
+- **H2:** segue não suportada. ONTO teve mais bugs na revisão em 3 de 4 pares. No par 4 a diferença (1) fica dentro do ruído do A/A, porque o A/A também diferiu do ONTO em 1 bug.
+- **H3:**
+  - Custo da ontologia: US$ 0,86 (F1) + US$ 0,33 (F2) ≈ **US$ 1,19**.
+  - Com a economia mediana de US$ 0,051 por tarefa, o break-even fica em **≈ 23 tarefas**. Até aqui houve 14 tarefas de dev, 9 na F1 e 5 na F2.
+  - O custo dos bugs extras do ONTO continua fora da conta.
+
+### Ajustes para o par 5 (UI)
+- **Esqueleto sem o contrato nos comentários.** O contrato fica só onde o braço o receberia: na ontologia para o ONTO, no trecho da spec para o CTRL. Assim o par testa a fonte da informação.
+- **Testes ocultos que pegam robustez fora da spec**, como entradas vazias e valores-limite da config. Nos 4 pares, foi aí que o ONTO perdeu.
+
 ### Efeito colateral útil: o experimento melhorou a ontologia
 A revisão cega achou lacunas, e todas viraram decisões ou invariantes (ontologia v2):
 - D-006: underrun/DTX;
@@ -106,3 +146,55 @@ As tarefas seguintes que usaram a v2 (T-004b) relataram "ajudou: s", com 0 diver
 - par A/B da histerese do modo jogo;
 - par A/B de uma tela de UI, onde se espera pouco ganho da ontologia;
 - medir se o custo da ontologia cai depois da curadoria inicial (US$/tarefa de manutenção).
+
+### F2 — núcleo residente e modo jogo (fechada em 2026-10-22)
+
+**Entrega:**
+- `game_detector` (regras por nome de arquivo, histerese 2/3, override manual, D-008).
+- Camada Win32 sem hooks: bandeja, menu, atalhos, PTT, leitura da janela em 1º plano e notificação só com o remetente (D-009, D-011).
+- IPC por named pipe com instância única e ciclo de vida da UI (D-010).
+- Orquestrador do modo jogo (D-012), logs com rotação diária, `measure.ps1`.
+- 101 testes de lib e 10 suítes de integração, incluindo `f2_game_mode` (UI encerrada antes do `Status`, voz continua, chat vira notificação sem texto). `clippy -D warnings` limpo.
+- **Metas §8 no modo jogo**, medidas com áudio sintético e sink nulo:
+
+| métrica | medido | meta |
+|---|---|---|
+| working set | 3,8 MB | < 50 MB |
+| private bytes | 7,0 MB | < 50 MB |
+| CPU | 0,87 % da máquina (8 threads), ≈ 1,2 % em 6 núcleos | < 2 % |
+| processos da Sala | só `sala-core` | só `sala-core` |
+
+**Tarefas fora do A/B** (observacionais):
+
+| tarefa | US$ | min | tool calls | ajudou | bugs | divergências |
+|---|---|---|---|---|---|---|
+| T-012 Win32 | 1,55 | 13,6* | 37 | s | 1 (teste com corrida, achado e corrigido pelo sênior no fechamento) | 0 |
+| T-011 IPC/UI | 0,47 | 5,7 | 17 | s | 0 | 0 |
+| T-013 integração | 2,03 | 29,2 | 58 | s | 1 médio (revisão: `Connected` repetido zerava chat e par de voz) | 0 |
+| T-014 medição | 0,64 | 13,2 | 24 | s | 0 | 0 |
+
+\* A duração registrada da T-012 (146 min) inclui a espera pelo limite de uso da conta. Os 13,6 min são o tempo de trabalho: 12 min na 1ª rodada e 3 na retomada.
+
+**Leitura:**
+- **A hipótese da F1 se confirmou na prática: o valor está nas decisões.** As 5 decisões novas (D-008 a D-012) foram escritas *antes* de delegar e serviram de contrato. Os 4 relatórios citam as decisões, e não os conceitos, como o que guiou o desenho. Houve 0 divergências código×ontologia.
+  - O que as decisões fizeram, um documento de design comum também faria. A parte "ontologia" propriamente dita (glossário, relações) quase não aparece nos relatórios.
+- **Os bugs reais da fase vieram de interação entre módulos**, não de lacuna da ontologia:
+  - um evento duplicado herdado da F1;
+  - um teste com corrida de threads.
+  - Os dois só apareceram na revisão e na suíte rodada pelo sênior. Rodar a suíte completa na revisão continua indispensável: o agente relatou "tudo verde" na T-013, e a corrida falhou na 1ª execução do sênior.
+- **O custo de manter a ontologia caiu:** US$ 0,33 na F2 contra US$ 0,86 na F1 (que incluía a criação), com 4 turnos de edição contados. A conta é aproximada: parte das edições foi feita por scripts Python no scratchpad, e o coletor pode não ter contado todas.
+- **Memória que não pegou:** "não edite código por heredoc ou Python" estava na memória do pleno desde a F1, e 4 das 5 tarefas da F2 bateram de novo nesse erro. A regra subiu para a definição do agente (`.claude/agents/pleno.md`). Na F3, medir se a recorrência cai.
+
+**Totais da F2:**
+
+| | US$ |
+|---|---|
+| Agentes, dev (inclui os 3 braços do par) | 5,65 |
+| Medição (revisão cega) | 0,45 |
+| Orquestrador (sessão principal) | 6,19 |
+
+**Ajustes para a F3:**
+- par A/B da UI com o esqueleto sem contrato nos comentários;
+- testes ocultos de robustez fora da spec;
+- medir a recorrência do erro de heredoc depois da mudança no agente;
+- validar à mão a voz com dispositivo real e a medição de CPU com cpal real.

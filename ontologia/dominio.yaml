@@ -262,7 +262,7 @@ invariantes:
   - id: inv-game-mode-only-core
     conceitos: [game-mode, core-process, ui-process]
     regra: "No modo jogo o único processo da Sala é sala-core: a UI recebeu Shutdown e o término foi confirmado; o visualizador foi destruído. Voz continua."
-    testado_em: "sala/crates/core/tests/f2_game_mode.rs (UiShutdown(Exited) antes de StatusSent; voz A→B cresce após a entrada; visualizador: pendente F4)"
+    testado_em: "sala/crates/core/tests/f2_game_mode.rs (UiShutdown(Exited) antes de StatusSent; voz A→B cresce após a entrada; visualizador: pendente F4), sala/scripts/measure-game-mode.ps1 (só sala-core vivo na instância)"
   - id: inv-ui-no-business-logic
     conceitos: [ui-process, ipc-message]
     regra: "sala-ui não contém lógica de negócio; todo número exibido (latência, encoder, upload, tempo) vem do núcleo via IPC."

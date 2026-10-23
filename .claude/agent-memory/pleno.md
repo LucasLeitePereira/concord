@@ -28,7 +28,7 @@
 - Named pipe tokio: cliente pode levar `ERROR_PIPE_BUSY` (231) entre instâncias → retry curto. Teste que usa exe de example: sempre `cargo build --example X` no helper (incremental, barato) — exe velho quebra quando o protocolo muda.
 - `SetForegroundWindow` de processo lançado pelo harness falha sem Alt sintético antes; `cargo test --lib` não recompila examples (`cargo build --example X` antes do teste `--ignored`).
 
-- Teste manual de auto-detecção: o terminal do harness maximizado conta como jogo → ponha `windowsterminal.exe` no `exclude` do perfil de teste (e restaure). Atalho global sintético: `keybd_event` via `Add-Type` no PowerShell funciona com `RegisterHotKey`.
+- Teste manual de auto-detecção: o terminal do harness maximizado conta como jogo → ponha `windowsterminal.exe` no `exclude` do perfil de teste (e restaure), ou desligue `auto_detect` com backup do `config.toml`. `Start-Process -WindowStyle Hidden` cria `conhost` filho: filtre ao contar processos. Atalho global sintético: `keybd_event` via `Add-Type` no PowerShell funciona com `RegisterHotKey`.
 
 ## Atalhos / padrões que funcionaram
 - Controle negativo em todo teste de lógica crítica (barato: mutar 1 linha com backup `cp`, rodar `cargo test -p sala-core --lib <mód>`, restaurar); o caso de controle tem de ser negativo só pela regra testada (ex.: `explorer.exe` em tela cheia, não em janela); repetir testes de rede/concorrência N vezes para pegar flakiness.

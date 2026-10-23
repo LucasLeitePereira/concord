@@ -60,3 +60,5 @@ mapa:
   ui-process:
     codigo: ["sala/crates/core/src/ui_process.rs (UiProcess, resolve_ui_exe, ShutdownOutcome)", "sala/crates/core/examples/fake_ui.rs (UI falsa para testes)"]
     testes: [sala/crates/core/tests/ipc.rs]
+  medicao-desempenho:
+    codigo: ["sala/scripts/measure.ps1 (RAM/CPU dos processos sala-*; -Seconds -Interval -ProcessId -Json)", "sala/scripts/measure-game-mode.ps1 (roteiro: release, perfis a/b sintéticos, EnterGameMode pelo pipe, mede o núcleo a, try/finally)"]
