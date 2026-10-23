@@ -76,7 +76,8 @@ Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo, t
 ## 7. Armadilhas conhecidas
 Ver `.claude/agent-memory/pleno.md` (vale para qualquer modelo). As principais:
 - Git Bash converte `/F` e caminhos com `\\` em argumentos de `.exe`: use `taskkill //F` ou lance via `cmd //c`. Não use `taskkill /IM concord.exe` enquanto testes rodam, porque mata os processos dos testes.
-- Nunca dois `cargo build` pesados ao mesmo tempo no mesmo `target/`. A máquina é um i5 de 4 núcleos com 8 GB.
+- Nunca dois `cargo build` pesados ao mesmo tempo no mesmo `target/`.
+- Nunca dois agentes ou harnesses trabalhando ao mesmo tempo no mesmo checkout: um commit ou build de um mistura o trabalho do outro (aconteceu na v0.1.3). Use `git worktree` se precisar de paralelismo. A máquina é um i5 de 4 núcleos com 8 GB.
 - O terminal maximizado conta como jogo no teste manual de detecção. Os executáveis do próprio Concord já são excluídos no código.
 - cpal 0.18 tem API diferente da que os modelos lembram: consulte os exemplos no registry local.
 - `cargo build --example X` não compila o binário principal. Para o release completo, use `cargo build --release` sem filtro.
