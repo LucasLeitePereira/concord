@@ -71,8 +71,41 @@ export function initSettings({ state, send, h, icon }) {
       mine && confirmRow(f));
   }
 
+  let copiedTimer = null;
+  let copied = false;
+
+  function renderAddress(addr) {
+    const row = $('my-address');
+    if (row.dataset.addr === String(addr)) return; // não recriar (preserva foco e "Copiado")
+    row.dataset.addr = String(addr);
+    if (!addr) {
+      row.replaceChildren(h('span', {}, 'Tailscale não encontrado.'));
+      $('my-address-hint').textContent = 'Instale em tailscale.com/download e entre na mesma rede do seu amigo.';
+      return;
+    }
+    const btn = h('button', {
+      type: 'button', class: 'btn neutral', 'data-key': 'copy-addr',
+      onclick: async () => {
+        try {
+          await navigator.clipboard.writeText(addr);
+          copied = true;
+        } catch {
+          copied = false;
+          $('fr-error').textContent = 'Não consegui copiar; selecione o endereço e copie com Ctrl+C.';
+          return;
+        }
+        btn.textContent = 'Copiado';
+        clearTimeout(copiedTimer);
+        copiedTimer = setTimeout(() => { btn.textContent = 'Copiar'; copied = false; }, 2000);
+      },
+    }, 'Copiar');
+    row.replaceChildren(h('span', { class: 'addr-value' }, addr), btn);
+    $('my-address-hint').textContent = 'Mande para o seu amigo colar em Adicionar amigo.';
+  }
+
   function renderSettings() {
     const cfg = state.config;
+    if (cfg) renderAddress(cfg.my_address || null);
     const input = $('name-input');
     if (cfg && cfg.name !== shownName) {
       shownName = cfg.name;

@@ -391,6 +391,10 @@ pub enum CoreToUi {
         game_mode: GameModeSettings,
         hotkeys: HotkeySettings,
         friends: Vec<FriendInfo>,
+        /// This PC's Tailscale `ip[:port]` (port only when not the default); `None` when
+        /// Tailscale was not found.
+        #[serde(default)]
+        my_address: Option<String>,
     },
     /// Device names; `"default"` first.
     AudioDevices { inputs: Vec<String>, outputs: Vec<String> },
@@ -668,6 +672,7 @@ mod tests {
                     toggle_game_mode: "Ctrl+Shift+G".into(),
                 },
                 friends: vec![FriendInfo { name: "bia".into(), address: "100.64.0.2".into(), port: Some(1), verified: true }],
+                my_address: Some("100.64.0.9".into()),
             },
             CoreToUi::AudioDevices { inputs: vec!["default".into(), "Mic".into()], outputs: vec!["default".into()] },
             CoreToUi::MicLevel { db: -42.5 },

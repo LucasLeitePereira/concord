@@ -328,7 +328,7 @@ impl<P: PlatformApi> Controller<P> {
     }
 
     fn broadcast_config(&self) {
-        self.host.ipc.broadcast(&settings::config_message(&self.session.config()));
+        self.host.ipc.broadcast(&settings::config_message_with_address(&self.session.config()));
     }
 
     /// Validates everything first (nothing is applied on an error), then saves and applies
@@ -458,7 +458,7 @@ impl<P: PlatformApi> Controller<P> {
             }
             UiToCore::HangUp => self.set_in_room(false),
             UiToCore::GetConfig => {
-                self.host.ipc.send_to(client, &settings::config_message(&self.session.config()));
+                self.host.ipc.send_to(client, &settings::config_message_with_address(&self.session.config()));
             }
             UiToCore::UpdateConfig { name, audio, game_mode, hotkeys } => {
                 match self.update_config(name, audio, game_mode, hotkeys) {
@@ -528,6 +528,7 @@ impl<P: PlatformApi> Controller<P> {
                 ipc.broadcast(&CoreToUi::PeerConnected { friend });
                 self.platform.set_tray(self.tray_state());
             }
+            SessionEvent::ConfigChanged => self.broadcast_config(),
             SessionEvent::Disconnected { friend } => {
                 ipc.broadcast(&CoreToUi::PeerDisconnected { friend });
                 self.platform.set_tray(self.tray_state());

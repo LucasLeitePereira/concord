@@ -86,6 +86,8 @@ pub enum SessionEvent {
     /// Chat received (already stored in the history).
     ChatReceived { friend: String, entry: ChatEntry },
     FingerprintMismatch { friend: String },
+    /// The session itself changed the config (a fingerprint was pinned, TOFU).
+    ConfigChanged,
     /// Every 2 s for each connected friend.
     CallStats { friend: String, rtt_ms: u32, since_secs: u64 },
     /// Microphone level while the UI meter is on (~every 50 ms).
@@ -656,13 +658,20 @@ async fn run_loop(
                     }
                 }
                 if newly_pinned {
-                    let mut config = lock(&shared.config);
-                    if let Some(f) = config.friends.iter_mut().find(|f| f.name == friend) {
-                        f.fingerprint = Some(fingerprint.to_hex());
-                        match config.save(&shared.profile) {
-                            Ok(()) => tracing::info!(%friend, "fingerprint pinned (TOFU) and saved"),
-                            Err(e) => tracing::error!(%friend, "cannot save pinned fingerprint: {e}"),
+                    let mut pinned = false;
+                    {
+                        let mut config = lock(&shared.config);
+                        if let Some(f) = config.friends.iter_mut().find(|f| f.name == friend) {
+                            f.fingerprint = Some(fingerprint.to_hex());
+                            pinned = true;
+                            match config.save(&shared.profile) {
+                                Ok(()) => tracing::info!(%friend, "fingerprint pinned (TOFU) and saved"),
+                                Err(e) => tracing::error!(%friend, "cannot save pinned fingerprint: {e}"),
+                            }
                         }
+                    }
+                    if pinned {
+                        shared.emit(SessionEvent::ConfigChanged);
                     }
                 }
                 if first {

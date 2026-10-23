@@ -338,9 +338,6 @@ let lastRoom = null;
 let lastChatPeer = null;
 function onCore(msg) {
   const what = reduce(state, msg);
-  // O núcleo grava a impressão digital na 1ª conexão sem reenviar o Config: pedir de novo
-  // para o selo "Identidade verificada" não ficar velho.
-  if (msg && msg.type === 'PeerConnected') send({ type: 'GetConfig' });
   if (what === 'error') {
     toast(`Núcleo: ${msg.message}`);
     return;

@@ -63,7 +63,39 @@ pub fn config_message(c: &Config) -> CoreToUi {
                 verified: f.fingerprint.is_some(),
             })
             .collect(),
+        my_address: None,
     }
+}
+
+/// True for IPv4 in the Tailscale CGNAT range 100.64.0.0/10.
+pub fn is_tailscale_ip(ip: std::net::Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 100 && (64..=127).contains(&o[1])
+}
+
+/// `ip` or `ip:port` (port only when not the default), as friends type it.
+pub fn format_my_address(ip: std::net::Ipv4Addr, port: u16) -> String {
+    if port == crate::config::DEFAULT_PORT { ip.to_string() } else { format!("{ip}:{port}") }
+}
+
+/// This PC's Tailscale IPv4: the source address the OS would use to reach the Tailscale
+/// DNS (100.100.100.100). A UDP `connect` sends nothing.
+fn detect_tailscale_ip() -> Option<std::net::Ipv4Addr> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("100.100.100.100:53").ok()?;
+    match sock.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if is_tailscale_ip(ip) => Some(ip),
+        _ => None,
+    }
+}
+
+/// [`config_message`] plus `my_address`, which needs a (cheap) look at the network.
+pub fn config_message_with_address(c: &Config) -> CoreToUi {
+    let mut msg = config_message(c);
+    if let CoreToUi::Config { my_address, .. } = &mut msg {
+        *my_address = detect_tailscale_ip().map(|ip| format_my_address(ip, c.port));
+    }
+    msg
 }
 
 /// Validates the audio section. Out-of-range values are errors (not clamped), so the
@@ -177,6 +209,18 @@ mod tests {
 
     fn base() -> Config {
         Config::default()
+    }
+
+    #[test]
+    fn tailscale_range_is_100_64_to_100_127() {
+        use std::net::Ipv4Addr as A;
+        assert!(is_tailscale_ip(A::new(100, 64, 0, 1)));
+        assert!(is_tailscale_ip(A::new(100, 127, 255, 254)));
+        assert!(!is_tailscale_ip(A::new(100, 63, 255, 255)), "control: below range");
+        assert!(!is_tailscale_ip(A::new(100, 128, 0, 1)), "control: above range");
+        assert!(!is_tailscale_ip(A::new(192, 168, 0, 5)));
+        assert_eq!(format_my_address(A::new(100, 64, 0, 1), crate::config::DEFAULT_PORT), "100.64.0.1");
+        assert_eq!(format_my_address(A::new(100, 64, 0, 1), 47811), "100.64.0.1:47811");
     }
 
     #[test]

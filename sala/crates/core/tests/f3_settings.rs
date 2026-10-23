@@ -112,15 +112,19 @@ async fn session_run() {
     assert_voice_flows(&a, &b, "initial voice").await;
 
     // CallStats arrives every 2 s for connected friends.
+    let mut config_changed = false;
     let stats = tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            if let Some(SessionEvent::CallStats { friend, rtt_ms, since_secs }) = a_events.recv().await {
-                return (friend, rtt_ms, since_secs);
+            match a_events.recv().await {
+                Some(SessionEvent::CallStats { friend, rtt_ms, since_secs }) => return (friend, rtt_ms, since_secs),
+                Some(SessionEvent::ConfigChanged) => config_changed = true,
+                _ => {}
             }
         }
     })
     .await
     .expect("CallStats within 8 s");
+    assert!(config_changed, "pinning the fingerprint (TOFU) must announce ConfigChanged");
     assert_eq!(stats.0, "b");
     assert!(stats.1 < 1000 && stats.2 < 60, "{stats:?}");
 
