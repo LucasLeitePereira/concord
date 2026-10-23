@@ -5,6 +5,7 @@ import {
   initialState, setLink, reduce, friends, inRoom, callPeers, chatPeer, callTarget,
   friendStatus, micText, formatDuration, callSeconds, formatClock, initial,
 } from './state.js';
+import { initSettings } from './settings.js';
 
 const tauri = window.__TAURI__;
 const state = initialState();
@@ -43,6 +44,8 @@ function icon(id, size) {
 }
 
 const linked = () => state.link === 'connected';
+
+const { renderSettings, focusAddFriend } = initSettings({ state, send, h, icon });
 
 // ---------- Renderização ----------
 
@@ -294,6 +297,7 @@ function render() {
   renderStage();
   renderControls();
   renderChat();
+  renderSettings();
   if (key) {
     const again = document.querySelector(`[data-key="${CSS.escape(key)}"]`);
     if (again && again !== active) again.focus();
@@ -334,6 +338,9 @@ let lastRoom = null;
 let lastChatPeer = null;
 function onCore(msg) {
   const what = reduce(state, msg);
+  // O núcleo grava a impressão digital na 1ª conexão sem reenviar o Config: pedir de novo
+  // para o selo "Identidade verificada" não ficar velho.
+  if (msg && msg.type === 'PeerConnected') send({ type: 'GetConfig' });
   if (what === 'error') {
     toast(`Núcleo: ${msg.message}`);
     return;
@@ -384,7 +391,10 @@ $('chat-form').addEventListener('submit', (e) => {
 for (const el of document.querySelectorAll('[data-view]')) {
   el.addEventListener('click', () => setView(el.dataset.view));
 }
-$('add-friend').addEventListener('click', () => setView('settings'));
+$('add-friend').addEventListener('click', () => {
+  setView('settings');
+  focusAddFriend();
+});
 
 setInterval(() => { if (!document.hidden) tickTimer(); }, 1000);
 
