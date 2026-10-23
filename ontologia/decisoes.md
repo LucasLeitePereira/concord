@@ -138,3 +138,8 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 **Conceitos:** call, peer-connection, ipc-message
 **Decisão:** conectado = na sala, com voz automática (escolha do usuário, 2026-10-23). `HangUp` sai da sala: a voz para nos dois sentidos (só se envia e toca se os dois estão na sala), mas chat e status continuam. `Call{friend}` volta. O `Status` de rede ganha `in_room` (`serde(default = true)`); `PeerStatus` repassa. Sem toque/aceitar.
 **Data:** 2026-10-23
+
+## D-016 sala-ui: Tauri 2 sem npm
+**Conceitos:** ui-process, ipc-message
+**Decisão:** `crates/ui` (Tauri 2) com frontend estático HTML/CSS/JS puro em `web/` (sem bundler/npm; `withGlobalTauri`), compilado só com `cargo build`. Cliente do pipe e `pipe_name` movidos para `sala-protocol` (feature `ipc-client`) para a UI não depender do core. Sem `--pipe`, a UI inicia o `sala-core.exe` ao lado. Fontes OFL locais (fontsource). Ícone provisório.
+**Data:** 2026-10-23

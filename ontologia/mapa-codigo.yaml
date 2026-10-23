@@ -65,3 +65,5 @@ mapa:
   ui-settings:
     codigo: ["sala/crates/core/src/settings.rs (Config <-> AudioSettings/GameModeSettings/HotkeySettings/FriendInfo, validação do UpdateConfig)", "sala/crates/core/src/voice.rs (voice_allowed: sala D-015)"]
     testes: [sala/crates/core/tests/f3_settings.rs]
+  sala-ui:
+    codigo: ["sala/crates/ui/src/main.rs (ponte pipe <-> evento core, send, inicia o core)", "sala/crates/ui/web/ (index.html, styles.css, js/main.js, js/state.js, fonts/)", "sala/crates/ui/tauri.conf.json", "sala/crates/protocol/src/ipc_client.rs (IpcClient, feature ipc-client)", "sala/crates/protocol/src/pipe.rs (pipe_name)"]

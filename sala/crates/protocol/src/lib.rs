@@ -5,6 +5,13 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod pipe;
+pub use pipe::{current_user_pipe_name, pipe_name};
+
+/// Named pipe client and line reader (Windows only, feature `ipc-client`).
+#[cfg(all(windows, feature = "ipc-client"))]
+pub mod ipc_client;
+
 /// Version of the wire protocol announced in `Hello`.
 pub const PROTOCOL_VERSION: u16 = 1;
 

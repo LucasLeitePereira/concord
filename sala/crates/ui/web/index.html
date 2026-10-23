@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sala</title>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></symbol>
+    <symbol id="i-mic-off" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M3 3l18 18"></path></symbol>
+    <symbol id="i-headphones" viewBox="0 0 24 24"><path d="M4 15v-3a8 8 0 0 1 16 0v3"></path><rect x="3" y="14" width="4" height="6" rx="1.5"></rect><rect x="17" y="14" width="4" height="6" rx="1.5"></rect></symbol>
+    <symbol id="i-screen" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 12h2l2-5 3 10 3-14 3 12 2-3h3"></path></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><circle cx="16" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></symbol>
+    <symbol id="i-gamepad" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="5"></rect><path d="M7 10v4M5 12h4"></path><circle cx="16" cy="11" r="0.8"></circle><circle cx="18" cy="13" r="0.8"></circle></symbol>
+    <symbol id="i-hangup" viewBox="0 0 24 24"><path d="M3 15c5-5 13-5 18 0l-2 3-4-1v-3c-2-.6-4-.6-6 0v3l-4 1z"></path></symbol>
+    <symbol id="i-call" viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"></path></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"></path></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 20h20L12 3z"></path><path d="M12 10v4M12 17h0"></path></symbol>
+  </defs>
+</svg>
+
+<div class="shell" id="app">
+
+  <nav class="nav" aria-label="Navegação principal">
+    <div class="brand">
+      <div class="brand-mark"><svg class="ico" width="18" height="18" style="stroke-width:2.2"><use href="#i-wave"></use></svg></div>
+      <span class="brand-name">Sala</span>
+    </div>
+
+    <div class="nav-links">
+      <button type="button" class="nav-item" id="nav-call" data-view="call"><svg class="ico" width="18" height="18"><use href="#i-headphones"></use></svg>Chamada</button>
+      <button type="button" class="nav-item" disabled title="Em breve" aria-label="Compartilhar tela (em breve)"><svg class="ico" width="18" height="18"><use href="#i-screen"></use></svg>Compartilhar tela</button>
+      <button type="button" class="nav-item" disabled title="Em breve" aria-label="Mesa de sons (em breve)"><svg class="ico" width="18" height="18"><use href="#i-wave"></use></svg>Mesa de sons</button>
+      <button type="button" class="nav-item" id="nav-settings" data-view="settings"><svg class="ico" width="18" height="18"><use href="#i-sliders"></use></svg>Ajustes</button>
+    </div>
+
+    <div class="friends">
+      <div class="section-label" id="friends-label">Amigos</div>
+      <div id="friends" role="list" aria-labelledby="friends-label"></div>
+      <button type="button" class="nav-item small" id="add-friend"><svg class="ico" width="16" height="16" style="stroke-width:2"><use href="#i-plus"></use></svg>Adicionar amigo</button>
+    </div>
+
+    <div class="me" id="me"></div>
+  </nav>
+
+  <main class="main">
+
+    <section class="call" id="view-call" aria-label="Chamada">
+      <div id="banners"></div>
+
+      <div class="call-head">
+        <div class="call-title">
+          <h1 id="title">Sala</h1>
+          <div class="call-meta">
+            <span class="mono" id="timer" hidden>00:00</span>
+            <span class="pill" id="link-pill" hidden><span class="dot" id="link-dot"></span><span id="link-text"></span></span>
+          </div>
+        </div>
+        <button type="button" class="game-btn" id="game-top">
+          <svg class="ico" width="18" height="18"><use href="#i-gamepad"></use></svg>
+          <span class="game-label">Modo jogo</span>
+          <span class="kbd game-kbd" id="game-kbd" hidden></span>
+        </button>
+      </div>
+
+      <div id="share-banner"></div>
+
+      <div class="stage" id="stage"></div>
+
+      <div class="toolbar" role="toolbar" aria-label="Controles da chamada">
+        <button type="button" class="ctl" id="btn-mute" aria-pressed="false"><svg class="ico" width="20" height="20"><use id="use-mute" href="#i-mic"></use></svg><span id="lbl-mute">Mutar-se</span></button>
+        <button type="button" class="ctl" id="btn-deaf" aria-pressed="false"><svg class="ico" width="20" height="20"><use href="#i-headphones"></use></svg><span id="lbl-deaf">Silenciar</span></button>
+        <button type="button" class="ctl" disabled title="Em breve" aria-label="Compartilhar tela (em breve)"><svg class="ico" width="20" height="20"><use href="#i-screen"></use></svg>Tela</button>
+        <button type="button" class="ctl" disabled title="Em breve" aria-label="Mesa de sons (em breve)"><svg class="ico" width="20" height="20"><use href="#i-wave"></use></svg>Sons</button>
+        <button type="button" class="ctl game" id="btn-game"><svg class="ico" width="20" height="20"><use href="#i-gamepad"></use></svg>Modo jogo</button>
+        <button type="button" class="ctl danger" id="btn-room"><svg class="ico" width="20" height="20"><use id="use-room" href="#i-hangup"></use></svg><span id="lbl-room">Desligar</span></button>
+      </div>
+    </section>
+
+    <aside class="chat" id="chat" aria-label="Chat da chamada">
+      <div class="chat-head">
+        <h2>Chat</h2>
+        <span class="chat-sub"><svg class="ico" width="13" height="13" style="stroke-width:2"><use href="#i-clock"></use></svg>Apagado quando a chamada termina</span>
+      </div>
+      <div class="chat-log" id="chat-log" role="log" aria-live="polite" aria-label="Mensagens"></div>
+      <form class="chat-form" id="chat-form" autocomplete="off">
+        <input type="text" id="chat-input" aria-label="Mensagem" placeholder="Mensagem" maxlength="2000">
+        <button type="submit" class="send" id="chat-send" aria-label="Enviar"><svg class="ico" width="18" height="18" style="stroke-width:2"><use href="#i-send"></use></svg></button>
+      </form>
+    </aside>
+
+    <section class="settings" id="view-settings" aria-label="Ajustes" hidden>
+      <div class="settings-inner">
+        <h1>Ajustes</h1>
+        <p class="muted">Em breve.</p>
+        <button type="button" class="btn neutral" data-view="call" id="back-call">Voltar à chamada</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="splash" id="splash" role="status">
+  <div class="brand-mark big"><svg class="ico" width="28" height="28" style="stroke-width:2.2"><use href="#i-wave"></use></svg></div>
+  <span>Conectando ao núcleo…</span>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>

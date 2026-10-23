@@ -1,0 +1,20 @@
+[package]
+name = "sala-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "sala-ui"
+path = "src/main.rs"
+
+[dependencies]
+sala-protocol = { path = "../protocol", features = ["ipc-client"] }
+tauri = { version = "2", default-features = false, features = ["wry", "compression"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
