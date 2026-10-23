@@ -12,8 +12,8 @@ mapa:
   capabilities:
     codigo: ["sala/crates/protocol/src/lib.rs (Capabilities, VideoCodec)"]
   ipc-message:
-    codigo: ["sala/crates/protocol/src/lib.rs (UiToCore, CoreToUi, encode_ipc_line, decode_ipc_line)"]
-    testes: [sala/crates/protocol/tests/acceptance_protocol.rs]
+    codigo: ["sala/crates/protocol/src/lib.rs (UiToCore, CoreToUi, encode_ipc_line, decode_ipc_line)", "sala/crates/core/src/ipc.rs (IpcServer, IpcClient, pipe_name, IpcError::AlreadyRunning)"]
+    testes: [sala/crates/protocol/tests/acceptance_protocol.rs, sala/crates/core/tests/ipc.rs]
   chat-message:
     codigo: ["sala/crates/protocol/src/lib.rs (ControlMessage::Chat, ChatEntry)"]
   jitter-buffer:
@@ -56,3 +56,6 @@ mapa:
   platform-win32:
     codigo: ["sala/crates/core/src/platform/mod.rs (Platform, PlatformEvent, TrayState, HotkeyAction, MenuItem)", "sala/crates/core/src/platform/window.rs (thread, janela oculta, bandeja, menu, notificação, sondagem PTT/mouse)", "sala/crates/core/src/platform/hotkey.rs (Hotkey, parser)", sala/crates/core/src/platform/icon.rs]
     testes: ["sala/crates/core/src/platform/*.rs (mod tests)"]
+  ui-process:
+    codigo: ["sala/crates/core/src/ui_process.rs (UiProcess, resolve_ui_exe, ShutdownOutcome)", "sala/crates/core/examples/fake_ui.rs (UI falsa para testes)"]
+    testes: [sala/crates/core/tests/ipc.rs]

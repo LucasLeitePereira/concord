@@ -24,6 +24,7 @@
 - Scripts que escrevem em pastas de entrega não podem apagar pastas onde o usuário já roda coisas: monte em diretório temporário.
 
 - Win32 (`windows-sys`): chamada que reentra no `wndproc` (`DestroyWindow`, `TrackPopupMenu`) quebra `RefCell` emprestado → `try_borrow_mut` e soltar o empréstimo antes; texto de menu vindo do usuário: escapar `&` como `&&`; constantes ausentes (`NIN_BALLOONUSERCLICK` = `WM_USER + 5`) definir à mão.
+- Named pipe tokio: cliente pode levar `ERROR_PIPE_BUSY` (231) entre instâncias → retry curto. Teste que usa exe de example: `cargo test --test X` não compila examples → construa sob demanda ou falhe com mensagem clara.
 - `SetForegroundWindow` de processo lançado pelo harness falha sem Alt sintético antes; `cargo test --lib` não recompila examples (`cargo build --example X` antes do teste `--ignored`).
 
 ## Atalhos / padrões que funcionaram

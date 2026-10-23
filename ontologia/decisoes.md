@@ -94,8 +94,23 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 **Alternativa descartada:** TCP local (exposto a outros usuários e ao firewall; a spec pede named pipe).
 **Data:** 2026-10-22
 
+**Adendo (T-011, 2026-10-22):** `AlreadyRunning` = `PermissionDenied` ao criar a 1ª instância. Linha > 64 KiB desconecta só aquele cliente; `Error` de linha inválida tem texto fixo (nunca ecoa conteúdo). A UI pede o estado inicial com `GetState`.
+
 ## D-011 Notificação de chat no modo jogo sem o texto
 **Conceitos:** chat-message, game-mode, inv-chat-never-on-disk
 **Decisão:** a notificação mostra só o remetente ("Pedro" · "Nova mensagem no chat"). O Windows grava as notificações no histórico da Central de Ações (`wpndatabase.db`), então o texto iria a disco. Escolha do usuário em 2026-10-22, contra o design, que mostrava o texto.
 **Alternativa descartada:** texto completo (fere a restrição) ou configurável (complexidade sem pedido).
+**Data:** 2026-10-22
+
+## D-012 Orquestração do núcleo e sequência do modo jogo
+**Conceitos:** core-process, game-mode, game-detector, call, ipc-message, inv-game-mode-only-core, inv-deafen-implies-mute
+**Decisão:**
+- `Session` ganha uma API de controle (comandos por canal para o laço, que é dono do `VoiceEngine`): mudo, ensurdecer, PTT, modo jogo. Toda mudança de mudo/ensurdecer/modo jogo envia `Status` a todos os amigos conectados. Ela também emite eventos (`SessionEvent`) para a camada de cima: chat recebido, conectado, desconectado, reconectando, `Status` do amigo, fingerprint divergente.
+- Um único orquestrador (`app.rs`) liga Session + IPC + UiProcess + Platform + GameDetector. Atalho, menu da bandeja e comando IPC passam pelo mesmo caminho. `main.rs` continua fino.
+- Entrar no modo jogo, nesta ordem: (1) `Shutdown` à UI e confirmar término (D-010); (2) fechar o visualizador (F4; ponto de extensão); (3) parar a transmissão, salvo `keep_sharing_in_game_mode` (F4); (4) liberar memória: soltar caches e devolver o working set com `SetProcessWorkingSetSize(proc, usize::MAX, usize::MAX)`; (5) `Status` aos amigos; (6) bandeja em âmbar. Sair: lançar a UI, `Status`, bandeja normal.
+- No modo jogo, chat recebido ⇒ notificação só com o remetente (D-011). Clicar na notificação ⇒ saída manual do modo jogo (D-008).
+- Detector: `probe()` a cada `POLL_INTERVAL`, só com `auto_detect`. Transição do detector ou ação manual chama a mesma sequência.
+- 2ª instância: `AlreadyRunning` no pipe ⇒ conectar como cliente, enviar `UiToCore::OpenUi` e sair com código 0. O núcleo existente sai do modo jogo (manual) e abre a UI.
+- "Fechar a Sala": encerra a UI (D-010), a sessão (Bye/close), a plataforma e o processo.
+**Alternativa descartada:** cada fonte (atalho, bandeja, IPC) mexer direto no estado; isso duplicaria a lógica e quebraria `inv-deafen-implies-mute` em algum caminho.
 **Data:** 2026-10-22
