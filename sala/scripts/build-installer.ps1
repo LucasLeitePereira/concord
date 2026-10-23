@@ -1,5 +1,5 @@
 # Builds the workspace in release mode and compiles the Concord installer.
-# Output: sala\target\installer\Concord-Setup-0.1.0.exe
+# Output: sala\target\installer\Concord-Setup-<versão>.exe
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
@@ -20,7 +20,8 @@ try {
     if ($LASTEXITCODE -ne 0) { Write-Error "cargo build --release failed"; exit 1 }
     & $iscc (Join-Path $root 'installer\concord.iss')
     if ($LASTEXITCODE -ne 0) { Write-Error "ISCC failed"; exit 1 }
-    $out = Join-Path $root 'target\installer\Concord-Setup-0.1.0.exe'
+    $ver = (Select-String -Path (Join-Path $root 'installer\concord.iss') -Pattern '#define AppVersion "([^"]+)"').Matches[0].Groups[1].Value
+    $out = Join-Path $root "target\installer\Concord-Setup-$ver.exe"
     $size = [math]::Round((Get-Item $out).Length / 1MB, 2)
     Write-Host "OK: $out ($size MB)"
 } finally {

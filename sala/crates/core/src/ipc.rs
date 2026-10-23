@@ -80,6 +80,10 @@ impl IpcServer {
         self.clients.lock().unwrap().values().filter(|tx| tx.send(line.clone()).is_ok()).count()
     }
 
+    pub fn has_client(&self, client: ClientId) -> bool {
+        self.clients.lock().unwrap().contains_key(&client)
+    }
+
     pub fn client_count(&self) -> usize {
         self.clients.lock().unwrap().len()
     }

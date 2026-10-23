@@ -120,6 +120,20 @@
           <span class="hint-text" id="name-hint">Seus amigos veem o novo nome na próxima conexão.</span>
         </section>
 
+        <section class="panel" aria-labelledby="sec-atalhos">
+          <h2 id="sec-atalhos">Atalhos</h2>
+          <div class="mode-block">
+            <span class="field-label" id="mode-label">Como seu microfone liga</span>
+            <div class="seg" role="radiogroup" aria-labelledby="mode-label" id="mode-group">
+              <button type="button" role="radio" id="mode-vad" aria-checked="false">Ativação por voz</button>
+              <button type="button" role="radio" id="mode-ptt" aria-checked="false">Aperte para falar</button>
+            </div>
+          </div>
+          <div id="hotkey-list"></div>
+          <span class="form-error" id="hk-error" role="alert"></span>
+          <span class="hint-text" id="hk-hint">Os atalhos funcionam mesmo com a Sala em segundo plano.</span>
+        </section>
+
         <section class="panel" aria-labelledby="sec-amigos">
           <div class="panel-head">
             <h2 id="sec-amigos">Amigos</h2>

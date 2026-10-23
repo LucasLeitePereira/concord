@@ -218,6 +218,17 @@ button.friend:hover { background: var(--surface-2); }
 .f-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); }
 .f-confirm .btn { min-height: 36px; padding: 0 14px; }
 .btn.danger { background: var(--danger); color: #fff; }
+.mode-block { display: flex; flex-direction: column; gap: 8px; }
+.field-label { font-size: 13px; color: var(--text-muted); }
+.seg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; border-radius: 12px; background: var(--bg); }
+.seg button { min-height: 40px; border-radius: 9px; border: none; background: transparent; color: var(--text-muted); font-weight: 600; }
+.seg button[aria-checked="true"] { background: var(--surface-5); color: var(--text); }
+.seg button:disabled { opacity: .5; }
+.hk-row { display: flex; align-items: center; gap: 12px; min-height: 44px; }
+.hk-row .hk-label { flex-grow: 1; }
+.hk-row .kbd { font-size: 12px; padding: 4px 10px; }
+.hk-row .link-btn.capturing { color: var(--accent-text); background: var(--accent-soft); }
+.hk-row .link-btn:disabled { opacity: .5; }
 
 /* Estados extras */
 .splash { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--text-muted); z-index: 10; }

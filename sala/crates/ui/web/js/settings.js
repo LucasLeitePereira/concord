@@ -1,6 +1,53 @@
-// Tela Ajustes: "Seu nome" e "Amigos". Só envia comandos; o estado vem do `Config` do núcleo (D-010).
+// Tela Ajustes: "Seu endereço", "Seu nome", "Atalhos" e "Amigos". Só envia comandos; o estado vem do `Config` do núcleo (D-010).
 
 import { friends, initial } from './state.js';
+
+const NAMED = {
+  Space: 'Space', Enter: 'Enter', NumpadEnter: 'Enter', Tab: 'Tab', Backspace: 'Backspace',
+  Insert: 'Insert', Delete: 'Delete', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+  ArrowLeft: 'Left', ArrowUp: 'Up', ArrowRight: 'Right', ArrowDown: 'Down',
+  NumpadMultiply: 'NumpadMultiply', NumpadAdd: 'NumpadAdd', NumpadSubtract: 'NumpadSubtract',
+  NumpadDecimal: 'NumpadDecimal', NumpadDivide: 'NumpadDivide',
+};
+
+// Nome da tecla no formato do parser do núcleo (`hotkey.rs`), ou null se não for suportada.
+function keyToken(code) {
+  let m;
+  if ((m = /^Key([A-Z])$/.exec(code))) return m[1];
+  if ((m = /^Digit([0-9])$/.exec(code))) return m[1];
+  if ((m = /^F([0-9]{1,2})$/.exec(code)) && Number(m[1]) >= 1 && Number(m[1]) <= 24) return `F${m[1]}`;
+  if ((m = /^Numpad([0-9])$/.exec(code))) return `Numpad${m[1]}`;
+  return NAMED[code] || null;
+}
+
+function modifierPrefix(e) {
+  return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Win'].filter(Boolean);
+}
+
+// Combinação a partir de um `keydown`: 'cancel' (Esc), null (só modificador / tecla não suportada) ou a string.
+export function comboFromKeyEvent(e) {
+  if (e.code === 'Escape') return 'cancel';
+  if (/^(Control|Alt|Shift|Meta|OS)(Left|Right)$/.test(e.code)) return null;
+  const key = keyToken(e.code);
+  return key ? [...modifierPrefix(e), key].join('+') : null;
+}
+
+// Combinação a partir de um `mousedown`: só os botões laterais (3 = Mouse4, 4 = Mouse5).
+export function comboFromMouseEvent(e) {
+  if (e.button !== 3 && e.button !== 4) return null;
+  return [...modifierPrefix(e), e.button === 3 ? 'Mouse4' : 'Mouse5'].join('+');
+}
+
+// Atalho global sem modificador e sem ser F1..F24 / botão lateral atrapalharia a digitação.
+export function needsModifier(combo) {
+  return /^[A-Z0-9]$|^(Space|Enter|Tab|Backspace)$/.test(combo);
+}
+
+const HOTKEYS = [
+  { field: 'toggle_mute', label: 'Mutar-se/Desmutar-se' },
+  { field: 'toggle_deafen', label: 'Silenciar/Voltar a ouvir' },
+  { field: 'toggle_game_mode', label: 'Modo jogo' },
+];
 
 export function initSettings({ state, send, h, icon }) {
   const $ = (id) => document.getElementById(id);
@@ -103,9 +150,119 @@ export function initSettings({ state, send, h, icon }) {
     $('my-address-hint').textContent = 'Mande para o seu amigo colar em Adicionar amigo.';
   }
 
+  // ---------- Atalhos ----------
+
+  let capturing = null; // campo de `hotkeys` sendo capturado
+  let hkSignature = '';
+
+  function stopCapture(sendOff = true) {
+    if (!capturing) return;
+    capturing = null;
+    if (sendOff) send({ type: 'SetHotkeyCapture', on: false });
+    renderHotkeys();
+  }
+
+  function startCapture(field) {
+    if (capturing === field) {
+      stopCapture();
+      return;
+    }
+    const wasCapturing = capturing !== null;
+    capturing = field;
+    $('hk-error').textContent = '';
+    if (!wasCapturing) send({ type: 'SetHotkeyCapture', on: true });
+    renderHotkeys();
+  }
+
+  function finishCapture(combo) {
+    const field = capturing;
+    if (combo === 'cancel') {
+      stopCapture();
+      return;
+    }
+    if (field !== 'push_to_talk' && needsModifier(combo)) {
+      $('hk-error').textContent = 'Use Ctrl, Alt ou Shift junto com a tecla (ou uma tecla F1 a F24).';
+      return;
+    }
+    capturing = null;
+    const hotkeys = { ...state.config.hotkeys, [field]: combo };
+    send({ type: 'UpdateConfig', hotkeys });
+    send({ type: 'SetHotkeyCapture', on: false });
+    renderHotkeys();
+  }
+
+  function onCaptureKey(e) {
+    if (!capturing) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const combo = comboFromKeyEvent(e);
+    if (combo) finishCapture(combo);
+  }
+
+  function onCaptureMouse(e) {
+    if (!capturing) return;
+    const combo = comboFromMouseEvent(e);
+    if (!combo) return;
+    e.preventDefault();
+    e.stopPropagation();
+    finishCapture(combo);
+  }
+
+  window.addEventListener('keydown', onCaptureKey, true);
+  window.addEventListener('mousedown', onCaptureMouse, true);
+  window.addEventListener('mouseup', (e) => { if (capturing && (e.button === 3 || e.button === 4)) e.preventDefault(); }, true);
+  window.addEventListener('blur', () => stopCapture());
+
+  function hotkeyRow(field, label, value) {
+    const on = capturing === field;
+    return h('div', { class: 'hk-row' },
+      h('span', { class: 'hk-label' }, label),
+      h('span', { class: 'kbd' }, on ? 'Pressione a combinação… Esc cancela' : (value || 'Nenhum')),
+      h('button', {
+        type: 'button', class: `link-btn${on ? ' capturing' : ''}`, 'data-key': `hk:${field}`,
+        'aria-label': `Alterar atalho: ${label}`, disabled: state.link !== 'connected',
+        onclick: () => startCapture(field),
+      }, on ? 'Cancelar' : 'Alterar'));
+  }
+
+  function renderHotkeys() {
+    const cfg = state.config;
+    const connected = state.link === 'connected' && !!cfg;
+    if (capturing && !connected) capturing = null;
+    const mode = cfg ? cfg.audio.mode : null;
+    const sig = JSON.stringify([cfg && cfg.hotkeys, mode, capturing, connected]);
+    if (sig === hkSignature) return;
+    hkSignature = sig;
+    for (const [id, m] of [['mode-vad', 'voice_activity'], ['mode-ptt', 'push_to_talk']]) {
+      const b = $(id);
+      b.setAttribute('aria-checked', String(mode === m));
+      b.disabled = !connected;
+    }
+    const rows = cfg ? HOTKEYS.map(({ field, label }) => hotkeyRow(field, label, cfg.hotkeys[field])) : [];
+    if (cfg && mode === 'push_to_talk') {
+      rows.push(hotkeyRow('push_to_talk', 'Tecla para falar', cfg.hotkeys.push_to_talk));
+    }
+    const active = document.activeElement;
+    const key = active && active.dataset ? active.dataset.key : null;
+    $('hotkey-list').replaceChildren(...rows);
+    if (key) {
+      const again = document.querySelector(`#hotkey-list [data-key="${CSS.escape(key)}"]`);
+      if (again) again.focus();
+    }
+  }
+
+  for (const [id, mode] of [['mode-vad', 'voice_activity'], ['mode-ptt', 'push_to_talk']]) {
+    $(id).addEventListener('click', () => {
+      const cfg = state.config;
+      if (!cfg || cfg.audio.mode === mode) return;
+      send({ type: 'UpdateConfig', audio: { ...cfg.audio, mode } });
+    });
+  }
+
   function renderSettings() {
     const cfg = state.config;
     if (cfg) renderAddress(cfg.my_address || null);
+    renderHotkeys();
     const input = $('name-input');
     if (cfg && cfg.name !== shownName) {
       shownName = cfg.name;

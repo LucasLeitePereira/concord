@@ -16,5 +16,7 @@ pub mod platform;
 pub mod session;
 pub mod settings;
 #[cfg(windows)]
+pub mod tailscale;
+#[cfg(windows)]
 pub mod ui_process;
 pub mod voice;

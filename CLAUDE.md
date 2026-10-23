@@ -1,5 +1,7 @@
 # Projeto — fluxo da equipe
 
+> Contexto do projeto, build, regras, estado e próximos passos: **leia `AGENTS.md` primeiro**. Este arquivo só descreve o fluxo de subagentes do Claude Code. Desde 2026-10-23 o projeto está em **modo econômico**: sem experimento A/B nem revisão `senior`, e as métricas se limitam a `coletar.py registrar`.
+
 ## Equipe
 - **Sênior (sessão principal, Opus 5.5):** orquestra, decide, delega, revisa, cura memórias/ontologia, registra métricas, commita (se autorizado).
 - `senior` (opus): segunda opinião/revisão independente — usar com parcimônia.

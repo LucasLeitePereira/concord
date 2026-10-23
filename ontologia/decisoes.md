@@ -143,3 +143,8 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 **Conceitos:** ui-process, ipc-message
 **Decisão:** `crates/ui` (Tauri 2) com frontend estático HTML/CSS/JS puro em `web/` (sem bundler/npm; `withGlobalTauri`), compilado só com `cargo build`. Cliente do pipe e `pipe_name` movidos para `sala-protocol` (feature `ipc-client`) para a UI não depender do core. Sem `--pipe`, a UI inicia o `sala-core.exe` ao lado. Fontes OFL locais (fontsource). Ícone provisório.
 **Data:** 2026-10-23
+
+## D-017 — T-020: Tailscale ao iniciar, Concord fora do gatilho, atalhos nos Ajustes
+- Ao iniciar, o núcleo liga o Tailscale se estiver instalado e parado (`tailscale.rs`), em segundo plano e sem bloquear.
+- Os executáveis do próprio app (`OWN_EXES` em `game_detector.rs`) nunca contam como jogo.
+- Captura de atalho na UI: `UiToCore::SetHotkeyCapture{on}` suspende os atalhos globais enquanto o usuário digita; atalho em uso → `Error`.

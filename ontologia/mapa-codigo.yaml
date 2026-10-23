@@ -69,3 +69,6 @@ mapa:
     codigo: ["sala/crates/ui/src/main.rs (ponte pipe <-> evento core, send, inicia o core)", "sala/crates/ui/web/ (index.html, styles.css, js/main.js, js/state.js, fonts/)", "sala/crates/ui/web/js/settings.js (tela Ajustes: nome, amigos)", "sala/crates/ui/tauri.conf.json", "sala/crates/protocol/src/ipc_client.rs (IpcClient, feature ipc-client)", "sala/crates/protocol/src/pipe.rs (pipe_name)"]
   instalador:
     codigo: ["sala/installer/concord.iss (Inno Setup: Concord, firewall UDP 47800 por programa, atalhos, Run, aviso Tailscale)", "sala/scripts/build-installer.ps1"]
+  tailscale-autostart:
+    codigo: ["sala/crates/core/src/tailscale.rs (plan, parse_backend; abre tailscale-ipn.exe e roda `tailscale up` se Stopped, em segundo plano)"]
+    testes: ["sala/crates/core/src/tailscale.rs (mod tests)"]

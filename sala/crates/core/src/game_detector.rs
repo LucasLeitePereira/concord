@@ -40,6 +40,9 @@ pub enum Origin {
     Manual,
 }
 
+/// The app's own executables (lower case): never classified as a game.
+pub const OWN_EXES: [&str; 4] = ["sala-core.exe", "sala-ui.exe", "concord.exe", "concord-ui.exe"];
+
 /// Positive/negative rule for a single sample.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameRules {
@@ -69,12 +72,17 @@ impl GameRules {
     }
 
     /// `None` means there is no foreground window (desktop, lock screen) and
-    /// counts as negative.
+    /// counts as negative. The app's own executables ([`OWN_EXES`]) are never a
+    /// game, whatever the config says (even if listed in `games`): otherwise the
+    /// maximized UI window would close itself.
     pub fn is_game(&self, sample: Option<&ForegroundSample>) -> bool {
         let Some(sample) = sample else {
             return false;
         };
         let name = file_name_key(&sample.exe_path);
+        if OWN_EXES.contains(&name.as_str()) {
+            return false;
+        }
         if !name.is_empty() && self.games.contains(&name) {
             return true;
         }
@@ -276,6 +284,18 @@ mod tests {
         assert!(!r.is_game(Some(&s("C:\\foo\\unknown.exe", false))));
         assert!(!r.is_game(Some(&s("C:\\Program Files\\chrome.exe", true))));
         assert!(!r.is_game(Some(&desk())));
+    }
+
+    #[test]
+    fn rules_never_treat_own_exes_as_game() {
+        // Even listed in `games` and covering the monitor.
+        let r = GameRules::new(&["sala-ui.exe".into(), "Concord.exe".into()], &[]);
+        for p in ["C:\\Concord\\sala-ui.exe", "C:\\x\\SALA-CORE.EXE", "D:/c/concord.exe", "concord-ui.exe"] {
+            assert!(!r.is_game(Some(&s(p, true))), "{p}");
+            assert!(!r.is_game(Some(&s(p, false))), "{p}");
+        }
+        // Control: a similarly named foreign exe in full screen is still a game.
+        assert!(r.is_game(Some(&s("C:\\x\\sala-ui2.exe", true))));
     }
 
     #[test]

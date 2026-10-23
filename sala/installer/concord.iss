@@ -1,6 +1,6 @@
 ; Concord installer (Inno Setup 6). Build with scripts\build-installer.ps1.
 #define AppName "Concord"
-#define AppVersion "0.1.0"
+#define AppVersion "0.1.1"
 
 [Setup]
 AppId={{B7E2C1A4-5D3F-4C8E-9A61-2F0D7C4E8B15}

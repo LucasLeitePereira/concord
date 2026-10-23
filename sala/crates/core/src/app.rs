@@ -182,6 +182,8 @@ pub struct Controller<P: PlatformApi> {
     keep_sharing: bool,
     auto_detect: bool,
     ptt_mode: bool,
+    /// The UI client that is capturing a shortcut (`SetHotkeyCapture`).
+    capture: Option<ClientId>,
     steps: Vec<Step>,
 }
 
@@ -196,6 +198,7 @@ impl<P: PlatformApi> Controller<P> {
             keep_sharing: game_cfg.keep_sharing_in_game_mode,
             auto_detect: game_cfg.auto_detect,
             ptt_mode,
+            capture: None,
             steps: Vec::new(),
         }
     }
@@ -347,10 +350,50 @@ impl<P: PlatformApi> Controller<P> {
         self.keep_sharing = new.game_mode.keep_sharing_in_game_mode;
         self.auto_detect = new.game_mode.auto_detect;
         self.ptt_mode = new.audio.mode == AudioMode::PushToTalk;
-        self.platform.set_hotkeys(list);
-        self.platform.set_ptt(if self.ptt_mode { ptt } else { None });
+        // While the UI is capturing a shortcut the platform stays empty; leaving
+        // capture applies the saved config.
+        if self.capture.is_none() {
+            self.platform.set_hotkeys(list);
+            self.platform.set_ptt(if self.ptt_mode { ptt } else { None });
+        }
         info!("settings updated and saved");
         Ok(())
+    }
+
+    /// `SetHotkeyCapture{on: true}`: unregister every shortcut and the PTT key.
+    fn start_capture(&mut self, client: ClientId) {
+        self.capture = Some(client);
+        self.platform.set_hotkeys(Vec::new());
+        self.platform.set_ptt(None);
+    }
+
+    /// Restores the shortcuts of the saved config.
+    fn end_capture(&mut self) {
+        if self.capture.take().is_none() {
+            return;
+        }
+        match hotkey_plan(&self.session.config()) {
+            Ok((list, ptt)) => {
+                self.platform.set_hotkeys(list);
+                self.platform.set_ptt(if self.ptt_mode { ptt } else { None });
+            }
+            Err(e) => warn!("cannot restore shortcuts: {e}"),
+        }
+    }
+
+    /// Ends the capture when the client that started it is gone (called periodically).
+    pub fn check_capture_client(&mut self) {
+        if let Some(c) = self.capture
+            && !self.host.ipc.has_client(c)
+        {
+            info!("capturing client disconnected; restoring shortcuts");
+            self.end_capture();
+        }
+    }
+
+    /// Sends the `Config` (with the Tailscale address) to every UI.
+    pub fn refresh_config(&self) {
+        self.broadcast_config();
     }
 
     fn after_local_change(&mut self) {
@@ -408,6 +451,7 @@ impl<P: PlatformApi> Controller<P> {
             // The only warn for a failed registration (the platform thread stays silent).
             PlatformEvent::HotkeyRegistrationFailed { action, hotkey, error_code } => {
                 warn!(%action, %hotkey, error_code, "hotkey could not be registered");
+                self.host.ipc.broadcast(&CoreToUi::Error { message: hotkey_in_use_message(&hotkey) });
             }
         }
         Flow::Continue
@@ -491,6 +535,13 @@ impl<P: PlatformApi> Controller<P> {
                 self.host.ipc.send_to(client, &reply);
             }
             UiToCore::SetMicMeter { on } => self.session.set_mic_meter(on),
+            UiToCore::SetHotkeyCapture { on } => {
+                if on {
+                    self.start_capture(client);
+                } else {
+                    self.end_capture();
+                }
+            }
             UiToCore::SetPeerVolume { friend, volume } => {
                 if self.session.config().friends.iter().any(|f| f.name == friend) {
                     self.session.set_peer_volume(&friend, clamp_volume(volume));
@@ -568,6 +619,11 @@ impl<P: PlatformApi> Controller<P> {
     }
 }
 
+/// Readable error for the UI toast (the log line keeps the technical details).
+fn hotkey_in_use_message(hotkey: &Hotkey) -> String {
+    format!("{hotkey} já está em uso por outro programa")
+}
+
 fn status_msg(s: StatusFlags) -> CoreToUi {
     CoreToUi::Status { muted: s.muted, deafened: s.deafened, game_mode: s.game_mode, in_room: s.in_room }
 }
@@ -611,6 +667,12 @@ mod tests {
         assert_eq!(Trigger::auto(None), Trigger::Auto { exe: "desconhecido".into() });
         assert_eq!(Trigger::auto(Some(&sample(""))), Trigger::Auto { exe: "desconhecido".into() });
         assert_eq!(Trigger::auto(Some(&sample(r"C:\dir\"))), Trigger::Auto { exe: "desconhecido".into() });
+    }
+
+    #[test]
+    fn hotkey_in_use_message_is_readable() {
+        let hk: Hotkey = "ctrl+shift+m".parse().unwrap();
+        assert_eq!(hotkey_in_use_message(&hk), "Ctrl+Shift+M já está em uso por outro programa");
     }
 
     #[test]
@@ -724,6 +786,16 @@ pub async fn run(
     ctl.platform().set_tray(ctl.tray_state());
     ctl.host_mut().launch();
 
+    // Tailscale is brought up in the background; the UI gets the address once it runs.
+    let (ts_tx, mut ts_rx) = tokio::sync::mpsc::channel::<()>(1);
+    tokio::spawn(async move {
+        if crate::tailscale::ensure_up().await {
+            let _ = ts_tx.send(()).await;
+        }
+    });
+    let mut capture_watch = interval(std::time::Duration::from_secs(1));
+    capture_watch.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
     let mut poll = interval(POLL_INTERVAL);
     poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut ctrl_c = std::pin::pin!(tokio::signal::ctrl_c());
@@ -749,6 +821,8 @@ pub async fn run(
                 let sample = platform::probe();
                 ctl.tick(sample.as_ref()).await;
             }
+            Some(()) = ts_rx.recv() => ctl.refresh_config(),
+            _ = capture_watch.tick() => ctl.check_capture_client(),
             _ = &mut ctrl_c => break,
         }
     }

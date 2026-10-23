@@ -350,6 +350,9 @@ pub enum UiToCore {
     SetMicMeter { on: bool },
     /// Playback volume of one friend, 0.0..=2.0 (not persisted).
     SetPeerVolume { friend: String, volume: f32 },
+    /// While on, the core unregisters every global shortcut and the push-to-talk key (so the
+    /// UI can capture a combination); turning it off, or the client disconnecting, restores them.
+    SetHotkeyCapture { on: bool },
 }
 
 /// Events/state from the core to the UI (IPC). Unknown variants must be ignored by the UI (D-012).
@@ -631,6 +634,7 @@ mod tests {
             UiToCore::ResetFingerprint { name: "bia".into() },
             UiToCore::ListAudioDevices,
             UiToCore::SetMicMeter { on: true },
+            UiToCore::SetHotkeyCapture { on: true },
             UiToCore::SetPeerVolume { friend: "bia".into(), volume: 1.5 },
         ];
         for c in cmds {
