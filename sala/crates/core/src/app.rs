@@ -13,24 +13,31 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sala_protocol::{CoreToUi, UiToCore};
+use sala_protocol::{AudioSettings, CoreToUi, GameModeSettings, HotkeySettings, UiToCore};
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{info, warn};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 
+use crate::audio_device::list_devices;
 use crate::config::{AudioMode, Config, GameModeConfig, Profile};
 use crate::game_detector::{ForegroundSample, GameDetector, POLL_INTERVAL, Transition};
 use crate::identity::LocalIdentity;
 use crate::ipc::{ClientId, IpcClient, IpcError, IpcServer, current_user_pipe_name};
 use crate::platform::{self, Hotkey, HotkeyAction, MenuItem, Platform, PlatformEvent, TrayState};
 use crate::session::{AudioSource, Session, SessionEvent, StatusFlags};
+use crate::settings;
 use crate::ui_process::{SHUTDOWN_TIMEOUT, ShutdownOutcome, UiProcess, resolve_ui_exe};
+use crate::voice::clamp_volume;
 
 /// The part of [`Platform`] the controller needs (fakeable in tests).
 pub trait PlatformApi {
     fn set_tray(&self, state: TrayState);
     /// Sender name only, never the text (D-011).
     fn notify_message(&self, sender: &str);
+    /// Replaces the global shortcuts.
+    fn set_hotkeys(&self, hotkeys: Vec<(HotkeyAction, Hotkey)>);
+    /// Replaces the push-to-talk key (`None` = none).
+    fn set_ptt(&self, hotkey: Option<Hotkey>);
 }
 
 impl PlatformApi for Platform {
@@ -39,6 +46,12 @@ impl PlatformApi for Platform {
     }
     fn notify_message(&self, sender: &str) {
         Platform::notify_message(self, sender);
+    }
+    fn set_hotkeys(&self, hotkeys: Vec<(HotkeyAction, Hotkey)>) {
+        Platform::set_hotkeys(self, hotkeys);
+    }
+    fn set_ptt(&self, hotkey: Option<Hotkey>) {
+        Platform::set_ptt(self, hotkey);
     }
 }
 
@@ -167,6 +180,7 @@ pub struct Controller<P: PlatformApi> {
     platform: P,
     detector: GameDetector,
     keep_sharing: bool,
+    auto_detect: bool,
     ptt_mode: bool,
     steps: Vec<Step>,
 }
@@ -180,6 +194,7 @@ impl<P: PlatformApi> Controller<P> {
             platform,
             detector: GameDetector::new(game_cfg),
             keep_sharing: game_cfg.keep_sharing_in_game_mode,
+            auto_detect: game_cfg.auto_detect,
             ptt_mode,
             steps: Vec::new(),
         }
@@ -199,6 +214,11 @@ impl<P: PlatformApi> Controller<P> {
 
     pub fn in_game(&self) -> bool {
         self.detector.in_game()
+    }
+
+    /// Whether the detector should be fed samples (`game_mode.auto_detect`, live).
+    pub fn auto_detect(&self) -> bool {
+        self.auto_detect
     }
 
     /// Steps of the sequences run so far, oldest first.
@@ -242,6 +262,8 @@ impl<P: PlatformApi> Controller<P> {
     /// (5) `Status`, (6) amber tray.
     async fn enter_game_mode(&mut self, trigger: Trigger) {
         info!(%trigger, "entering game mode");
+        // The UI is going away: nobody is watching the meter.
+        self.session.set_mic_meter(false);
         let outcome = self.host.shutdown_ui().await;
         self.steps.push(Step::UiShutdown(outcome));
         // TODO(F4): close the video viewer.
@@ -295,19 +317,58 @@ impl<P: PlatformApi> Controller<P> {
         self.after_local_change();
     }
 
+    /// Enters/leaves the room (D-015): friends and the UI hear about it.
+    pub fn set_in_room(&mut self, in_room: bool) {
+        self.session.set_in_room(in_room);
+        self.after_local_change();
+    }
+
+    fn reply_error(&self, client: ClientId, message: String) {
+        self.host.ipc.send_to(client, &CoreToUi::Error { message });
+    }
+
+    fn broadcast_config(&self) {
+        self.host.ipc.broadcast(&settings::config_message(&self.session.config()));
+    }
+
+    /// Validates everything first (nothing is applied on an error), then saves and applies
+    /// live: audio and friends in the session, game lists in the detector, shortcuts in the platform.
+    pub fn update_config(
+        &mut self,
+        name: Option<String>,
+        audio: Option<AudioSettings>,
+        game_mode: Option<GameModeSettings>,
+        hotkeys: Option<HotkeySettings>,
+    ) -> Result<(), String> {
+        let new = settings::merged(&self.session.config(), name.as_deref(), audio.as_ref(), game_mode.as_ref(), hotkeys.as_ref())?;
+        let (list, ptt) = hotkey_plan(&new)?;
+        self.session.apply_config(&new)?;
+        self.detector.set_config(&new.game_mode);
+        self.keep_sharing = new.game_mode.keep_sharing_in_game_mode;
+        self.auto_detect = new.game_mode.auto_detect;
+        self.ptt_mode = new.audio.mode == AudioMode::PushToTalk;
+        self.platform.set_hotkeys(list);
+        self.platform.set_ptt(if self.ptt_mode { ptt } else { None });
+        info!("settings updated and saved");
+        Ok(())
+    }
+
     fn after_local_change(&mut self) {
         self.publish_status();
         self.platform.set_tray(self.tray_state());
     }
 
     fn publish_status(&self) {
-        let s = self.session.local_status();
-        self.host.ipc.broadcast(&CoreToUi::Status { muted: s.muted, deafened: s.deafened, game_mode: s.game_mode });
+        self.host.ipc.broadcast(&status_msg(self.session.local_status()));
     }
 
     pub fn tray_state(&self) -> TrayState {
         let s = self.session.local_status();
-        let call = self.session.connected_friends().first().map(|f| format!("Em chamada com {f}"));
+        let call = if s.in_room {
+            self.session.connected_friends().first().map(|f| format!("Em chamada com {f}"))
+        } else {
+            None
+        };
         TrayState { game_mode: s.game_mode, muted: s.muted, deafened: s.deafened, call }
     }
 
@@ -387,9 +448,55 @@ impl<P: PlatformApi> Controller<P> {
             UiToCore::EnterGameMode => self.set_game_mode_manual(true, Trigger::Ipc).await,
             UiToCore::ExitGameMode => self.set_game_mode_manual(false, Trigger::Ipc).await,
             UiToCore::OpenUi => self.open_ui(Trigger::SecondInstance).await,
-            // TODO(F3): explicit call/hang-up; calls are automatic with friends for now.
-            UiToCore::Call { .. } | UiToCore::HangUp => {
-                self.host.ipc.send_to(client, &CoreToUi::Error { message: "not supported yet".into() });
+            // D-015: the room is always open; "calling" is entering it, "hanging up" leaving it.
+            UiToCore::Call { friend } => {
+                if self.session.config().friends.iter().any(|f| f.name == friend) {
+                    self.set_in_room(true);
+                } else {
+                    self.reply_error(client, format!("unknown friend {friend:?}"));
+                }
+            }
+            UiToCore::HangUp => self.set_in_room(false),
+            UiToCore::GetConfig => {
+                self.host.ipc.send_to(client, &settings::config_message(&self.session.config()));
+            }
+            UiToCore::UpdateConfig { name, audio, game_mode, hotkeys } => {
+                match self.update_config(name, audio, game_mode, hotkeys) {
+                    Ok(()) => self.broadcast_config(),
+                    Err(message) => self.reply_error(client, message),
+                }
+            }
+            UiToCore::AddFriend { name, address } => match self.session.add_friend(&name, &address) {
+                Ok(()) => self.broadcast_config(),
+                Err(message) => self.reply_error(client, message),
+            },
+            UiToCore::RemoveFriend { name } => match self.session.remove_friend(&name) {
+                Ok(()) => self.broadcast_config(),
+                Err(message) => self.reply_error(client, message),
+            },
+            UiToCore::ResetFingerprint { name } => match self.session.reset_fingerprint(&name) {
+                Ok(()) => self.broadcast_config(),
+                Err(message) => self.reply_error(client, message),
+            },
+            UiToCore::ListAudioDevices => {
+                let (inputs, outputs) = tokio::task::spawn_blocking(|| {
+                    (list_devices(true), list_devices(false))
+                })
+                .await
+                .unwrap_or_default();
+                let reply = CoreToUi::AudioDevices {
+                    inputs: settings::with_default_first(inputs),
+                    outputs: settings::with_default_first(outputs),
+                };
+                self.host.ipc.send_to(client, &reply);
+            }
+            UiToCore::SetMicMeter { on } => self.session.set_mic_meter(on),
+            UiToCore::SetPeerVolume { friend, volume } => {
+                if self.session.config().friends.iter().any(|f| f.name == friend) {
+                    self.session.set_peer_volume(&friend, clamp_volume(volume));
+                } else {
+                    self.reply_error(client, format!("unknown friend {friend:?}"));
+                }
             }
             // TODO(F4): video viewer.
             UiToCore::OpenViewer => {
@@ -404,9 +511,8 @@ impl<P: PlatformApi> Controller<P> {
     }
 
     fn send_state(&self, client: ClientId) {
-        let s = self.session.local_status();
         let ipc = &self.host.ipc;
-        ipc.send_to(client, &CoreToUi::Status { muted: s.muted, deafened: s.deafened, game_mode: s.game_mode });
+        ipc.send_to(client, &status_msg(self.session.local_status()));
         for friend in self.session.connected_friends() {
             ipc.send_to(client, &CoreToUi::PeerConnected { friend: friend.clone() });
             if let Some(p) = self.session.peer_status(&friend) {
@@ -443,6 +549,12 @@ impl<P: PlatformApi> Controller<P> {
             SessionEvent::FingerprintMismatch { friend } => {
                 ipc.broadcast(&CoreToUi::FingerprintMismatch { friend });
             }
+            SessionEvent::CallStats { friend, rtt_ms, since_secs } => {
+                ipc.broadcast(&CoreToUi::CallStats { friend, rtt_ms, since_secs });
+            }
+            SessionEvent::MicLevel { db } => {
+                ipc.broadcast(&CoreToUi::MicLevel { db });
+            }
         }
     }
 
@@ -455,6 +567,10 @@ impl<P: PlatformApi> Controller<P> {
     }
 }
 
+fn status_msg(s: StatusFlags) -> CoreToUi {
+    CoreToUi::Status { muted: s.muted, deafened: s.deafened, game_mode: s.game_mode, in_room: s.in_room }
+}
+
 fn peer_status_msg(friend: &str, s: StatusFlags) -> CoreToUi {
     CoreToUi::PeerStatus {
         friend: friend.to_string(),
@@ -462,6 +578,7 @@ fn peer_status_msg(friend: &str, s: StatusFlags) -> CoreToUi {
         deafened: s.deafened,
         game_mode: s.game_mode,
         sharing: s.sharing,
+        in_room: s.in_room,
     }
 }
 
@@ -546,7 +663,7 @@ fn parse_hotkey(what: &str, text: &str) -> Option<Hotkey> {
     }
 }
 
-/// Shortcuts of `config` for the platform thread.
+/// Shortcuts of `config` for the platform thread (an invalid one is skipped with a warning).
 fn configure_hotkeys(platform: &Platform, config: &Config) {
     let h = &config.hotkeys;
     let list: Vec<(HotkeyAction, Hotkey)> = [
@@ -561,6 +678,21 @@ fn configure_hotkeys(platform: &Platform, config: &Config) {
     if config.audio.mode == AudioMode::PushToTalk {
         platform.set_ptt(parse_hotkey("push_to_talk", &h.push_to_talk));
     }
+}
+
+type HotkeyPlan = (Vec<(HotkeyAction, Hotkey)>, Option<Hotkey>);
+
+/// Shortcuts of `config` from a UI update: every one must parse. The list is for
+/// `set_hotkeys`, the last one is the push-to-talk key.
+fn hotkey_plan(config: &Config) -> Result<HotkeyPlan, String> {
+    let h = &config.hotkeys;
+    let parse = |what: &str, text: &str| text.parse::<Hotkey>().map_err(|e| format!("invalid shortcut {what} ({text:?}): {e}"));
+    let list = vec![
+        (HotkeyAction::ToggleMute, parse("toggle_mute", &h.toggle_mute)?),
+        (HotkeyAction::ToggleDeafen, parse("toggle_deafen", &h.toggle_deafen)?),
+        (HotkeyAction::ToggleGameMode, parse("toggle_game_mode", &h.toggle_game_mode)?),
+    ];
+    Ok((list, Some(parse("push_to_talk", &h.push_to_talk)?)))
 }
 
 /// Runs the core until "Quit" or Ctrl+C.
@@ -612,7 +744,7 @@ pub async fn run(
                 Some(ev) => ctl.on_session_event(ev),
                 None => break,
             },
-            _ = poll.tick(), if game_cfg.auto_detect => {
+            _ = poll.tick(), if ctl.auto_detect() => {
                 let sample = platform::probe();
                 ctl.tick(sample.as_ref()).await;
             }

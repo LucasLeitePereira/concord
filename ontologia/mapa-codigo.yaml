@@ -62,3 +62,6 @@ mapa:
     testes: [sala/crates/core/tests/ipc.rs]
   medicao-desempenho:
     codigo: ["sala/scripts/measure.ps1 (RAM/CPU dos processos sala-*; -Seconds -Interval -ProcessId -Json)", "sala/scripts/measure-game-mode.ps1 (roteiro: release, perfis a/b sintéticos, EnterGameMode pelo pipe, mede o núcleo a, try/finally)"]
+  ui-settings:
+    codigo: ["sala/crates/core/src/settings.rs (Config <-> AudioSettings/GameModeSettings/HotkeySettings/FriendInfo, validação do UpdateConfig)", "sala/crates/core/src/voice.rs (voice_allowed: sala D-015)"]
+    testes: [sala/crates/core/tests/f3_settings.rs]

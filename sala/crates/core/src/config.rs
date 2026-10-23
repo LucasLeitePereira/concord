@@ -337,10 +337,10 @@ impl Config {
         Ok(config)
     }
 
-    /// Rewrites the config file. Comments from the first-run template are NOT preserved
-    /// (plain serialization), which is accepted.
+    /// Rewrites the config file in the commented template format (same as the first run),
+    /// so the user's file keeps its explanations. Hand-written comments are not preserved.
     pub fn save(&self, profile: &Profile) -> Result<(), ConfigError> {
-        let text = toml::to_string_pretty(self).map_err(|e| ConfigError::Serialize(Box::new(e)))?;
+        let text = self.to_commented_toml();
         fs::create_dir_all(&profile.data_dir).map_err(io_err(&profile.data_dir))?;
         let path = profile.config_path();
         fs::write(&path, text).map_err(io_err(&path))

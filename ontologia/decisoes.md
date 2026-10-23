@@ -133,3 +133,8 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Implementação (T-015): `input_volume` > 200 é limitado a 200 com `warn`; o medidor de nível fica depois do ganho e do denoiser, logo antes da ativação; silêncio = −120 dB.
 **Alternativa descartada:** `IAudioEndpointVolume` (volume do dispositivo; global, muda para todos os apps); AGC automático (bombeia ruído de fundo e briga com o limiar).
 **Data:** 2026-10-22
+
+## D-015 Sala sempre aberta
+**Conceitos:** call, peer-connection, ipc-message
+**Decisão:** conectado = na sala, com voz automática (escolha do usuário, 2026-10-23). `HangUp` sai da sala: a voz para nos dois sentidos (só se envia e toca se os dois estão na sala), mas chat e status continuam. `Call{friend}` volta. O `Status` de rede ganha `in_room` (`serde(default = true)`); `PeerStatus` repassa. Sem toque/aceitar.
+**Data:** 2026-10-23

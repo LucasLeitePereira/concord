@@ -185,6 +185,22 @@ impl TrustStore {
         }
     }
 
+    /// Adds a friend; false (nothing changes) if the name is already there.
+    pub fn add_friend(&mut self, entry: FriendEntry) -> bool {
+        if self.friends.iter().any(|f| f.name == entry.name) {
+            return false;
+        }
+        self.friends.push(entry);
+        true
+    }
+
+    /// Removes a friend; false if there is no such friend.
+    pub fn remove_friend(&mut self, name: &str) -> bool {
+        let before = self.friends.len();
+        self.friends.retain(|f| f.name != name);
+        self.friends.len() != before
+    }
+
     /// Explicit user action: forget the pinned fingerprint of `name`.
     /// Returns false if no such friend.
     pub fn reset_fingerprint(&mut self, name: &str) -> bool {

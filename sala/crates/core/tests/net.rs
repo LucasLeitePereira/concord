@@ -110,6 +110,7 @@ fn status() -> ControlMessage {
         deafened: false,
         game_mode: false,
         sharing: false,
+        in_room: true,
     }
 }
 

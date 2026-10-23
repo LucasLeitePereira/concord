@@ -116,6 +116,8 @@ impl PlatformApi for FakePlatform {
         self.all_args.lock().unwrap().push(sender.to_string());
         self.notifications.lock().unwrap().push(sender.to_string());
     }
+    fn set_hotkeys(&self, _hotkeys: Vec<(sala_core::platform::HotkeyAction, sala_core::platform::Hotkey)>) {}
+    fn set_ptt(&self, _hotkey: Option<sala_core::platform::Hotkey>) {}
 }
 
 /// Feeds the controller the session events that arrive within `window`.

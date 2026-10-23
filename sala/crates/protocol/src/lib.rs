@@ -43,6 +43,16 @@ pub struct Capabilities {
     pub hw_decode: Vec<VideoCodec>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// For the bincode wire (no field names): a frame that ends before this trailing
+/// `bool` comes from an older peer and means `true`.
+fn de_bool_or_true<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(bool::deserialize(d).unwrap_or(true))
+}
+
 /// Messages sent on the reliable bidirectional control stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlMessage {
@@ -57,6 +67,9 @@ pub enum ControlMessage {
         deafened: bool,
         game_mode: bool,
         sharing: bool,
+        /// The sender is in the room (D-015). Frames from older peers lack it: `true`.
+        #[serde(default = "default_true", deserialize_with = "de_bool_or_true")]
+        in_room: bool,
     },
     Chat {
         id: u64,
@@ -232,8 +245,61 @@ pub struct ChatEntry {
     pub sent_at: u64,
 }
 
-/// Commands from the UI to the core (IPC).
+/// Voice transmission mode (`audio.mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceMode {
+    VoiceActivity,
+    PushToTalk,
+}
+
+/// The `[audio]` section as exposed to the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioSettings {
+    /// cpal device name or `"default"`.
+    pub input_device: String,
+    pub output_device: String,
+    /// 32..=128.
+    pub bitrate_kbps: u32,
+    pub mode: VoiceMode,
+    /// dBFS, -100..=0.
+    pub vad_threshold: i32,
+    /// Microphone gain in percent, 0..=200.
+    pub input_volume: u32,
+    pub noise_suppression: bool,
+}
+
+/// The `[game_mode]` section as exposed to the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameModeSettings {
+    pub auto_detect: bool,
+    pub games: Vec<String>,
+    pub exclude: Vec<String>,
+    pub keep_sharing_in_game_mode: bool,
+}
+
+/// The `[hotkeys]` section as exposed to the UI (strings such as `"Ctrl+Shift+M"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HotkeySettings {
+    pub push_to_talk: String,
+    pub toggle_mute: String,
+    pub toggle_deafen: String,
+    pub toggle_game_mode: String,
+}
+
+/// One configured friend as exposed to the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FriendInfo {
+    pub name: String,
+    pub address: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// A fingerprint is pinned for this friend.
+    pub verified: bool,
+}
+
+/// Commands from the UI to the core (IPC). The protocol only grows by addition (D-012).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum UiToCore {
     GetState,
@@ -241,7 +307,9 @@ pub enum UiToCore {
     SendChat { text: String },
     SetMuted { muted: bool },
     SetDeafened { deafened: bool },
+    /// Back into the room (D-015); `friend` must be a configured friend.
     Call { friend: String },
+    /// Leaves the room (D-015): no voice either way; chat and status go on.
     HangUp,
     EnterGameMode,
     OpenViewer,
@@ -249,15 +317,48 @@ pub enum UiToCore {
     OpenUi,
     /// Manual exit from game mode (the UI is relaunched).
     ExitGameMode,
+    /// Answered with `CoreToUi::Config`.
+    GetConfig,
+    /// Partial update: only the sections present are replaced (each whole). Applied
+    /// live, saved to `config.toml`, answered by a `Config` broadcast or an `Error`.
+    UpdateConfig {
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        audio: Option<AudioSettings>,
+        #[serde(default)]
+        game_mode: Option<GameModeSettings>,
+        #[serde(default)]
+        hotkeys: Option<HotkeySettings>,
+    },
+    /// Adds (and dials) a friend; `address` is an IP.
+    AddFriend { name: String, address: String },
+    /// Removes a friend and closes the connection.
+    RemoveFriend { name: String },
+    /// Forgets the pinned fingerprint (the next connection pins again).
+    ResetFingerprint { name: String },
+    /// Answered with `CoreToUi::AudioDevices`.
+    ListAudioDevices,
+    /// While on, `CoreToUi::MicLevel` arrives every ~50 ms.
+    SetMicMeter { on: bool },
+    /// Playback volume of one friend, 0.0..=2.0 (not persisted).
+    SetPeerVolume { friend: String, volume: f32 },
 }
 
-/// Events/state from the core to the UI (IPC).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Events/state from the core to the UI (IPC). Unknown variants must be ignored by the UI (D-012).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)] // `Config` is rare and short-lived; boxing would only complicate the UI
 pub enum CoreToUi {
     ChatHistory { entries: Vec<ChatEntry> },
     ChatReceived { entry: ChatEntry },
-    Status { muted: bool, deafened: bool, game_mode: bool },
+    Status {
+        muted: bool,
+        deafened: bool,
+        game_mode: bool,
+        #[serde(default = "default_true")]
+        in_room: bool,
+    },
     Error { message: String },
     Shutdown,
     /// A friend's connection became active.
@@ -265,9 +366,31 @@ pub enum CoreToUi {
     PeerDisconnected { friend: String },
     PeerReconnecting { friend: String, attempt: u32 },
     /// The `Status` a friend announced (also sent on `GetState`).
-    PeerStatus { friend: String, muted: bool, deafened: bool, game_mode: bool, sharing: bool },
+    PeerStatus {
+        friend: String,
+        muted: bool,
+        deafened: bool,
+        game_mode: bool,
+        sharing: bool,
+        #[serde(default = "default_true")]
+        in_room: bool,
+    },
     /// A friend presented a different certificate than the pinned one.
     FingerprintMismatch { friend: String },
+    /// Current configuration (reply to `GetConfig`; broadcast after every change).
+    Config {
+        name: String,
+        audio: AudioSettings,
+        game_mode: GameModeSettings,
+        hotkeys: HotkeySettings,
+        friends: Vec<FriendInfo>,
+    },
+    /// Device names; `"default"` first.
+    AudioDevices { inputs: Vec<String>, outputs: Vec<String> },
+    /// Microphone level (RMS of the last ~50 ms, dBFS, floor -120) while the meter is on.
+    MicLevel { db: f32 },
+    /// Every 2 s per connected friend.
+    CallStats { friend: String, rtt_ms: u32, since_secs: u64 },
 }
 
 /// Encodes an IPC message as exactly one JSON line terminated by `\n`.
@@ -303,6 +426,7 @@ mod tests {
                 deafened: false,
                 game_mode: true,
                 sharing: false,
+                in_room: false,
             },
             ControlMessage::Chat {
                 id: u64::MAX,
@@ -489,6 +613,14 @@ mod tests {
             UiToCore::OpenViewer,
             UiToCore::OpenUi,
             UiToCore::ExitGameMode,
+            UiToCore::GetConfig,
+            UiToCore::UpdateConfig { name: Some("ana".into()), audio: Some(audio_settings()), game_mode: None, hotkeys: None },
+            UiToCore::AddFriend { name: "bia".into(), address: "100.64.0.2".into() },
+            UiToCore::RemoveFriend { name: "bia".into() },
+            UiToCore::ResetFingerprint { name: "bia".into() },
+            UiToCore::ListAudioDevices,
+            UiToCore::SetMicMeter { on: true },
+            UiToCore::SetPeerVolume { friend: "bia".into(), volume: 1.5 },
         ];
         for c in cmds {
             let l = encode_ipc_line(&c).unwrap();
@@ -505,14 +637,34 @@ mod tests {
         let evs = [
             CoreToUi::ChatHistory { entries: vec![e.clone()] },
             CoreToUi::ChatReceived { entry: e },
-            CoreToUi::Status { muted: true, deafened: true, game_mode: false },
+            CoreToUi::Status { muted: true, deafened: true, game_mode: false, in_room: false },
             CoreToUi::Error { message: "x".into() },
             CoreToUi::Shutdown,
             CoreToUi::PeerConnected { friend: "bia".into() },
             CoreToUi::PeerDisconnected { friend: "bia".into() },
             CoreToUi::PeerReconnecting { friend: "bia".into(), attempt: 3 },
-            CoreToUi::PeerStatus { friend: "bia".into(), muted: true, deafened: false, game_mode: true, sharing: false },
+            CoreToUi::PeerStatus { friend: "bia".into(), muted: true, deafened: false, game_mode: true, sharing: false, in_room: false },
             CoreToUi::FingerprintMismatch { friend: "bia".into() },
+            CoreToUi::Config {
+                name: "ana".into(),
+                audio: audio_settings(),
+                game_mode: GameModeSettings {
+                    auto_detect: true,
+                    games: vec!["cs2.exe".into()],
+                    exclude: vec![],
+                    keep_sharing_in_game_mode: false,
+                },
+                hotkeys: HotkeySettings {
+                    push_to_talk: "Mouse4".into(),
+                    toggle_mute: "Ctrl+Shift+M".into(),
+                    toggle_deafen: "Ctrl+Shift+D".into(),
+                    toggle_game_mode: "Ctrl+Shift+G".into(),
+                },
+                friends: vec![FriendInfo { name: "bia".into(), address: "100.64.0.2".into(), port: Some(1), verified: true }],
+            },
+            CoreToUi::AudioDevices { inputs: vec!["default".into(), "Mic".into()], outputs: vec!["default".into()] },
+            CoreToUi::MicLevel { db: -42.5 },
+            CoreToUi::CallStats { friend: "bia".into(), rtt_ms: 23, since_secs: 61 },
         ];
         for ev in evs {
             let l = encode_ipc_line(&ev).unwrap();
@@ -524,6 +676,52 @@ mod tests {
             encode_ipc_line(&UiToCore::HangUp).unwrap(),
             "{\"type\":\"HangUp\"}\n"
         );
+    }
+
+    fn audio_settings() -> AudioSettings {
+        AudioSettings {
+            input_device: "default".into(),
+            output_device: "Fones".into(),
+            bitrate_kbps: 96,
+            mode: VoiceMode::PushToTalk,
+            vad_threshold: -50,
+            input_volume: 100,
+            noise_suppression: false,
+        }
+    }
+
+    #[test]
+    fn status_without_in_room_means_in_room() {
+        // Wire (bincode): an old peer's frame ends right before `in_room`.
+        let new = ControlMessage::Status { muted: true, deafened: false, game_mode: false, sharing: true, in_room: false };
+        let frame = new.encode_frame().unwrap();
+        let payload = &frame[4..frame.len() - 1]; // drop the trailing bool byte
+        let mut old = (payload.len() as u32).to_be_bytes().to_vec();
+        old.extend_from_slice(payload);
+        let mut d = FrameDecoder::new(MAX_CONTROL_FRAME);
+        d.push(&old);
+        assert_eq!(
+            d.next_message().unwrap(),
+            Some(ControlMessage::Status { muted: true, deafened: false, game_mode: false, sharing: true, in_room: true })
+        );
+        // Control: the new frame keeps an explicit `false`.
+        let mut d = FrameDecoder::new(MAX_CONTROL_FRAME);
+        d.push(&frame);
+        assert_eq!(d.next_message().unwrap(), Some(new));
+        // IPC (JSON): field absent.
+        let st: CoreToUi = decode_ipc_line("{\"type\":\"Status\",\"muted\":false,\"deafened\":false,\"game_mode\":false}").unwrap();
+        assert_eq!(st, CoreToUi::Status { muted: false, deafened: false, game_mode: false, in_room: true });
+        let ps: CoreToUi = decode_ipc_line(
+            "{\"type\":\"PeerStatus\",\"friend\":\"b\",\"muted\":false,\"deafened\":false,\"game_mode\":false,\"sharing\":false}",
+        )
+        .unwrap();
+        assert!(matches!(ps, CoreToUi::PeerStatus { in_room: true, .. }));
+    }
+
+    #[test]
+    fn update_config_sections_are_optional() {
+        let c: UiToCore = decode_ipc_line("{\"type\":\"UpdateConfig\",\"name\":\"x\"}").unwrap();
+        assert_eq!(c, UiToCore::UpdateConfig { name: Some("x".into()), audio: None, game_mode: None, hotkeys: None });
     }
 
     #[test]

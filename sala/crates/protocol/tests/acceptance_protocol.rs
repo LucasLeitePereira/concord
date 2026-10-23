@@ -12,7 +12,7 @@ fn all_control() -> Vec<ControlMessage> {
                 hw_decode: vec![VideoCodec::Hevc],
             },
         },
-        ControlMessage::Status { muted: true, deafened: false, game_mode: true, sharing: false },
+        ControlMessage::Status { muted: true, deafened: false, game_mode: true, sharing: false, in_room: true },
         ControlMessage::Chat { id: u64::MAX, text: "olá, ação! 🎮\nlinha 2".into(), sent_at: 1_760_000_000_000 },
         ControlMessage::ShareStart { codec: VideoCodec::Hevc, width: 2560, height: 1440, fps: 60 },
         ControlMessage::ShareStop,
@@ -139,7 +139,7 @@ fn h10_ipc_single_line_even_with_newlines() {
 fn h11_ipc_roundtrip_core_to_ui() {
     let msgs = vec![
         CoreToUi::ChatHistory { entries: vec![ChatEntry { id: 1, from_self: true, text: "oi".into(), sent_at: 5 }] },
-        CoreToUi::Status { muted: false, deafened: true, game_mode: false },
+        CoreToUi::Status { muted: false, deafened: true, game_mode: false, in_room: true },
         CoreToUi::Shutdown,
         CoreToUi::Error { message: "falhou".into() },
     ];

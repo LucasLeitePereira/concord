@@ -221,6 +221,12 @@ impl VoiceEncoder {
         Ok(Self { enc, seq: 0, timestamp: 0, buf: [0; MAX_PACKET_BYTES] })
     }
 
+    /// Changes the target bitrate of the running encoder (clamped to 32..=128 kbps).
+    pub fn set_bitrate(&mut self, bitrate_kbps: u32) -> Result<(), opus::Error> {
+        let kbps = bitrate_kbps.clamp(MIN_BITRATE_KBPS, MAX_BITRATE_KBPS);
+        self.enc.set_bitrate(Bitrate::Bits((kbps * 1000) as i32))
+    }
+
     /// Encodes one frame of exactly `FRAME_SAMPLES`. `None` for a DTX packet (not sent, no seq used).
     pub fn encode(&mut self, pcm: &[f32]) -> Result<Option<EncodedFrame>, opus::Error> {
         let ts = self.timestamp;
@@ -315,6 +321,20 @@ impl Activation {
         self.ptt = pressed;
     }
 
+    /// Switches voice-activity / push-to-talk; the key state and the hangover restart.
+    pub fn set_mode(&mut self, mode: AudioMode) {
+        if mode != self.mode {
+            self.mode = mode;
+            self.ptt = false;
+            self.hangover = 0;
+        }
+    }
+
+    /// Voice-activity threshold in dBFS.
+    pub fn set_threshold_db(&mut self, threshold_db: i32) {
+        self.threshold_db = threshold_db as f32;
+    }
+
     /// While deafened the microphone stays muted: the request is remembered and
     /// applies when deafen ends.
     pub fn set_muted(&mut self, muted: bool) {
@@ -370,11 +390,18 @@ impl Activation {
     }
 }
 
+/// Room rule (D-015): voice flows with a friend only when both sides are in the room.
+pub fn voice_allowed(local_in_room: bool, peer_in_room: bool) -> bool {
+    local_in_room && peer_in_room
+}
+
 /// Per-friend receive state.
 struct Peer {
     jitter: JitterBuffer,
     decoder: VoiceDecoder,
     volume: f32,
+    /// The friend announced it is in the room (assumed until a `Status` says otherwise).
+    in_room: bool,
 }
 
 /// Counters for the periodic log.
@@ -405,6 +432,11 @@ pub struct VoiceEngine {
     /// `audio.input_volume` as a factor (D-014).
     input_gain: f32,
     meter: LevelMeter,
+    /// Separate accumulator for the UI meter (does not disturb the 2 s log), only fed while on.
+    ui_meter: LevelMeter,
+    ui_meter_on: bool,
+    /// The local user is in the room (D-015).
+    in_room: bool,
 }
 
 impl VoiceEngine {
@@ -418,7 +450,52 @@ impl VoiceEngine {
             loopback: None,
             input_gain: input_gain(cfg.input_volume),
             meter: LevelMeter::default(),
+            ui_meter: LevelMeter::default(),
+            ui_meter_on: false,
+            in_room: true,
         })
+    }
+
+    /// Applies a changed `[audio]` section live (devices are the caller's business).
+    pub fn apply_audio(&mut self, cfg: &AudioConfig) -> Result<(), opus::Error> {
+        self.activation.set_mode(cfg.mode);
+        self.activation.set_threshold_db(cfg.vad_threshold);
+        self.input_gain = input_gain(cfg.input_volume);
+        self.encoder.set_bitrate(cfg.bitrate_kbps)
+    }
+
+    /// Local presence in the room (D-015).
+    pub fn set_in_room(&mut self, in_room: bool) {
+        self.in_room = in_room;
+    }
+
+    /// What `friend` announced about its presence in the room.
+    pub fn set_peer_in_room(&mut self, friend: &str, in_room: bool) {
+        if let Some(p) = self.peers.get_mut(friend) {
+            p.in_room = in_room;
+        }
+    }
+
+    /// Friends that must receive our voice now (both sides in the room).
+    pub fn send_targets(&self) -> Vec<String> {
+        self.peers
+            .iter()
+            .filter(|(_, p)| voice_allowed(self.in_room, p.in_room))
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// Turns the UI meter on/off; turning it on starts from an empty interval.
+    pub fn set_ui_meter(&mut self, on: bool) {
+        if on && !self.ui_meter_on {
+            self.ui_meter = LevelMeter::default();
+        }
+        self.ui_meter_on = on;
+    }
+
+    /// RMS level (dBFS) of the frames since the last call; starts a new interval.
+    pub fn take_ui_level(&mut self) -> f32 {
+        self.ui_meter.take().avg_db
     }
 
     /// Mic level since the last call (for the periodic log); starts a new interval.
@@ -455,8 +532,12 @@ impl VoiceEngine {
         if self.peers.contains_key(friend) {
             return Ok(());
         }
-        let peer =
-            Peer { jitter: JitterBuffer::default(), decoder: VoiceDecoder::new()?, volume: 1.0 };
+        let peer = Peer {
+            jitter: JitterBuffer::default(),
+            decoder: VoiceDecoder::new()?,
+            volume: 1.0,
+            in_room: true,
+        };
         self.peers.insert(friend.to_string(), peer);
         Ok(())
     }
@@ -493,6 +574,9 @@ impl VoiceEngine {
             d.process(pcm);
         }
         self.meter.add(pcm);
+        if self.ui_meter_on {
+            self.ui_meter.add(pcm);
+        }
         if !self.activation.should_transmit(pcm) {
             self.encoder.skip_frame();
             self.stats.skipped += 1;
@@ -533,7 +617,10 @@ impl VoiceEngine {
                 }
                 Pop::Empty => None,
             };
-            if let Some(mut frame) = decoded {
+            // Out of the room (either side): the buffer is drained but nothing is heard.
+            if let Some(mut frame) = decoded
+                && voice_allowed(self.in_room, p.in_room)
+            {
                 apply_volume(&mut frame, p.volume);
                 for (m, s) in mix.iter_mut().zip(&frame) {
                     *m += s;
@@ -947,6 +1034,101 @@ mod tests {
         assert!(st.plc_frames + st.fec_frames >= st.jitter.lost.saturating_sub(3 * 2));
         assert!(st.fec_frames > 0, "isolated holes must use FEC");
         assert!(out_energy > 50.0, "audio must keep flowing: {out_energy}");
+    }
+
+    /// Energy heard from one peer over 30 frames, with the given room presences.
+    fn heard_from_peer(local_in_room: bool, peer_in_room: bool) -> (f32, usize) {
+        let mut e = engine();
+        e.add_peer("a").unwrap();
+        e.set_in_room(local_in_room);
+        e.set_peer_in_room("a", peer_in_room);
+        let mut enc = VoiceEncoder::new(96).unwrap();
+        let mut src = SineSource::standard();
+        let mut heard = 0.0f32;
+        for i in 0..30u64 {
+            let f = enc.encode(&src.next_frame()).unwrap().unwrap();
+            e.push_datagram("a", f.seq, f.timestamp, f.payload, i * 20);
+            heard += rms(&e.playout_tick(i * 20 + 100));
+        }
+        (heard, e.send_targets().len())
+    }
+
+    #[test]
+    fn voice_flows_only_when_both_are_in_the_room() {
+        let (heard, targets) = heard_from_peer(true, true);
+        assert!(heard > 1.0, "control: both in the room is audible ({heard})");
+        assert_eq!(targets, 1);
+        for (local, peer) in [(true, false), (false, true), (false, false)] {
+            let (heard, targets) = heard_from_peer(local, peer);
+            assert_eq!(heard, 0.0, "local {local} peer {peer}: nothing may be played");
+            assert_eq!(targets, 0, "local {local} peer {peer}: nothing may be sent");
+        }
+        assert!(voice_allowed(true, true));
+        assert!(!voice_allowed(true, false) && !voice_allowed(false, true) && !voice_allowed(false, false));
+    }
+
+    #[test]
+    fn leaving_the_room_still_drains_the_jitter_buffer() {
+        let mut e = engine();
+        e.add_peer("a").unwrap();
+        e.set_in_room(false);
+        let mut enc = VoiceEncoder::new(96).unwrap();
+        let mut src = SineSource::standard();
+        for i in 0..30u64 {
+            let f = enc.encode(&src.next_frame()).unwrap().unwrap();
+            e.push_datagram("a", f.seq, f.timestamp, f.payload, i * 20);
+            e.playout_tick(i * 20 + 100);
+        }
+        assert!(e.peer_stats("a").unwrap().jitter.played > 20, "frames are consumed while out of the room");
+    }
+
+    #[test]
+    fn ui_meter_runs_only_when_on_and_is_independent_of_the_log_meter() {
+        let mut e = engine();
+        let frame = || vec![0.1f32; FRAME_SAMPLES]; // -20 dBFS
+        e.process_capture(&mut frame()).unwrap();
+        assert_eq!(e.take_ui_level(), SILENCE_DB, "off: nothing accumulated");
+        e.set_ui_meter(true);
+        e.process_capture(&mut frame()).unwrap();
+        let first = e.take_ui_level();
+        assert!((first - -20.0).abs() < 0.1, "{first}");
+        assert_eq!(e.take_ui_level(), SILENCE_DB, "the interval was reset");
+        // The 2 s log meter saw both frames and is not reset by the UI meter.
+        e.process_capture(&mut frame()).unwrap();
+        e.take_ui_level();
+        let log = e.take_mic_levels();
+        assert!((log.avg_db - -20.0).abs() < 0.1, "{log:?}");
+        // And the other way round.
+        e.process_capture(&mut frame()).unwrap();
+        e.take_mic_levels();
+        assert!((e.take_ui_level() - -20.0).abs() < 0.1);
+        e.set_ui_meter(false);
+        e.process_capture(&mut frame()).unwrap();
+        assert_eq!(e.take_ui_level(), SILENCE_DB);
+    }
+
+    #[test]
+    fn apply_audio_changes_threshold_mode_gain_and_bitrate_live() {
+        let quiet: Vec<f32> = (0..FRAME_SAMPLES)
+            .map(|i| 0.004 * (i as f32 * std::f32::consts::TAU * 440.0 / SAMPLE_RATE as f32).sin())
+            .collect(); // about -51 dBFS
+        let mut e = engine();
+        assert!(e.process_capture(&mut quiet.clone()).unwrap().is_none(), "control: gated at -50");
+        let mut cfg = AudioConfig { vad_threshold: -60, ..AudioConfig::default() };
+        e.apply_audio(&cfg).unwrap();
+        assert!(e.process_capture(&mut quiet.clone()).unwrap().is_some(), "lower threshold lets it through");
+        cfg.mode = AudioMode::PushToTalk;
+        e.apply_audio(&cfg).unwrap();
+        assert!(e.process_capture(&mut vec![0.5f32; FRAME_SAMPLES]).unwrap().is_none(), "PTT without the key");
+        e.activation_mut().set_ptt(true);
+        assert!(e.process_capture(&mut quiet.clone()).unwrap().is_some());
+        cfg.mode = AudioMode::VoiceActivity;
+        cfg.vad_threshold = -50;
+        cfg.input_volume = 200;
+        e.apply_audio(&cfg).unwrap();
+        assert!(e.process_capture(&mut quiet.clone()).unwrap().is_some(), "gain 200 % lifts it over -50");
+        cfg.bitrate_kbps = 40;
+        e.apply_audio(&cfg).unwrap();
     }
 
     #[test]

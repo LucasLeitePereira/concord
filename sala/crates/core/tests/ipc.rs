@@ -26,7 +26,7 @@ async fn within<F: Future>(f: F) -> F::Output {
 }
 
 fn status() -> CoreToUi {
-    CoreToUi::Status { muted: true, deafened: false, game_mode: false }
+    CoreToUi::Status { muted: true, deafened: false, game_mode: false, in_room: true }
 }
 
 fn fake_ui_exe() -> PathBuf {

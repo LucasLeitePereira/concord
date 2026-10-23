@@ -56,6 +56,8 @@ pub enum NetError {
     Bind(#[from] std::io::Error),
     #[error("unknown friend: {0}")]
     UnknownFriend(String),
+    #[error("friend already exists: {0}")]
+    DuplicateFriend(String),
     #[error("invalid friend address: {0}")]
     InvalidAddress(String),
     #[error("not connected to {0}")]
@@ -279,6 +281,7 @@ struct Active {
     conn: quinn::Connection,
     side: ConnSide,
     tx: mpsc::UnboundedSender<ControlMessage>,
+    since: Instant,
 }
 
 struct Inner {
@@ -288,7 +291,9 @@ struct Inner {
     conns: Mutex<HashMap<String, Active>>,
     /// Friends pinned (TOFU) whose pin was not yet reported through `Connected`.
     unreported_pins: Mutex<HashSet<String>>,
-    dialing: Mutex<HashSet<String>>,
+    /// Friends being dialed, with the token of their supervisor (a removed and
+    /// re-added friend gets a new supervisor; the old one notices and ends).
+    dialing: Mutex<HashMap<String, u64>>,
     events: mpsc::UnboundedSender<NetEvent>,
     shutdown: watch::Sender<bool>,
     next_id: AtomicU64,
@@ -341,7 +346,7 @@ impl Net {
             trust: Mutex::new(trust),
             conns: Mutex::new(HashMap::new()),
             unreported_pins: Mutex::new(HashSet::new()),
-            dialing: Mutex::new(HashSet::new()),
+            dialing: Mutex::new(HashMap::new()),
             events,
             shutdown,
             next_id: AtomicU64::new(1),
@@ -375,12 +380,60 @@ impl Net {
         {
             return Err(NetError::UnknownFriend(friend.name.clone()));
         }
-        if !lock(&self.inner.dialing).insert(friend.name.clone()) {
-            return Ok(());
+        let token = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut dialing = lock(&self.inner.dialing);
+            if dialing.contains_key(&friend.name) {
+                return Ok(());
+            }
+            dialing.insert(friend.name.clone(), token);
         }
         let target = SocketAddr::new(ip, friend.effective_port());
-        tokio::spawn(supervise(self.inner.clone(), friend.name.clone(), target));
+        tokio::spawn(supervise(self.inner.clone(), friend.name.clone(), target, token));
         Ok(())
+    }
+
+    /// Adds `friend` to the allowlist and starts dialing it. Errors on a duplicate
+    /// name or an invalid address (nothing changes then).
+    pub fn add_friend(&self, friend: &Friend) -> Result<(), NetError> {
+        let address: IpAddr = friend
+            .address
+            .parse()
+            .map_err(|_| NetError::InvalidAddress(friend.address.clone()))?;
+        let fingerprint = friend.fingerprint.as_deref().and_then(|h| Fingerprint::from_hex(h).ok());
+        let entry = FriendEntry { name: friend.name.clone(), address, fingerprint };
+        if !lock(&self.inner.trust).add_friend(entry) {
+            return Err(NetError::DuplicateFriend(friend.name.clone()));
+        }
+        self.dial(friend)
+    }
+
+    /// Removes `friend` from the allowlist, stops dialing it and closes its connection
+    /// (the usual `Disconnected` event follows when it was connected).
+    pub fn remove_friend(&self, name: &str) {
+        lock(&self.inner.trust).remove_friend(name);
+        lock(&self.inner.dialing).remove(name);
+        lock(&self.inner.unreported_pins).remove(name);
+        let conn = lock(&self.inner.conns).get(name).map(|a| a.conn.clone());
+        if let Some(c) = conn {
+            c.close(CODE_NORMAL.into(), b"friend removed");
+        }
+    }
+
+    /// Forgets the pinned fingerprint of `name` (the next connection pins again).
+    /// False if there is no such friend.
+    pub fn reset_fingerprint(&self, name: &str) -> bool {
+        lock(&self.inner.trust).reset_fingerprint(name)
+    }
+
+    /// Round-trip time estimate of the active connection to `friend`.
+    pub fn rtt(&self, friend: &str) -> Option<Duration> {
+        lock(&self.inner.conns).get(friend).map(|a| a.conn.rtt())
+    }
+
+    /// How long the active connection to `friend` has been up.
+    pub fn connected_for(&self, friend: &str) -> Option<Duration> {
+        lock(&self.inner.conns).get(friend).map(|a| a.since.elapsed())
     }
 
     /// Queues a control message on the active connection to `friend`.
@@ -484,7 +537,7 @@ async fn accept_loop(inner: Arc<Inner>) {
 }
 
 /// Keeps one outgoing connection to a friend alive, with backoff (D-007).
-async fn supervise(inner: Arc<Inner>, friend: String, target: SocketAddr) {
+async fn supervise(inner: Arc<Inner>, friend: String, target: SocketAddr, token: u64) {
     let mut shutdown = inner.shutdown.subscribe();
     let mut attempt: u32 = 0;
     let mut connected_since: Option<Instant> = None;
@@ -492,6 +545,10 @@ async fn supervise(inner: Arc<Inner>, friend: String, target: SocketAddr) {
     loop {
         if *shutdown.borrow() {
             break;
+        }
+        // The friend was removed (and maybe re-added with another supervisor).
+        if lock(&inner.dialing).get(&friend) != Some(&token) {
+            return;
         }
         if inner.is_connected(&friend) {
             connected_since.get_or_insert_with(Instant::now);
@@ -554,7 +611,10 @@ async fn supervise(inner: Arc<Inner>, friend: String, target: SocketAddr) {
             }
         }
     }
-    lock(&inner.dialing).remove(&friend);
+    let mut dialing = lock(&inner.dialing);
+    if dialing.get(&friend) == Some(&token) {
+        dialing.remove(&friend);
+    }
 }
 
 fn peer_fingerprint(conn: &quinn::Connection) -> Option<Fingerprint> {
@@ -678,6 +738,7 @@ async fn establish(inner: Arc<Inner>, conn: quinn::Connection, side: ConnSide) {
                 conn: conn.clone(),
                 side,
                 tx,
+                since: Instant::now(),
             },
         );
     }
