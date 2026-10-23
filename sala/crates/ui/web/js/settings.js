@@ -54,6 +54,8 @@ export function initSettings({ state, send, h, icon }) {
   let confirming = null; // { kind: 'remove' | 'reset', name }
   let pendingAdd = null; // nome enviado, aguardando o Config novo
   let shownName = null; // último Config.name colocado no campo
+  let volumeDragging = false;
+  let thresholdDragging = false;
 
   const address = (f) => (f.port ? `${f.address}:${f.port}` : f.address);
 
@@ -254,6 +256,38 @@ export function initSettings({ state, send, h, icon }) {
     }
   }
 
+  function renderMicMeter() {
+    const cfg = state.config;
+    const db = Number.isFinite(state.mic_level_db) ? state.mic_level_db : -120;
+    const threshold = Number($('vad-threshold').value);
+    const levelPercent = Math.max(0, Math.min(100, (db + 80) / 80 * 100));
+    const thresholdPercent = Math.max(0, Math.min(100, (threshold + 80) / 80 * 100));
+    const meter = $('mic-meter');
+    $('mic-meter-fill').style.width = `${levelPercent}%`;
+    $('mic-meter-fill').classList.toggle('transmitting', db >= threshold);
+    meter.setAttribute('aria-valuenow', String(Math.max(-80, Math.min(0, db))));
+    $('mic-threshold-line').style.left = `${thresholdPercent}%`;
+    $('mic-sensitivity').hidden = !cfg || cfg.audio.mode !== 'voice_activity';
+  }
+
+  function renderAudioControls() {
+    const cfg = state.config;
+    const connected = state.link === 'connected' && !!cfg;
+    const volume = cfg ? cfg.audio.input_volume : 100;
+    const threshold = cfg ? cfg.audio.vad_threshold : -50;
+    if (!volumeDragging) {
+      $('mic-volume').value = String(volume);
+      $('mic-volume-value').value = `${volume}%`;
+    }
+    if (!thresholdDragging) {
+      $('vad-threshold').value = String(Math.max(-80, Math.min(-10, threshold)));
+      $('vad-threshold-value').value = `${threshold} dB`;
+    }
+    $('mic-volume').disabled = !connected;
+    $('vad-threshold').disabled = !connected;
+    renderMicMeter();
+  }
+
   for (const [id, mode] of [['mode-vad', 'voice_activity'], ['mode-ptt', 'push_to_talk']]) {
     $(id).addEventListener('click', () => {
       const cfg = state.config;
@@ -268,10 +302,36 @@ export function initSettings({ state, send, h, icon }) {
     send({ type: 'UpdateConfig', audio: { ...cfg.audio, noise_suppression: $('noise-suppression').checked } });
   });
 
+  $('mic-volume').addEventListener('input', () => {
+    volumeDragging = true;
+    $('mic-volume-value').value = `${$('mic-volume').value}%`;
+  });
+  $('mic-volume').addEventListener('change', () => {
+    volumeDragging = false;
+    const cfg = state.config;
+    const input_volume = Number($('mic-volume').value);
+    if (!cfg || cfg.audio.input_volume === input_volume) return;
+    send({ type: 'UpdateConfig', audio: { ...cfg.audio, input_volume } });
+  });
+
+  $('vad-threshold').addEventListener('input', () => {
+    thresholdDragging = true;
+    $('vad-threshold-value').value = `${$('vad-threshold').value} dB`;
+    renderMicMeter();
+  });
+  $('vad-threshold').addEventListener('change', () => {
+    thresholdDragging = false;
+    const cfg = state.config;
+    const vad_threshold = Number($('vad-threshold').value);
+    if (!cfg || cfg.audio.vad_threshold === vad_threshold) return;
+    send({ type: 'UpdateConfig', audio: { ...cfg.audio, vad_threshold } });
+  });
+
   function renderSettings() {
     const cfg = state.config;
     if (cfg) renderAddress(cfg.my_address || null);
     renderHotkeys();
+    renderAudioControls();
     const input = $('name-input');
     if (cfg && cfg.name !== shownName) {
       shownName = cfg.name;
@@ -331,5 +391,5 @@ export function initSettings({ state, send, h, icon }) {
     $('friend-form').scrollIntoView({ block: 'center' });
   }
 
-  return { renderSettings, focusAddFriend };
+  return { renderSettings, renderMicMeter, focusAddFriend };
 }

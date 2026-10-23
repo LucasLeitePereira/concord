@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Main window: receive core events and call the app's own commands.",
   "windows": ["main"],
-  "permissions": ["core:event:default"]
+  "permissions": ["core:event:default", "core:window:allow-close"]
 }

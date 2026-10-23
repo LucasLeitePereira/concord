@@ -129,6 +129,27 @@
               <button type="button" role="radio" id="mode-ptt" aria-checked="false">Aperte para falar</button>
             </div>
           </div>
+          <div class="audio-control">
+            <div class="audio-control-head">
+              <label for="mic-volume">Volume do microfone</label>
+              <output id="mic-volume-value" for="mic-volume">100%</output>
+            </div>
+            <input class="audio-range" type="range" id="mic-volume" min="0" max="200" step="5" value="100" disabled>
+          </div>
+          <div class="audio-control" id="mic-sensitivity" hidden>
+            <div class="audio-control-head">
+              <label for="vad-threshold">Sensibilidade</label>
+              <output id="vad-threshold-value" for="vad-threshold">−50 dB</output>
+            </div>
+            <div class="mic-meter-wrap">
+              <div class="mic-meter-track" id="mic-meter" role="meter" aria-label="Nível atual do microfone" aria-valuemin="-80" aria-valuemax="0" aria-valuenow="-80">
+                <div class="mic-meter-fill" id="mic-meter-fill"></div>
+              </div>
+              <div class="mic-threshold-line" id="mic-threshold-line"></div>
+              <input class="mic-threshold-slider" type="range" id="vad-threshold" min="-80" max="-10" step="1" value="-50" aria-label="Limiar de sensibilidade" disabled>
+            </div>
+            <span class="hint-text">Fale normalmente: a barra deve passar da linha quando você fala e ficar abaixo dela em silêncio.</span>
+          </div>
           <label class="check-row" for="noise-suppression">
             <input type="checkbox" id="noise-suppression" disabled>
             <span><strong>Supressão de ruído</strong><small>Reduz ventilador, teclado e ruído de fundo.</small></span>

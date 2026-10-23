@@ -8,6 +8,7 @@ export function initialState() {
     everConnected: false,
     status: null, // { muted, deafened, game_mode, in_room }
     config: null, // CoreToUi::Config
+    mic_level_db: -120, // CoreToUi::MicLevel
     peers: {}, // nome -> { connected, reconnecting, status, stats }
     mismatch: {}, // nome -> true (FingerprintMismatch)
     chat: [],
@@ -48,6 +49,9 @@ export function reduce(state, msg) {
     case 'Config':
       state.config = msg;
       return 'full';
+    case 'MicLevel':
+      state.mic_level_db = Number.isFinite(msg.db) ? msg.db : -120;
+      return 'mic';
     case 'PeerConnected': {
       const p = peer(state, msg.friend);
       p.connected = true;

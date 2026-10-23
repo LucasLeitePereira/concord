@@ -45,7 +45,18 @@ function icon(id, size) {
 
 const linked = () => state.link === 'connected';
 
-const { renderSettings, focusAddFriend } = initSettings({ state, send, h, icon });
+const { renderSettings, renderMicMeter, focusAddFriend } = initSettings({ state, send, h, icon });
+let micMeterOn = false;
+
+function setMicMeter(on) {
+  if (micMeterOn === on) return Promise.resolve();
+  micMeterOn = on;
+  return send({ type: 'SetMicMeter', on });
+}
+
+function syncMicMeter() {
+  return setMicMeter(linked() && state.view === 'settings');
+}
 
 // ---------- Renderização ----------
 
@@ -307,6 +318,7 @@ function render() {
 function setView(v) {
   state.view = v;
   renderNav();
+  syncMicMeter();
 }
 
 let toastTimer = null;
@@ -330,6 +342,7 @@ function requestAll() {
 function onLink(link) {
   const was = state.link;
   setLink(state, link === 'connected' ? 'connected' : 'disconnected');
+  syncMicMeter();
   if (state.link === 'connected' && was !== 'connected') requestAll();
   render();
 }
@@ -345,6 +358,10 @@ function onCore(msg) {
   if (what === 'none') return;
   if (what === 'stats') {
     renderHeader();
+    return;
+  }
+  if (what === 'mic') {
+    if (state.view === 'settings') renderMicMeter();
     return;
   }
   if (what === 'chat') {
@@ -397,6 +414,13 @@ setInterval(() => { if (!document.hidden) tickTimer(); }, 1000);
 
 async function start() {
   render();
+  const appWindow = tauri.window.getCurrentWindow();
+  await appWindow.onCloseRequested(async (event) => {
+    if (!micMeterOn) return;
+    event.preventDefault();
+    await setMicMeter(false);
+    await appWindow.close();
+  });
   await tauri.event.listen('core', (e) => onCore(e.payload));
   await tauri.event.listen('link', (e) => onLink(e.payload));
   // O evento `link` pode ter saído antes de registrarmos o ouvinte.
