@@ -148,3 +148,8 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Ao iniciar, o núcleo liga o Tailscale se estiver instalado e parado (`tailscale.rs`), em segundo plano e sem bloquear.
 - Os executáveis do próprio app (`OWN_EXES` em `game_detector.rs`) nunca contam como jogo.
 - Captura de atalho na UI: `UiToCore::SetHotkeyCapture{on}` suspende os atalhos globais enquanto o usuário digita; atalho em uso → `Error`.
+
+## D-018 — Tailscale desliga junto com o Concord; núcleo sem console
+- Ao sair (Fechar a Sala ou Ctrl+C), o núcleo roda `tailscale down` e fecha o `tailscale-ipn.exe`, por pedido do usuário. Com `--profile` (testes), o Tailscale não é tocado, nem na entrada nem na saída.
+- No release, o `sala-core.exe` usa o subsistema `windows` (sem janela de terminal); o log vai só para o arquivo. O build de debug mantém o console.
+- Aviso do SmartScreen ("fornecedor desconhecido"): só some com assinatura de código. Ver AGENTS.md.

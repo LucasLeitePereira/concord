@@ -1,3 +1,6 @@
+// Release: no console window; logs go to the file (debug keeps the console for tests).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use sala_core::cli::CliArgs;
 use sala_core::config::{Config, Profile};
 use sala_core::identity::LocalIdentity;

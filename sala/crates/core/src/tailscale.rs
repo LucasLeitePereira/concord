@@ -172,6 +172,27 @@ pub async fn ensure_up() -> bool {
     tokio::task::spawn_blocking(ensure_up_blocking).await.unwrap_or(false)
 }
 
+/// Blocking: `tailscale down` and closes the tray app (the service stays installed).
+fn shut_down_blocking() {
+    let Some(dir) = install_dir().filter(|d| d.join("tailscale.exe").exists()) else { return };
+    let mut cmd = Command::new(dir.join("tailscale.exe"));
+    cmd.arg("down");
+    match run_capture(cmd, UP_TIMEOUT) {
+        Some(_) => info!("tailscale: down done"),
+        None => warn!("tailscale: `tailscale down` failed or timed out"),
+    }
+    let mut cmd = Command::new("taskkill");
+    cmd.args(["/F", "/IM", "tailscale-ipn.exe"]);
+    if run_capture(cmd, STATUS_TIMEOUT).is_some() {
+        info!("tailscale: tray app closed");
+    }
+}
+
+/// On quit: Tailscale goes down together with the app (user's request, D-018).
+pub async fn shut_down() {
+    let _ = tokio::task::spawn_blocking(shut_down_blocking).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

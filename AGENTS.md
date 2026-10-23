@@ -72,6 +72,8 @@ Feito: F1 (rede, voz, identidade), F2 (núcleo residente, modo jogo, bandeja, IP
 3. Supressão de ruído: o ponto de extensão existe em `voice.rs` (`set_denoiser`), sem implementação; usar o crate `nnnoiseless`.
 4. F4: compartilhamento de tela (WGC + encoder de hardware via FFmpeg LGPL + visualizador wgpu). F5: mesa de sons. README e CI (GitHub Actions) também ficaram para depois.
 
+Aviso do Windows (SmartScreen, "fornecedor desconhecido"): o instalador não é assinado. Para tirar o aviso é preciso um certificado de assinatura de código (por exemplo, Certum Open Source, para projeto público) e `signtool`/`SignTool=` no Inno Setup; a reputação no SmartScreen ainda leva algum tempo de downloads para se formar. A decisão e o custo são do usuário.
+
 Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo, teste real entre dois PCs via Tailscale, e o instalador baixando o Tailscale (nunca executado de fato).
 
 ## 7. Armadilhas conhecidas

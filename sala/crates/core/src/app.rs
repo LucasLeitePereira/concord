@@ -787,12 +787,16 @@ pub async fn run(
     ctl.host_mut().launch();
 
     // Tailscale is brought up in the background; the UI gets the address once it runs.
+    // Test profiles (`--profile`) leave Tailscale alone.
+    let manage_tailscale = profile_name.is_none();
     let (ts_tx, mut ts_rx) = tokio::sync::mpsc::channel::<()>(1);
-    tokio::spawn(async move {
-        if crate::tailscale::ensure_up().await {
-            let _ = ts_tx.send(()).await;
-        }
-    });
+    if manage_tailscale {
+        tokio::spawn(async move {
+            if crate::tailscale::ensure_up().await {
+                let _ = ts_tx.send(()).await;
+            }
+        });
+    }
     let mut capture_watch = interval(std::time::Duration::from_secs(1));
     capture_watch.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -827,5 +831,8 @@ pub async fn run(
         }
     }
     ctl.shutdown().await;
+    if manage_tailscale {
+        crate::tailscale::shut_down().await;
+    }
     Ok(())
 }
