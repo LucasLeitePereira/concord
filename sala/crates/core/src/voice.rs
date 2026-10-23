@@ -26,6 +26,7 @@ const PACKET_LOSS_PERC: i32 = 10;
 const MAX_PACKET_BYTES: usize = 1275;
 pub const MIN_BITRATE_KBPS: u32 = 32;
 pub const MAX_BITRATE_KBPS: u32 = 128;
+pub use crate::config::MAX_INPUT_VOLUME_PERCENT;
 
 /// Frame level in dBFS (RMS). Empty or silent input is `f32::NEG_INFINITY`.
 pub fn level_dbfs(pcm: &[f32]) -> f32 {
@@ -46,6 +47,60 @@ pub fn apply_volume(samples: &mut [f32], volume: f32) {
     let v = clamp_volume(volume);
     for s in samples {
         *s = (*s * v).clamp(-1.0, 1.0);
+    }
+}
+
+/// Level reported for digital silence instead of `-inf`.
+pub const SILENCE_DB: f32 = -120.0;
+
+/// Software gain of `audio.input_volume` (D-014): percent (clamped to 0..=200) to a factor.
+pub fn input_gain(percent: u32) -> f32 {
+    percent.min(MAX_INPUT_VOLUME_PERCENT) as f32 / 100.0
+}
+
+/// Applies the input gain and clamps every sample to [-1, 1]. Gain 1.0 is the identity.
+pub fn apply_input_gain(samples: &mut [f32], gain: f32) {
+    if gain == 1.0 {
+        return;
+    }
+    for s in samples {
+        *s = (*s * gain).clamp(-1.0, 1.0);
+    }
+}
+
+/// Microphone level over a reporting interval, in dBFS (floor [`SILENCE_DB`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MicLevels {
+    /// Mean power of all captured frames.
+    pub avg_db: f32,
+    /// Largest absolute sample.
+    pub peak_db: f32,
+}
+
+/// Accumulates the microphone level between two log lines.
+#[derive(Debug, Clone, Copy, Default)]
+struct LevelMeter {
+    sum_sq: f64,
+    samples: u64,
+    peak: f32,
+}
+
+impl LevelMeter {
+    fn add(&mut self, pcm: &[f32]) {
+        self.sum_sq += pcm.iter().map(|s| f64::from(*s) * f64::from(*s)).sum::<f64>();
+        self.samples += pcm.len() as u64;
+        self.peak = pcm.iter().fold(self.peak, |m, s| m.max(s.abs()));
+    }
+
+    fn take(&mut self) -> MicLevels {
+        let to_db = |power: f64| if power > 0.0 { (10.0 * power.log10()) as f32 } else { SILENCE_DB };
+        let avg = if self.samples > 0 { self.sum_sq / self.samples as f64 } else { 0.0 };
+        let levels = MicLevels {
+            avg_db: to_db(avg).max(SILENCE_DB),
+            peak_db: to_db(f64::from(self.peak) * f64::from(self.peak)).max(SILENCE_DB),
+        };
+        *self = LevelMeter::default();
+        levels
     }
 }
 
@@ -347,6 +402,9 @@ pub struct VoiceEngine {
     peers: HashMap<String, Peer>,
     stats: VoiceStats,
     loopback: Option<(VoiceDecoder, VecDeque<Vec<f32>>)>,
+    /// `audio.input_volume` as a factor (D-014).
+    input_gain: f32,
+    meter: LevelMeter,
 }
 
 impl VoiceEngine {
@@ -358,7 +416,14 @@ impl VoiceEngine {
             peers: HashMap::new(),
             stats: VoiceStats::default(),
             loopback: None,
+            input_gain: input_gain(cfg.input_volume),
+            meter: LevelMeter::default(),
         })
+    }
+
+    /// Mic level since the last call (for the periodic log); starts a new interval.
+    pub fn take_mic_levels(&mut self) -> MicLevels {
+        self.meter.take()
     }
 
     pub fn activation(&self) -> &Activation {
@@ -423,9 +488,11 @@ impl VoiceEngine {
         if pcm.len() != FRAME_SAMPLES {
             return Ok(None);
         }
+        apply_input_gain(pcm, self.input_gain);
         if let Some(d) = self.denoiser.as_mut() {
             d.process(pcm);
         }
+        self.meter.add(pcm);
         if !self.activation.should_transmit(pcm) {
             self.encoder.skip_frame();
             self.stats.skipped += 1;
@@ -653,6 +720,68 @@ mod tests {
         let mut z = vec![0.5];
         apply_volume(&mut z, 0.0);
         assert_eq!(z, vec![0.0]);
+    }
+
+    #[test]
+    fn input_gain_scales_and_clips() {
+        assert_eq!(input_gain(100), 1.0);
+        assert_eq!(input_gain(200), 2.0);
+        assert_eq!(input_gain(0), 0.0);
+        assert_eq!(input_gain(9999), 2.0, "above the ceiling is clamped");
+        let mut s = vec![0.25, -0.25, 0.9, -0.9];
+        apply_input_gain(&mut s, 2.0);
+        assert_eq!(s, vec![0.5, -0.5, 1.0, -1.0], "doubled, with clipping at full scale");
+        let mut half = vec![0.5, -0.5];
+        apply_input_gain(&mut half, 0.5);
+        assert_eq!(half, vec![0.25, -0.25]);
+    }
+
+    #[test]
+    fn hundred_percent_is_identity() {
+        let orig = vec![0.123, -0.987, 0.0, 1.0, -1.0];
+        let mut s = orig.clone();
+        apply_input_gain(&mut s, input_gain(100));
+        assert_eq!(s, orig);
+    }
+
+    #[test]
+    fn engine_applies_gain_before_activation_and_meter() {
+        // Sine with RMS about -51 dBFS: under the default -50 dB threshold at 100 %,
+        // about -45 dB (over it) at 200 %.
+        let quiet: Vec<f32> = (0..FRAME_SAMPLES)
+            .map(|i| 0.004 * (i as f32 * std::f32::consts::TAU * 440.0 / SAMPLE_RATE as f32).sin())
+            .collect();
+        let run = |percent: u32| {
+            let cfg = AudioConfig { input_volume: percent, ..AudioConfig::default() };
+            let mut e = VoiceEngine::new(&cfg).unwrap();
+            let mut f = quiet.clone();
+            let sent = e.process_capture(&mut f).unwrap().is_some();
+            (sent, e.take_mic_levels(), f[10])
+        };
+        let (sent_100, lv_100, s_100) = run(100);
+        let (sent_200, lv_200, s_200) = run(200);
+        assert!(!sent_100, "control: quiet frame is gated at 100 %");
+        assert!(sent_200, "gain lifts it over the threshold");
+        assert_eq!(s_100, quiet[10]);
+        assert!((s_200 - 2.0 * quiet[10]).abs() < 1e-7);
+        assert!((lv_200.avg_db - lv_100.avg_db - 6.02).abs() < 0.1, "{lv_100:?} {lv_200:?}");
+        assert!((lv_200.peak_db - lv_100.peak_db - 6.02).abs() < 0.1);
+    }
+
+    #[test]
+    fn mic_levels_report_avg_peak_floor_and_reset() {
+        let mut e = engine();
+        let silent = e.take_mic_levels();
+        assert_eq!(silent, MicLevels { avg_db: SILENCE_DB, peak_db: SILENCE_DB }, "no frames: floor, not -inf");
+        e.process_capture(&mut vec![0.0f32; FRAME_SAMPLES]).unwrap();
+        assert_eq!(e.take_mic_levels().peak_db, SILENCE_DB, "digital silence: floor");
+        let mut f = vec![0.0f32; FRAME_SAMPLES];
+        f[0] = 0.5; // one spike
+        e.process_capture(&mut f).unwrap();
+        let lv = e.take_mic_levels();
+        assert!((lv.peak_db - -6.02).abs() < 0.05, "{lv:?}");
+        assert!(lv.avg_db < lv.peak_db - 25.0, "average well under the peak: {lv:?}");
+        assert_eq!(e.take_mic_levels().peak_db, SILENCE_DB, "interval was reset");
     }
 
     #[test]

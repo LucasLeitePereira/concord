@@ -422,7 +422,15 @@ async fn run_loop(
             }
             _ = stats_tick.tick() => {
                 let s = engine.stats();
-                tracing::info!(sent = s.sent, skipped = s.skipped, send_errors, "voice tx");
+                let mic = engine.take_mic_levels();
+                tracing::info!(
+                    sent = s.sent,
+                    skipped = s.skipped,
+                    send_errors,
+                    mic_avg_db = format_args!("{:.1}", mic.avg_db),
+                    mic_peak_db = format_args!("{:.1}", mic.peak_db),
+                    "voice tx"
+                );
                 let names: Vec<String> = engine.peer_names().map(str::to_string).collect();
                 for n in names {
                     if let Some(p) = engine.peer_stats(&n) {

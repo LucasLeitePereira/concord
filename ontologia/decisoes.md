@@ -115,3 +115,21 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 **Alternativa descartada:** cada fonte (atalho, bandeja, IPC) mexer direto no estado; isso duplicaria a lógica e quebraria `inv-deafen-implies-mute` em algum caminho.
 **Data:** 2026-10-22
 **Adendo (T-013, 2026-10-22):** "chamada atual" = 1º amigo conectado (MVP de 2 pessoas; `GetChatHistory`/`SendChat` não levam amigo). `Call`/`HangUp`/`OpenViewer` respondem `Error` até F3/F4. `SendChat` ecoa `ChatReceived{from_self:true}` a quem enviou. Novos `CoreToUi`: `PeerConnected`, `PeerDisconnected`, `PeerReconnecting`, `PeerStatus`, `FingerprintMismatch`; novos `UiToCore`: `OpenUi`, `ExitGameMode`. A UI real deve ignorar variantes desconhecidas de `CoreToUi` (o protocolo cresce só por adição). Logs com `tracing-appender` (leve: crossbeam-channel, symlink, time; faz a retenção de 14 dias), em `<data_dir>/logs/`, diretório criado antes. `Connected` repetido (conexão substituta) não zera histórico nem par de voz; só reenvia Hello/Status.
+**Adendo (T-015, 2026-10-22):** toda transição do modo jogo leva um `Trigger` (`auto (<exe>)`, `hotkey`, `menu`, `tray_click`, `notification`, `ipc`, `second_instance`), logado em "entering/leaving game mode trigger=…" e registrado como último passo (`Step::Cause`), sem mudar a ordem da sequência. Falha de atalho: um único `warn` (no orquestrador), com ação e atalho legíveis. Log em hora local com offset (`tracing-subscriber` `local-time`).
+
+## D-013 Nomes de mudo e ensurdecer na interface
+**Conceitos:** voice-activation, call, inv-deafen-implies-mute
+**Decisão:** os textos para o usuário usam os nomes convencionais: **Mutar-se / Desmutar-se** (microfone) e **Silenciar / Voltar a ouvir** (áudio de entrada dos amigos; antes "Ensurdecer"). Estado: "mutado" / "silenciado". Vale para bandeja (menu e tooltip), UI (F3) e textos de ajuda; prevalece sobre `DESIGN.md`, `Ajustes.dc.html`, `Main.dc.html` e `ModoJogo.dc.html`, que ainda dizem "Ensurdecer". Identificadores de código, chaves de config (`toggle_deafen`) e campos do protocolo (`deafened`) não mudam.
+**Alternativa descartada:** manter "Ensurdecer" do design (pouco usado em PT-BR; escolha do usuário em 2026-10-22).
+**Data:** 2026-10-22
+
+## D-014 Volume de entrada e limiar de voz ajustáveis
+**Conceitos:** voice-activation, config
+**Decisão:**
+- Novo `[audio] input_volume` (%, 0–200, padrão 100): ganho de software aplicado ao PCM capturado **antes** da ativação por voz e do encoder, com corte em [-1, 1]. Não mexe no volume do dispositivo no Windows (seria global e afetaria outros apps).
+- `vad_threshold` padrão passa de −45 para **−50 dB**: no teste manual com Blue Snowball, −45 exigia falar alto ou muito perto. Configs já criadas mantêm o valor que têm.
+- O log periódico de `voice tx` traz o nível médio e o pico do microfone (dBFS, depois do ganho) para calibrar o limiar sem UI.
+- F3: a tela Ajustes ganha o controle "Volume de entrada" ao lado do medidor "Nível do microfone" (que já mostra a linha do limiar), ambos aplicados ao vivo pelo núcleo via IPC.
+- Implementação (T-015): `input_volume` > 200 é limitado a 200 com `warn`; o medidor de nível fica depois do ganho e do denoiser, logo antes da ativação; silêncio = −120 dB.
+**Alternativa descartada:** `IAudioEndpointVolume` (volume do dispositivo; global, muda para todos os apps); AGC automático (bombeia ruído de fundo e briga com o limiar).
+**Data:** 2026-10-22

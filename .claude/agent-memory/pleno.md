@@ -31,7 +31,7 @@
 - Teste manual de auto-detecção: o terminal do harness maximizado conta como jogo → ponha `windowsterminal.exe` no `exclude` do perfil de teste (e restaure), ou desligue `auto_detect` com backup do `config.toml`. `Start-Process -WindowStyle Hidden` cria `conhost` filho: filtre ao contar processos. Atalho global sintético: `keybd_event` via `Add-Type` no PowerShell funciona com `RegisterHotKey`.
 
 ## Atalhos / padrões que funcionaram
-- Controle negativo em todo teste de lógica crítica (barato: mutar 1 linha com backup `cp`, rodar `cargo test -p sala-core --lib <mód>`, restaurar); o caso de controle tem de ser negativo só pela regra testada (ex.: `explorer.exe` em tela cheia, não em janela); repetir testes de rede/concorrência N vezes para pegar flakiness.
+- Controle negativo em todo teste de lógica crítica (barato: mutar 1 linha com backup `cp`, rodar `cargo test -p sala-core --lib <mód>`, restaurar; mute com Edit e confira com `grep -n` que a mutação entrou — `sed -i` já falhou em silêncio); o caso de controle tem de ser negativo só pela regra testada (ex.: `explorer.exe` em tela cheia, não em janela); repetir testes de rede/concorrência N vezes para pegar flakiness.
 - Lógica pura isolada em funções/structs testáveis (sem I/O) em vez de testar via rede/UI.
 - Código que só o hardware valida (áudio, GPU): logs com o motivo de cada transição.
 - Declare desvios do pedido; não esconda.
@@ -39,6 +39,8 @@
 - Caminho temporário do Git Bash para programa Windows: `$(cygpath -w "$T")`.
 - Processo em background no Git Bash: `$!` não é o PID Windows; encerre com `taskkill //F //IM sala-core.exe`.
 - Capturar logs `tracing` em teste tokio multi-thread exige `set_global_default` (um `#[test]` por arquivo); `set_default` é por thread.
+- `Controller::steps()`: passos novos (ex. `Step::Cause`) vão no fim da sequência; testes exigem `UiShutdown` como passo 0 (D-012).
+- Hora local no log: feature `local-time` do `tracing-subscriber` + `LocalTime::rfc_3339()` funciona no Windows/tokio.
 - Duas instâncias que se discam em teste: porta livre via `UdpSocket::bind("127.0.0.1:0")`, ler e soltar.
 
 ## Convenções do projeto (Sala)

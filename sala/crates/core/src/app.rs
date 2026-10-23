@@ -42,9 +42,56 @@ impl PlatformApi for Platform {
     }
 }
 
+/// What caused a game-mode transition; logged on every enter/exit so the log
+/// tells automatic from manual changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Trigger {
+    /// The detector; carries the file name of the sample that fired it.
+    Auto { exe: String },
+    Hotkey,
+    /// Tray menu entry "Entrar/Sair do modo jogo".
+    Menu,
+    /// Tray menu entry "Abrir a Sala".
+    TrayClick,
+    /// Click on the chat notification.
+    Notification,
+    /// `EnterGameMode` / `ExitGameMode` from the UI.
+    Ipc,
+    /// `OpenUi` (a second `sala-core` was started).
+    SecondInstance,
+}
+
+impl Trigger {
+    /// Automatic trigger for the sample of this tick (`desconhecido` when there is no name).
+    pub fn auto(sample: Option<&ForegroundSample>) -> Trigger {
+        let name = sample
+            .and_then(|s| s.exe_path.rsplit(['\\', '/']).next())
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or("desconhecido");
+        Trigger::Auto { exe: name.to_string() }
+    }
+}
+
+impl std::fmt::Display for Trigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Trigger::Auto { exe } => write!(f, "auto ({exe})"),
+            Trigger::Hotkey => f.write_str("hotkey"),
+            Trigger::Menu => f.write_str("menu"),
+            Trigger::TrayClick => f.write_str("tray_click"),
+            Trigger::Notification => f.write_str("notification"),
+            Trigger::Ipc => f.write_str("ipc"),
+            Trigger::SecondInstance => f.write_str("second_instance"),
+        }
+    }
+}
+
 /// One step of the game-mode sequences (D-012), recorded in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
+    /// Last step of a sequence: why it ran (also logged at its start).
+    Cause { entering: bool, trigger: Trigger },
     /// Step 1 of entering: the UI was asked to quit.
     UiShutdown(ShutdownOutcome),
     /// Step 2 (extension point, F4).
@@ -166,35 +213,35 @@ impl<P: PlatformApi> Controller<P> {
     // ------------------------------------------------------------ game mode
 
     /// Manual toggle (hotkey, tray, UI).
-    pub async fn toggle_game_mode(&mut self) {
+    pub async fn toggle_game_mode(&mut self, trigger: Trigger) {
         let want = !self.detector.in_game();
-        self.set_game_mode_manual(want).await;
+        self.set_game_mode_manual(want, trigger).await;
     }
 
-    pub async fn set_game_mode_manual(&mut self, on: bool) {
+    pub async fn set_game_mode_manual(&mut self, on: bool, trigger: Trigger) {
         if let Some(t) = self.detector.set_manual(on) {
-            self.apply(t).await;
+            self.apply(t, trigger).await;
         }
     }
 
     /// One detector tick (`POLL_INTERVAL`).
     pub async fn tick(&mut self, sample: Option<&ForegroundSample>) {
         if let Some(t) = self.detector.tick(sample) {
-            self.apply(t).await;
+            self.apply(t, Trigger::auto(sample)).await;
         }
     }
 
-    async fn apply(&mut self, t: Transition) {
+    async fn apply(&mut self, t: Transition, trigger: Trigger) {
         match t {
-            Transition::Enter => self.enter_game_mode().await,
-            Transition::Exit => self.exit_game_mode(),
+            Transition::Enter => self.enter_game_mode(trigger).await,
+            Transition::Exit => self.exit_game_mode(trigger),
         }
     }
 
     /// D-012: (1) UI shutdown confirmed, (2) viewer, (3) sharing, (4) memory,
     /// (5) `Status`, (6) amber tray.
-    async fn enter_game_mode(&mut self) {
-        info!("entering game mode");
+    async fn enter_game_mode(&mut self, trigger: Trigger) {
+        info!(%trigger, "entering game mode");
         let outcome = self.host.shutdown_ui().await;
         self.steps.push(Step::UiShutdown(outcome));
         // TODO(F4): close the video viewer.
@@ -210,11 +257,12 @@ impl<P: PlatformApi> Controller<P> {
         self.publish_status();
         self.platform.set_tray(self.tray_state());
         self.steps.push(Step::Tray { game_mode: true });
+        self.steps.push(Step::Cause { entering: true, trigger });
     }
 
     /// D-012 on leaving: launch the UI, `Status`, normal tray.
-    fn exit_game_mode(&mut self) {
-        info!("leaving game mode");
+    fn exit_game_mode(&mut self, trigger: Trigger) {
+        info!(%trigger, "leaving game mode");
         let launched = self.host.launch();
         self.steps.push(Step::UiLaunched(launched));
         self.session.set_game_mode(false);
@@ -222,12 +270,13 @@ impl<P: PlatformApi> Controller<P> {
         self.publish_status();
         self.platform.set_tray(self.tray_state());
         self.steps.push(Step::Tray { game_mode: false });
+        self.steps.push(Step::Cause { entering: false, trigger });
     }
 
-    /// Shows the UI; leaves game mode first when needed.
-    pub async fn open_ui(&mut self) {
+    /// Shows the UI; leaves game mode first when needed (`trigger` is then the cause).
+    pub async fn open_ui(&mut self, trigger: Trigger) {
         if self.detector.in_game() {
-            self.set_game_mode_manual(false).await;
+            self.set_game_mode_manual(false, trigger).await;
         } else {
             self.host.launch();
         }
@@ -273,9 +322,8 @@ impl<P: PlatformApi> Controller<P> {
                 let d = self.session.local_status().deafened;
                 self.set_deafened(!d);
             }
-            PlatformEvent::Hotkey(HotkeyAction::ToggleGameMode) | PlatformEvent::Menu(MenuItem::ToggleGameMode) => {
-                self.toggle_game_mode().await;
-            }
+            PlatformEvent::Hotkey(HotkeyAction::ToggleGameMode) => self.toggle_game_mode(Trigger::Hotkey).await,
+            PlatformEvent::Menu(MenuItem::ToggleGameMode) => self.toggle_game_mode(Trigger::Menu).await,
             // TODO(F3): soundboard.
             PlatformEvent::Hotkey(HotkeyAction::PlaySound(_)) => {}
             PlatformEvent::PttPressed => {
@@ -288,16 +336,17 @@ impl<P: PlatformApi> Controller<P> {
                     self.session.set_ptt(false);
                 }
             }
-            PlatformEvent::Menu(MenuItem::OpenSala) => self.open_ui().await,
+            PlatformEvent::Menu(MenuItem::OpenSala) => self.open_ui(Trigger::TrayClick).await,
             PlatformEvent::Menu(MenuItem::QuitSala) => return Flow::Quit,
             PlatformEvent::NotificationClicked => {
                 // D-008: clicking the notification is a manual exit.
                 if self.detector.in_game() {
-                    self.set_game_mode_manual(false).await;
+                    self.set_game_mode_manual(false, Trigger::Notification).await;
                 }
             }
+            // The only warn for a failed registration (the platform thread stays silent).
             PlatformEvent::HotkeyRegistrationFailed { action, hotkey, error_code } => {
-                warn!(?action, ?hotkey, error_code, "hotkey could not be registered");
+                warn!(%action, %hotkey, error_code, "hotkey could not be registered");
             }
         }
         Flow::Continue
@@ -335,9 +384,9 @@ impl<P: PlatformApi> Controller<P> {
             }
             UiToCore::SetMuted { muted } => self.set_muted(muted),
             UiToCore::SetDeafened { deafened } => self.set_deafened(deafened),
-            UiToCore::EnterGameMode => self.set_game_mode_manual(true).await,
-            UiToCore::ExitGameMode => self.set_game_mode_manual(false).await,
-            UiToCore::OpenUi => self.open_ui().await,
+            UiToCore::EnterGameMode => self.set_game_mode_manual(true, Trigger::Ipc).await,
+            UiToCore::ExitGameMode => self.set_game_mode_manual(false, Trigger::Ipc).await,
+            UiToCore::OpenUi => self.open_ui(Trigger::SecondInstance).await,
             // TODO(F3): explicit call/hang-up; calls are automatic with friends for now.
             UiToCore::Call { .. } | UiToCore::HangUp => {
                 self.host.ipc.send_to(client, &CoreToUi::Error { message: "not supported yet".into() });
@@ -423,6 +472,43 @@ fn release_working_set() {
     // means nothing was trimmed.
     unsafe {
         SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(path: &str) -> ForegroundSample {
+        ForegroundSample { exe_path: path.into(), covers_monitor: true }
+    }
+
+    #[test]
+    fn auto_trigger_names_the_exe_file_only() {
+        let t = Trigger::auto(Some(&sample(r"C:\Riot Games\VALORANT\VALORANT.exe")));
+        assert_eq!(t, Trigger::Auto { exe: "VALORANT.exe".into() });
+        assert_eq!(t.to_string(), "auto (VALORANT.exe)");
+        assert_eq!(Trigger::auto(Some(&sample("/x/cs2.exe"))), Trigger::Auto { exe: "cs2.exe".into() });
+        // Control: no sample / empty path is "desconhecido", never an empty name.
+        assert_eq!(Trigger::auto(None), Trigger::Auto { exe: "desconhecido".into() });
+        assert_eq!(Trigger::auto(Some(&sample(""))), Trigger::Auto { exe: "desconhecido".into() });
+        assert_eq!(Trigger::auto(Some(&sample(r"C:\dir\"))), Trigger::Auto { exe: "desconhecido".into() });
+    }
+
+    #[test]
+    fn manual_triggers_have_stable_log_names() {
+        let names: Vec<String> = [
+            Trigger::Hotkey,
+            Trigger::Menu,
+            Trigger::TrayClick,
+            Trigger::Notification,
+            Trigger::Ipc,
+            Trigger::SecondInstance,
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert_eq!(names, ["hotkey", "menu", "tray_click", "notification", "ipc", "second_instance"]);
     }
 }
 

@@ -122,7 +122,7 @@ conceitos:
 
   - id: voice-activation
     nome: VoiceActivation
-    definicao: "Decide se o microfone transmite: voice_activity (nível ≥ vad_threshold dB) ou push_to_talk (atalho global pressionado). Mudo/ensurdecer têm precedência."
+    definicao: "Decide se o microfone transmite: voice_activity (nível ≥ vad_threshold dB, medido depois do ganho input_volume) ou push_to_talk (atalho global pressionado). Mudo/silenciar têm precedência. Nomes na interface: D-013; ganho e limiar: D-014."
     secao: "§5.1"
 
   - id: call
@@ -285,7 +285,7 @@ invariantes:
     testado_em: ""
   - id: inv-deafen-implies-mute
     conceitos: [call, voice-activation]
-    regra: "Ensurdecer também muta o microfone; desensurdecer restaura o estado de mudo anterior."
+    regra: "Silenciar (deafen) também muta o microfone; voltar a ouvir restaura o estado de mudo anterior."
     testado_em: "sala/crates/core/src/voice.rs::deafen_mutes_and_undeafen_restores_previous_mute, sala/crates/core/tests/f2_game_mode.rs (via controlador, Status visto pelo amigo)"
   - id: inv-no-external-calls
     conceitos: [core-process, ui-process]

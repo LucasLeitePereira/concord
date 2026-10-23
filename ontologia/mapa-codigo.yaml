@@ -23,7 +23,7 @@ mapa:
     codigo: ["sala/crates/core/src/voice.rs (VoiceEncoder, VoiceDecoder, EncodedFrame, VoiceEngine)", "sala/crates/core/src/audio_device.rs (AudioInput, AudioOutput, Sink, list_devices)"]
     testes: ["sala/crates/core/src/voice.rs (mod tests)"]
   voice-activation:
-    codigo: ["sala/crates/core/src/voice.rs (Activation)"]
+    codigo: ["sala/crates/core/src/voice.rs (Activation; input_gain/apply_input_gain e LevelMeter/MicLevels, D-014)", "sala/crates/core/src/config.rs (AudioConfig.vad_threshold, input_volume)"]
     testes: ["sala/crates/core/src/voice.rs (mod tests)"]
   call:
     codigo: ["sala/crates/core/src/voice.rs (VoiceEngine: peers, volume, loopback)", "sala/crates/core/src/session.rs (sessão de voz por amigo em Connected/Disconnected)"]
@@ -53,7 +53,7 @@ mapa:
     testes: [sala/crates/core/tests/acceptance_game_detector.rs, "sala/crates/core/src/game_detector.rs (mod tests)", "sala/crates/core/examples/fake_game.rs (jogo falso em tela cheia; teste ignorado probe_sees_fake_game)"]
   game-mode:
     testes: [sala/crates/core/tests/f2_game_mode.rs]
-    codigo: ["sala/crates/core/src/app.rs (Controller: sequência entrar/sair D-012, notificação de chat, tique do detector)", "sala/crates/core/src/game_detector.rs (Transition, override manual D-008)", "sala/crates/core/src/platform/mod.rs (HotkeyAction::ToggleGameMode, MenuItem::ToggleGameMode, TrayState)"]
+    codigo: ["sala/crates/core/src/app.rs (Controller: sequência entrar/sair D-012, Trigger/Step::Cause = origem da transição, notificação de chat, tique do detector)", "sala/crates/core/src/game_detector.rs (Transition, override manual D-008)", "sala/crates/core/src/platform/mod.rs (HotkeyAction::ToggleGameMode, MenuItem::ToggleGameMode, TrayState)"]
   platform-win32:
     codigo: ["sala/crates/core/src/platform/mod.rs (Platform, PlatformEvent, TrayState, HotkeyAction, MenuItem)", "sala/crates/core/src/platform/window.rs (thread, janela oculta, bandeja, menu, notificação, sondagem PTT/mouse)", "sala/crates/core/src/platform/hotkey.rs (Hotkey, parser)", sala/crates/core/src/platform/icon.rs]
     testes: ["sala/crates/core/src/platform/*.rs (mod tests)"]

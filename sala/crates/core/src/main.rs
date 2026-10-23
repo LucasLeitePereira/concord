@@ -25,11 +25,19 @@ fn init_logging(profile: &Profile) -> Option<tracing_appender::non_blocking::Wor
     match appender {
         Ok(a) => {
             let (file, guard) = tracing_appender::non_blocking(a);
-            tracing_subscriber::fmt().with_target(false).with_ansi(false).with_writer(file.and(std::io::stderr)).init();
+            tracing_subscriber::fmt()
+                .with_target(false)
+                .with_ansi(false)
+                .with_timer(tracing_subscriber::fmt::time::LocalTime::rfc_3339())
+                .with_writer(file.and(std::io::stderr))
+                .init();
             Some(guard)
         }
         Err(e) => {
-            tracing_subscriber::fmt().with_target(false).init();
+            tracing_subscriber::fmt()
+                .with_target(false)
+                .with_timer(tracing_subscriber::fmt::time::LocalTime::rfc_3339())
+                .init();
             tracing::warn!("cannot write logs to disk: {e}");
             None
         }

@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_PORT: u16 = 47800;
 const MIN_BITRATE_KBPS: u32 = 32;
 const MAX_BITRATE_KBPS: u32 = 128;
+/// `audio.input_volume` ceiling, in percent (D-014).
+pub const MAX_INPUT_VOLUME_PERCENT: u32 = 200;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -128,6 +130,8 @@ pub struct AudioConfig {
     pub bitrate_kbps: u32,
     pub mode: AudioMode,
     pub vad_threshold: i32,
+    /// Software gain on the captured PCM, percent 0..=200 (D-014).
+    pub input_volume: u32,
     pub noise_suppression: bool,
 }
 
@@ -138,7 +142,8 @@ impl Default for AudioConfig {
             output_device: "default".into(),
             bitrate_kbps: 96,
             mode: AudioMode::VoiceActivity,
-            vad_threshold: -45,
+            vad_threshold: -50,
+            input_volume: 100,
             noise_suppression: false,
         }
     }
@@ -292,6 +297,11 @@ impl Config {
             );
             self.audio.bitrate_kbps = clamped;
         }
+        let v = self.audio.input_volume;
+        if v > MAX_INPUT_VOLUME_PERCENT {
+            tracing::warn!("audio.input_volume = {v} is above {MAX_INPUT_VOLUME_PERCENT}; using {MAX_INPUT_VOLUME_PERCENT}");
+            self.audio.input_volume = MAX_INPUT_VOLUME_PERCENT;
+        }
         for f in &self.friends {
             if f.address.parse::<IpAddr>().is_err() {
                 return Err(ConfigError::InvalidAddress {
@@ -372,7 +382,8 @@ impl Config {
             AudioMode::PushToTalk => "push_to_talk",
         };
         s.push_str(&format!("mode = {}   # ou \"push_to_talk\"\n", q(mode)));
-        s.push_str(&format!("vad_threshold = {}   # dB\n", a.vad_threshold));
+        s.push_str(&format!("vad_threshold = {}   # dB; ative a voz acima deste nível\n", a.vad_threshold));
+        s.push_str(&format!("input_volume = {}   # % de ganho do microfone, de 0 a 200\n", a.input_volume));
         s.push_str(&format!("noise_suppression = {}\n\n", a.noise_suppression));
 
         let h = &self.hotkeys;
@@ -555,6 +566,28 @@ mod tests {
         assert_eq!(load(32), 32);
         assert_eq!(load(128), 128);
         assert_eq!(load(100), 100); // negative control: in range is untouched
+    }
+
+    #[test]
+    fn input_volume_defaults_loads_old_configs_and_is_clamped() {
+        let d = AudioConfig::default();
+        assert_eq!((d.input_volume, d.vad_threshold), (100, -50));
+        // Old config without the field (and with the old threshold kept).
+        let old = Config::from_toml_str("[audio]\nvad_threshold = -45\nbitrate_kbps = 64\n", Path::new("x")).unwrap();
+        assert_eq!((old.audio.input_volume, old.audio.vad_threshold), (100, -45));
+        let load = |v: u32| {
+            Config::from_toml_str(&format!("[audio]\ninput_volume = {v}\n"), Path::new("x")).unwrap().audio.input_volume
+        };
+        assert_eq!(load(0), 0);
+        assert_eq!(load(150), 150);
+        assert_eq!(load(200), 200);
+        assert_eq!(load(500), 200);
+        // Template carries the key and round-trips a non-default value.
+        let mut c = Config::default();
+        c.audio.input_volume = 130;
+        let text = c.to_commented_toml();
+        assert!(text.contains("input_volume = 130"));
+        assert_eq!(Config::from_toml_str(&text, Path::new("x")).unwrap(), c);
     }
 
     #[test]

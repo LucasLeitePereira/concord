@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use sala_core::app::{Controller, Flow, PlatformApi, Step, UiHost};
+use sala_core::app::{Controller, Flow, PlatformApi, Step, Trigger, UiHost};
 use sala_core::config::{Config, Friend, Profile};
 use sala_core::identity::LocalIdentity;
 use sala_core::ipc::IpcServer;
@@ -180,6 +180,11 @@ async fn one_run(round: usize) {
     assert!(pos(&Step::StopSharing) < pos(&Step::ReleaseMemory));
     assert!(pos(&Step::ReleaseMemory) < pos(&Step::StatusSent { game_mode: true }));
     assert!(pos(&Step::StatusSent { game_mode: true }) < pos(&Step::Tray { game_mode: true }));
+    assert_eq!(
+        steps.last(),
+        Some(&Step::Cause { entering: true, trigger: Trigger::Hotkey }),
+        "origin of the entry"
+    );
     assert!(a.local_status().game_mode);
     assert!(platform.trays.lock().unwrap().last().unwrap().game_mode, "tray is amber");
 
@@ -208,6 +213,11 @@ async fn one_run(round: usize) {
     assert!(!ctl.in_game());
     assert!(ctl.host_mut().is_running(), "UI relaunched");
     assert!(ctl.steps().contains(&Step::UiLaunched(true)));
+    assert_eq!(
+        ctl.steps().last(),
+        Some(&Step::Cause { entering: false, trigger: Trigger::Notification }),
+        "origin of the exit"
+    );
     assert!(!a.local_status().game_mode);
     wait_until("b sees a out of game mode", || b.peer_status("a").is_some_and(|s| !s.game_mode)).await;
     assert!(!platform.trays.lock().unwrap().last().unwrap().game_mode);
@@ -233,10 +243,19 @@ async fn one_run(round: usize) {
     wait_until("b sees a unmuted", || b.peer_status("a").is_some_and(|s| !s.deafened && !s.muted)).await;
 
     // The exit sequence is repeatable: automatic-style toggle once more.
-    ctl.toggle_game_mode().await;
+    ctl.clear_steps();
+    ctl.toggle_game_mode(Trigger::Ipc).await;
     assert!(ctl.in_game() && !ctl.host_mut().is_running());
-    ctl.toggle_game_mode().await;
+    ctl.toggle_game_mode(Trigger::Menu).await;
     assert!(!ctl.in_game() && ctl.host_mut().is_running());
+    let causes: Vec<_> = ctl.steps().iter().filter(|s| matches!(s, Step::Cause { .. })).cloned().collect();
+    assert_eq!(
+        causes,
+        vec![
+            Step::Cause { entering: true, trigger: Trigger::Ipc },
+            Step::Cause { entering: false, trigger: Trigger::Menu },
+        ]
+    );
 
     ctl.shutdown().await;
     b.shutdown().await;

@@ -24,6 +24,18 @@ use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
 pub use foreground::probe;
 pub use hotkey::{Hotkey, HotkeyKey, Modifiers, MouseButton, ParseHotkeyError};
 
+/// Readable name for logs (same words as the `[hotkeys]` config keys).
+impl std::fmt::Display for HotkeyAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HotkeyAction::ToggleMute => f.write_str("toggle_mute"),
+            HotkeyAction::ToggleDeafen => f.write_str("toggle_deafen"),
+            HotkeyAction::ToggleGameMode => f.write_str("toggle_game_mode"),
+            HotkeyAction::PlaySound(i) => write!(f, "play_sound[{i}]"),
+        }
+    }
+}
+
 /// What a global shortcut does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HotkeyAction {

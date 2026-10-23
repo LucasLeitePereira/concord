@@ -104,9 +104,9 @@ impl State {
             s.push_str(" · modo jogo");
         }
         if self.tray.deafened {
-            s.push_str(" · ensurdecido");
+            s.push_str(" · silenciado");
         } else if self.tray.muted {
-            s.push_str(" · mudo");
+            s.push_str(" · mutado");
         }
         s
     }
@@ -207,7 +207,7 @@ impl State {
                     } else {
                         // SAFETY: reads the thread's last error.
                         let error_code = unsafe { GetLastError() };
-                        tracing::warn!(hotkey = %hk, error_code, "could not register the hotkey");
+                        // Reported once, by the controller, with the action name.
                         self.emit(PlatformEvent::HotkeyRegistrationFailed {
                             action: *action,
                             hotkey: *hk,
@@ -315,8 +315,8 @@ pub(super) fn menu_lines(tray: &TrayState, shortcuts: &[(HotkeyAction, Hotkey)])
         Some(c) => escape_amp(c),
         None => "Fora de chamada".to_string(),
     };
-    let mute = if tray.muted { "Desmutar microfone" } else { "Mutar microfone" };
-    let deafen = if tray.deafened { "Voltar a ouvir" } else { "Ensurdecer" };
+    let mute = if tray.muted { "Desmutar-se" } else { "Mutar-se" };
+    let deafen = if tray.deafened { "Voltar a ouvir" } else { "Silenciar" };
     let game = if tray.game_mode { "Sair do modo jogo" } else { "Entrar no modo jogo" };
     vec![
         MenuLine::Info(header.to_string()),
@@ -570,8 +570,8 @@ mod tests {
                 MenuLine::Info("Sala · Modo jogo".into()),
                 MenuLine::Info("Em chamada com Pedro · 18 ms".into()),
                 MenuLine::Separator,
-                MenuLine::Item(MenuItem::ToggleMute, "Mutar microfone\tCtrl+Shift+M".into()),
-                MenuLine::Item(MenuItem::ToggleDeafen, "Ensurdecer\tCtrl+Shift+D".into()),
+                MenuLine::Item(MenuItem::ToggleMute, "Mutar-se\tCtrl+Shift+M".into()),
+                MenuLine::Item(MenuItem::ToggleDeafen, "Silenciar\tCtrl+Shift+D".into()),
                 MenuLine::Item(MenuItem::ToggleGameMode, "Sair do modo jogo\tCtrl+Shift+G".into()),
                 MenuLine::Item(MenuItem::OpenSala, "Abrir a Sala".into()),
                 MenuLine::Separator,
@@ -586,7 +586,7 @@ mod tests {
         let lines = menu_lines(&tray, &[]);
         assert_eq!(lines[0], MenuLine::Info("Sala".into()));
         assert_eq!(lines[1], MenuLine::Info("Fora de chamada".into()));
-        assert_eq!(lines[3], MenuLine::Item(MenuItem::ToggleMute, "Desmutar microfone".into()));
+        assert_eq!(lines[3], MenuLine::Item(MenuItem::ToggleMute, "Desmutar-se".into()));
         assert_eq!(lines[4], MenuLine::Item(MenuItem::ToggleDeafen, "Voltar a ouvir".into()));
         assert_eq!(lines[5], MenuLine::Item(MenuItem::ToggleGameMode, "Entrar no modo jogo".into()));
     }
