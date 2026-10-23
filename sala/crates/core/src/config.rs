@@ -149,6 +149,7 @@ impl Default for AudioConfig {
 pub struct HotkeyConfig {
     pub push_to_talk: String,
     pub toggle_mute: String,
+    pub toggle_deafen: String,
     pub toggle_game_mode: String,
 }
 
@@ -157,6 +158,7 @@ impl Default for HotkeyConfig {
         HotkeyConfig {
             push_to_talk: "Mouse4".into(),
             toggle_mute: "Ctrl+Shift+M".into(),
+            toggle_deafen: "Ctrl+Shift+D".into(),
             toggle_game_mode: "Ctrl+Shift+G".into(),
         }
     }
@@ -377,7 +379,8 @@ impl Config {
         s.push_str("[hotkeys]\n");
         s.push_str(&format!("push_to_talk = {}\n", q(&h.push_to_talk)));
         s.push_str(&format!("toggle_mute = {}\n", q(&h.toggle_mute)));
-        s.push_str(&format!("toggle_game_mode = {}\n\n", q(&h.toggle_game_mode)));
+        s.push_str(&format!("toggle_deafen = {}\n", q(&h.toggle_deafen)));
+        s.push_str(&format!("toggle_game_mode ={}\n\n", q(&h.toggle_game_mode)));
 
         let g = &self.game_mode;
         s.push_str("[game_mode]\n");
@@ -490,6 +493,7 @@ mod tests {
             volume: 0.5,
         });
         c.audio.mode = AudioMode::PushToTalk;
+        c.hotkeys.toggle_deafen = "Alt+F13".into();
         let text = c.to_commented_toml();
         assert_eq!(Config::from_toml_str(&text, Path::new("x")).unwrap(), c);
     }
@@ -521,6 +525,7 @@ mod tests {
         assert_eq!(c.audio.input_device, "default");
         assert_eq!(c.port, 47800);
         assert_eq!(c.hotkeys, HotkeyConfig::default());
+        assert_eq!(c.hotkeys.toggle_deafen, "Ctrl+Shift+D");
         assert_eq!(c.game_mode, GameModeConfig::default());
         assert_eq!(
             Config::from_toml_str("", Path::new("x")).unwrap(),

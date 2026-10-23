@@ -7,6 +7,8 @@
 - Revisões com "toda/sempre" sem conferir cada ramo do código geram falsos positivos/negativos.
 
 ## Atalhos
+- Revisão A/B de lógica pura: copie cada diff para uma crate isolada no scratchpad (stub dos tipos externos) e rode testes extras próprios; compila em segundos sem o workspace pesado.
+- Cargo no Git Bash: `export PATH="$HOME/.cargo/bin:$PATH"`.
 - Comece pelos conceitos citados e por `ontologia/mapa-codigo.yaml`; não varra o repo.
 
 ## Convenções do projeto (Sala)

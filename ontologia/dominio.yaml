@@ -258,7 +258,7 @@ invariantes:
   - id: inv-game-mode-hysteresis-2-3
     conceitos: [game-detector, game-mode]
     regra: "Entra no modo jogo após 2 leituras positivas consecutivas; sai após 3 negativas consecutivas. Leitura isolada não muda o estado."
-    testado_em: ""
+    testado_em: "sala/crates/core/tests/acceptance_game_detector.rs (h06–h16) + game_detector.rs::tests::hysteresis_*, manual_*, set_config_*"
   - id: inv-game-mode-only-core
     conceitos: [game-mode, core-process, ui-process]
     regra: "No modo jogo o único processo da Sala é sala-core: a UI recebeu Shutdown e o término foi confirmado; o visualizador foi destruído. Voz continua."

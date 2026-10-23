@@ -12,7 +12,7 @@
 ## Armadilhas (não repetir)
 - Teste que só passa nesta máquina (arquivo não versionado, .gitignore) é teste quebrado: relate como PRIORIDADE.
 - Mudar formato de dados persistidos sem migração idempotente + backup + teste perde dados do usuário.
-- Heredoc grande (`cat <<'EOF'`) no Git Bash do Windows falha com "unexpected EOF", e replace por script Python com aspas/barras escapadas falha em silêncio: crie/edite código com Write/Edit.
+- NUNCA edite código por heredoc ou script Python no Git Bash ("unexpected EOF"; replace falha em silêncio em arquivo CRLF como `config.rs`): use Write (arquivo inteiro) ou Edit. Falhou de novo na F2 em 3 agentes.
 - Clippy 1.99 (`-D warnings`): `collapsible_if` pede let-chains (`if a && let Some(x) = y`); `result_large_err` → `Box<toml::de::Error>` no enum de erro; `field_reassign_with_default` → `X { campo, ..Default::default() }`.
 - IP de socket dual-stack chega como `::ffff:a.b.c.d`: compare com `IpAddr::to_canonical()`.
 - `u8::from_str_radix` aceita `+` inicial: valide `is_ascii_hexdigit` antes de parsear hex.
@@ -23,8 +23,11 @@
 - cpal 0.18 difere do que o modelo lembra (SampleRate=u32, nome via `description()?.name()`, `device_by_id`; importar trait `cpal::Sample`): consulte `~/.cargo/registry/src/*/cpal-0.18.*/examples`. Build inicial opus+cpal ≈ 2 min.
 - Scripts que escrevem em pastas de entrega não podem apagar pastas onde o usuário já roda coisas: monte em diretório temporário.
 
+- Win32 (`windows-sys`): chamada que reentra no `wndproc` (`DestroyWindow`, `TrackPopupMenu`) quebra `RefCell` emprestado → `try_borrow_mut` e soltar o empréstimo antes; texto de menu vindo do usuário: escapar `&` como `&&`; constantes ausentes (`NIN_BALLOONUSERCLICK` = `WM_USER + 5`) definir à mão.
+- `SetForegroundWindow` de processo lançado pelo harness falha sem Alt sintético antes; `cargo test --lib` não recompila examples (`cargo build --example X` antes do teste `--ignored`).
+
 ## Atalhos / padrões que funcionaram
-- Controle negativo em todo teste de lógica crítica; repetir testes de rede/concorrência N vezes para pegar flakiness.
+- Controle negativo em todo teste de lógica crítica (barato: mutar 1 linha com backup `cp`, rodar `cargo test -p sala-core --lib <mód>`, restaurar); o caso de controle tem de ser negativo só pela regra testada (ex.: `explorer.exe` em tela cheia, não em janela); repetir testes de rede/concorrência N vezes para pegar flakiness.
 - Lógica pura isolada em funções/structs testáveis (sem I/O) em vez de testar via rede/UI.
 - Código que só o hardware valida (áudio, GPU): logs com o motivo de cada transição.
 - Declare desvios do pedido; não esconda.

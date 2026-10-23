@@ -70,3 +70,32 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Recarregar a config mantém estado e origem e zera as sequências. `auto_detect = false` ⇒ `tick` nunca muda o estado.
 **Alternativa descartada:** desligar a detecção automática após qualquer ação manual (o usuário teria de religar à mão e esqueceria).
 **Data:** 2026-10-22
+
+## D-009 Camada Win32: windows-sys, uma thread de plataforma, sem hooks
+**Conceitos:** core-process, game-detector, game-mode
+**Decisão:**
+- `windows-sys` 0.61 (já está no lock por dependência transitiva): FFI cru, sem WinRT. Nada de `tray-icon`/`muda`/`notify-rust`/`windows`.
+- Uma thread de plataforma com janela oculta (não message-only, para receber `TaskbarCreated` e recolocar o ícone se o Explorer reiniciar) e laço `GetMessageW`. Ela recebe `WM_HOTKEY`, o callback da bandeja e comandos de outras threads (`PostMessageW` + canal). Eventos saem por canal para o núcleo.
+- Atalhos de teclado: `RegisterHotKey` com `MOD_NOREPEAT`. Botões do mouse (`Mouse4`/`Mouse5`) e push-to-talk (precisa soltar a tecla): sondagem `GetAsyncKeyState` a cada 15 ms, só enquanto o modo PTT estiver ativo. Falha ao registrar (combinação ocupada) é logada e informada à UI.
+- Janela em primeiro plano: `GetForegroundWindow` → PID → `QueryFullProcessImageNameW`; `covers_monitor` = retângulo da janela ⊇ `rcMonitor` de `MonitorFromWindow`. Desktop/shell (`Progman`, `WorkerW`, `Shell_TrayWnd`) = sem janela.
+- Notificação: `Shell_NotifyIconW` com `NIF_INFO` (o Windows 10/11 mostra como toast), sem AUMID. Clique na notificação (`NIN_BALLOONUSERCLICK`) = "Abrir o chat" = saída manual do modo jogo.
+- Menu da bandeja (`TrackPopupMenu`) na ordem de `ModoJogo.dc.html`: cabeçalho, linha da chamada, Mutar (Ctrl+Shift+M), Ensurdecer (Ctrl+Shift+D), Entrar/Sair do modo jogo (Ctrl+Shift+G), Abrir a Sala, separador, Fechar a Sala. Novo atalho de config `toggle_deafen = "Ctrl+Shift+D"`, que o design pede.
+**Alternativas descartadas:** hooks de baixo nível `WH_KEYBOARD_LL`/`WH_MOUSE_LL` (a spec proíbe hooks, e um hook lento atrasa a entrada do sistema inteiro, inclusive do jogo); Raw Input com `RIDEV_INPUTSINK` (acorda o processo a cada movimento do mouse, até 1000×/s no jogo); toast WinRT (crate `windows` pesada e exige AUMID registrado por atalho no Menu Iniciar).
+**Data:** 2026-10-22
+
+**Adendo (T-012, 2026-10-22):** clique esquerdo na bandeja = Abrir a Sala; rótulos do menu dinâmicos (Mutar/Desmutar, Ensurdecer/Voltar a ouvir, Entrar/Sair do modo jogo; "Fora de chamada" sem chamada); `Mouse4`/`Mouse5` também servem como atalho de ação (sondagem só ligada enquanto houver PTT ou atalho de mouse); `set_ptt(None)` com a tecla pressionada emite `PttReleased`. Falha ao ler o exe com janela válida ⇒ amostra com `exe_path` vazio (jogo protegido em tela cheia ainda conta).
+
+## D-010 IPC e ciclo de vida da UI
+**Conceitos:** ipc-message, core-process, ui-process, inv-game-mode-only-core
+**Decisão:**
+- Pipe `\.\pipe\sala-core-<USERNAME>`; com `--profile p`, `\.\pipe\sala-core-<USERNAME>-p` (duas instâncias na mesma máquina). Servidor `tokio::net::windows::named_pipe` com `first_pipe_instance(true)` (detecta núcleo já rodando) e `reject_remote_clients(true)`.
+- Vários clientes ao mesmo tempo; eventos `CoreToUi` vão para todos. Linha inválida ⇒ `CoreToUi::Error` e a conexão segue.
+- O núcleo lança `sala-ui.exe` (ao lado de `sala-core.exe`, ou `SALA_UI_EXE`) passando `--pipe <nome>`. Fechar a UI: `Shutdown` pelo pipe, esperar o processo terminar por até 2 s e, se não terminar, matá-lo; só então o modo jogo é considerado ativo. Sem executável da UI: aviso no log e o núcleo segue (até a F3).
+**Alternativa descartada:** TCP local (exposto a outros usuários e ao firewall; a spec pede named pipe).
+**Data:** 2026-10-22
+
+## D-011 Notificação de chat no modo jogo sem o texto
+**Conceitos:** chat-message, game-mode, inv-chat-never-on-disk
+**Decisão:** a notificação mostra só o remetente ("Pedro" · "Nova mensagem no chat"). O Windows grava as notificações no histórico da Central de Ações (`wpndatabase.db`), então o texto iria a disco. Escolha do usuário em 2026-10-22, contra o design, que mostrava o texto.
+**Alternativa descartada:** texto completo (fere a restrição) ou configurável (complexidade sem pedido).
+**Data:** 2026-10-22
