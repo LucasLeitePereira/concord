@@ -726,16 +726,8 @@ async fn run_loop(
                 tracing::info!(%friend, attempt, ?delay, "event: reconnecting");
                 shared.emit(SessionEvent::Reconnecting { friend, attempt });
             }
-            NetEvent::Rejected { addr, reason } => {
-                tracing::warn!(%addr, %reason, "event: rejected");
-            }
-            NetEvent::FingerprintMismatch { friend, expected, presented } => {
-                tracing::warn!(
-                    %friend,
-                    expected = %expected.to_hex(),
-                    presented = %presented.to_hex(),
-                    "event: FINGERPRINT MISMATCH, connection refused"
-                );
+            NetEvent::Rejected { .. } => {}
+            NetEvent::FingerprintMismatch { friend, .. } => {
                 shared.emit(SessionEvent::FingerprintMismatch { friend });
             }
         }

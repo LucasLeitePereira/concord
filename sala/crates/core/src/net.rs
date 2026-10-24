@@ -114,6 +114,73 @@ pub fn backoff_delay(attempt: u32) -> Duration {
     Duration::from_secs(secs).min(BACKOFF_MAX)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionFailure {
+    Timeout,
+    HandshakeRefused,
+    FingerprintMismatch,
+    Io,
+}
+
+impl ConnectionFailure {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::HandshakeRefused => "handshake refused",
+            Self::FingerprintMismatch => "fingerprint mismatch",
+            Self::Io => "I/O error",
+        }
+    }
+}
+
+fn classify_connection_failure(message: &str) -> ConnectionFailure {
+    let message = message.to_ascii_lowercase();
+    if message.contains("timedout") || message.contains("timed out") || message.contains("timeout") {
+        ConnectionFailure::Timeout
+    } else if message.contains("fingerprint mismatch") {
+        ConnectionFailure::FingerprintMismatch
+    } else if message.contains("connectionclosed") || message.contains("connection closed")
+        || message.contains("applicationclosed") || message.contains("refused")
+        || message.contains("handshake") || message.contains("versionmismatch")
+    {
+        ConnectionFailure::HandshakeRefused
+    } else {
+        ConnectionFailure::Io
+    }
+}
+
+fn log_failure_if_changed(last: &mut Option<ConnectionFailure>, failure: ConnectionFailure, friend: &str) {
+    if should_log_failure(last, failure) {
+        tracing::warn!(%friend, reason = failure.as_str(), "outgoing connection failed");
+    }
+}
+
+#[cfg(test)]
+mod failure_classification_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_quic_failure_reasons() {
+        assert_eq!(classify_connection_failure("connection timed out"), ConnectionFailure::Timeout);
+        assert_eq!(classify_connection_failure("connection closed: fingerprint mismatch"), ConnectionFailure::FingerprintMismatch);
+        assert_eq!(classify_connection_failure("ApplicationClosed: not a friend"), ConnectionFailure::HandshakeRefused);
+        assert_eq!(classify_connection_failure("handshake refused by peer"), ConnectionFailure::HandshakeRefused);
+        assert_eq!(classify_connection_failure("UDP socket I/O error"), ConnectionFailure::Io);
+    }
+
+    #[test]
+    fn reports_first_failure_and_only_changes() {
+        let mut last = None;
+        assert!(should_log_failure(&mut last, ConnectionFailure::Timeout));
+        assert!(!should_log_failure(&mut last, ConnectionFailure::Timeout));
+        assert!(should_log_failure(&mut last, ConnectionFailure::Io));
+    }
+}
+
+fn should_log_failure(last: &mut Option<ConnectionFailure>, failure: ConnectionFailure) -> bool {
+    if *last == Some(failure) { false } else { *last = Some(failure); true }
+}
+
 /// Builds the trust store from the config's friends (invalid entries are skipped with a warning).
 pub fn trust_store_from_config(config: &Config) -> TrustStore {
     let mut entries = Vec::new();
@@ -291,6 +358,8 @@ struct Inner {
     conns: Mutex<HashMap<String, Active>>,
     /// Friends pinned (TOFU) whose pin was not yet reported through `Connected`.
     unreported_pins: Mutex<HashSet<String>>,
+    last_inbound_failures: Mutex<HashMap<IpAddr, String>>,
+    last_outbound_refusals: Mutex<HashMap<String, ConnectionFailure>>,
     /// Friends being dialed, with the token of their supervisor (a removed and
     /// re-added friend gets a new supervisor; the old one notices and ends).
     dialing: Mutex<HashMap<String, u64>>,
@@ -346,6 +415,8 @@ impl Net {
             trust: Mutex::new(trust),
             conns: Mutex::new(HashMap::new()),
             unreported_pins: Mutex::new(HashSet::new()),
+            last_inbound_failures: Mutex::new(HashMap::new()),
+            last_outbound_refusals: Mutex::new(HashMap::new()),
             dialing: Mutex::new(HashMap::new()),
             events,
             shutdown,
@@ -518,7 +589,7 @@ async fn accept_loop(inner: Arc<Inner>) {
         };
         let addr = incoming.remote_address();
         if !inner.is_friend_ip(addr.ip()) {
-            tracing::warn!(%addr, "refusing connection from non-friend address");
+            log_inbound_refusal(&inner, addr, "address is not a friend");
             incoming.refuse();
             inner.emit(NetEvent::Rejected {
                 addr,
@@ -530,7 +601,11 @@ async fn accept_loop(inner: Arc<Inner>) {
         tokio::spawn(async move {
             match incoming.await {
                 Ok(conn) => establish(inner, conn, ConnSide::Accepted).await,
-                Err(e) => tracing::debug!(%addr, "inbound handshake failed: {e}"),
+                Err(e) => {
+                    let detail = format!("{e:?}: {e}");
+                    let reason = classify_connection_failure(&detail);
+                    log_inbound_refusal(&inner, addr, reason.as_str());
+                }
             }
         });
     }
@@ -542,6 +617,7 @@ async fn supervise(inner: Arc<Inner>, friend: String, target: SocketAddr, token:
     let mut attempt: u32 = 0;
     let mut connected_since: Option<Instant> = None;
     let mut ready_to_dial = true;
+    let mut last_failure = None;
     loop {
         if *shutdown.borrow() {
             break;
@@ -551,6 +627,7 @@ async fn supervise(inner: Arc<Inner>, friend: String, target: SocketAddr, token:
             return;
         }
         if inner.is_connected(&friend) {
+            last_failure = None;
             connected_since.get_or_insert_with(Instant::now);
             ready_to_dial = false;
             tokio::select! {
@@ -586,7 +663,9 @@ async fn supervise(inner: Arc<Inner>, friend: String, target: SocketAddr, token:
         let connecting = match inner.endpoint.connect(target, SERVER_NAME) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(%friend, "cannot start connection: {e}");
+                let detail = format!("{e:?}: {e}");
+                let reason = classify_connection_failure(&detail);
+                log_failure_if_changed(&mut last_failure, reason, &friend);
                 ready_to_dial = false;
                 continue;
             }
@@ -606,7 +685,9 @@ async fn supervise(inner: Arc<Inner>, friend: String, target: SocketAddr, token:
                 }
             }
             Err(e) => {
-                tracing::debug!(%friend, "dial failed: {e}");
+                let detail = format!("{e:?}: {e}");
+                let reason = classify_connection_failure(&detail);
+                log_failure_if_changed(&mut last_failure, reason, &friend);
                 ready_to_dial = false;
             }
         }
@@ -614,6 +695,22 @@ async fn supervise(inner: Arc<Inner>, friend: String, target: SocketAddr, token:
     let mut dialing = lock(&inner.dialing);
     if dialing.get(&friend) == Some(&token) {
         dialing.remove(&friend);
+    }
+}
+
+fn log_inbound_refusal(inner: &Inner, addr: SocketAddr, reason: &str) {
+    let mut failures = lock(&inner.last_inbound_failures);
+    if failures.get(&addr.ip()).is_none_or(|last| last != reason) {
+        tracing::warn!(%addr, reason, "inbound connection refused");
+        failures.insert(addr.ip(), reason.to_string());
+    }
+}
+
+fn log_outbound_refusal(inner: &Inner, friend: &str, addr: SocketAddr, failure: ConnectionFailure) {
+    let mut failures = lock(&inner.last_outbound_refusals);
+    if failures.get(friend) != Some(&failure) {
+        tracing::warn!(%friend, %addr, reason = failure.as_str(), "outgoing connection refused");
+        failures.insert(friend.to_string(), failure);
     }
 }
 
@@ -636,7 +733,10 @@ async fn establish(inner: Arc<Inner>, conn: quinn::Connection, side: ConnSide) {
     let (friend, newly_pinned) = match decision {
         PeerDecision::Accept { friend, newly_pinned } => (friend, newly_pinned),
         PeerDecision::RejectUnknownAddress => {
-            tracing::warn!(%addr, "rejecting connection from non-friend address");
+            match side {
+                ConnSide::Accepted => log_inbound_refusal(&inner, addr, "address is not a friend"),
+                ConnSide::Dialed => log_outbound_refusal(&inner, "unknown friend", addr, ConnectionFailure::HandshakeRefused),
+            }
             conn.close(CODE_REJECTED.into(), b"not a friend");
             inner.emit(NetEvent::Rejected {
                 addr,
@@ -649,7 +749,10 @@ async fn establish(inner: Arc<Inner>, conn: quinn::Connection, side: ConnSide) {
             expected,
             presented,
         } => {
-            tracing::warn!(%friend, "fingerprint mismatch: connection refused, pin kept");
+            match side {
+                ConnSide::Accepted => log_inbound_refusal(&inner, addr, "fingerprint mismatch"),
+                ConnSide::Dialed => log_outbound_refusal(&inner, &friend, addr, ConnectionFailure::FingerprintMismatch),
+            }
             conn.close(CODE_MISMATCH.into(), b"fingerprint mismatch");
             inner.emit(NetEvent::FingerprintMismatch {
                 friend,

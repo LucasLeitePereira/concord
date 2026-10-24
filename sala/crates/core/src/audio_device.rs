@@ -12,10 +12,11 @@
 
 use std::collections::VecDeque;
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
+use cpal::{Device, ErrorKind, FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 use tokio::sync::mpsc::Sender;
 
 use crate::voice::{FRAME_SAMPLES, Resampler, SAMPLE_RATE, downmix_to_mono};
@@ -24,6 +25,20 @@ use crate::voice::{FRAME_SAMPLES, Resampler, SAMPLE_RATE, downmix_to_mono};
 const OUTPUT_QUEUE_FRAMES: usize = 50;
 /// Device-side backlog (in 48 kHz mono samples) kept at most; older audio is discarded.
 const OUTPUT_MAX_BACKLOG: usize = FRAME_SAMPLES * 10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamErrorAction { Rebuild, Ignore }
+
+fn stream_error_action(kind: ErrorKind) -> StreamErrorAction {
+    match kind {
+        ErrorKind::DeviceNotAvailable | ErrorKind::StreamInvalidated => StreamErrorAction::Rebuild,
+        _ => StreamErrorAction::Ignore,
+    }
+}
+
+fn retry_delay(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis((500u64 << attempt.saturating_sub(1).min(5)).min(10_000))
+}
 
 fn is_default(name: &str) -> bool {
     let n = name.trim();
@@ -71,31 +86,66 @@ struct StreamThread {
 }
 
 impl StreamThread {
-    fn spawn<F>(build: F) -> Result<Self, String>
+    fn spawn_recovering<F>(mut build: F) -> Result<Self, String>
     where
-        F: FnOnce() -> Result<cpal::Stream, String> + Send + 'static,
+        F: FnMut(std_mpsc::Sender<ErrorKind>) -> Result<cpal::Stream, String> + Send + 'static,
     {
         let (ready_tx, ready_rx) = std_mpsc::channel::<Result<(), String>>();
         let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
-        let join = std::thread::Builder::new()
-            .name("audio-stream".into())
-            .spawn(move || match build() {
-                Ok(stream) => {
-                    let _ = ready_tx.send(Ok(()));
-                    let _ = stop_rx.recv(); // returns on signal or when the handle is dropped
-                    drop(stream);
+        let join = std::thread::Builder::new().name("audio-stream".into()).spawn(move || {
+            let (error_tx, error_rx) = std_mpsc::channel();
+            let mut stream = match build(error_tx.clone()) {
+                Ok(stream) => { let _ = ready_tx.send(Ok(())); stream }
+                Err(e) => { let _ = ready_tx.send(Err(e)); return; }
+            };
+            let mut attempt = 0;
+            loop {
+                match error_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(kind) if stream_error_action(kind) == StreamErrorAction::Rebuild => {
+                        drop(stream);
+                        attempt += 1;
+                        let delay = retry_delay(attempt);
+                        tracing::warn!(?kind, ?delay, attempt, "rebuilding audio stream");
+                        match stop_rx.recv_timeout(delay) {
+                            Ok(()) | Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+                            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                        }
+                        while error_rx.try_recv().is_ok() {}
+                        match build(error_tx.clone()) {
+                            Ok(new_stream) => {
+                                stream = new_stream;
+                                attempt = 0;
+                                tracing::info!("audio stream recovered");
+                            }
+                            Err(e) => {
+                                tracing::warn!(attempt, error = %e, "audio stream rebuild failed");
+                                attempt += 1;
+                                // Keep retrying with capped backoff; the device may return.
+                                loop {
+                                    let delay = retry_delay(attempt);
+                                    match stop_rx.recv_timeout(delay) {
+                                        Ok(()) | Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
+                                        Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                                    }
+                                    match build(error_tx.clone()) {
+                                        Ok(new_stream) => { stream = new_stream; attempt = 0; tracing::info!("audio stream recovered"); break; }
+                                        Err(e) => { attempt += 1; tracing::warn!(attempt, ?delay, error = %e, "audio stream rebuild failed"); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(kind) => tracing::warn!(?kind, "audio stream error; not rebuilding"),
+                    Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                        if stop_rx.try_recv().is_ok() { break; }
+                    }
+                    Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
                 }
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e));
-                }
-            })
-            .map_err(|e| e.to_string())?;
+            }
+        }).map_err(|e| e.to_string())?;
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self { stop: Some(stop_tx), join: Some(join) }),
-            Ok(Err(e)) => {
-                let _ = join.join();
-                Err(e)
-            }
+            Ok(Err(e)) => { let _ = join.join(); Err(e) }
             Err(_) => Err("audio thread died while starting".into()),
         }
     }
@@ -119,7 +169,7 @@ impl AudioInput {
     /// `device`: name from `AudioConfig::input_device`; empty / "default" = system default.
     pub fn start(device: &str, frames: Sender<Vec<f32>>) -> Result<Self, String> {
         let device = device.to_string();
-        let thread = StreamThread::spawn(move || {
+        let thread = StreamThread::spawn_recovering(move |errors| {
             let dev = find_device(&device, true)?;
             let cfg = dev.default_input_config().map_err(|e| e.to_string())?;
             tracing::info!(
@@ -132,11 +182,11 @@ impl AudioInput {
             let fmt = cfg.sample_format();
             let sc: StreamConfig = cfg.into();
             let stream = match fmt {
-                SampleFormat::F32 => build_input::<f32>(&dev, sc, frames),
-                SampleFormat::I16 => build_input::<i16>(&dev, sc, frames),
-                SampleFormat::I32 => build_input::<i32>(&dev, sc, frames),
-                SampleFormat::U16 => build_input::<u16>(&dev, sc, frames),
-                SampleFormat::F64 => build_input::<f64>(&dev, sc, frames),
+                SampleFormat::F32 => build_input::<f32>(&dev, sc, frames.clone(), errors),
+                SampleFormat::I16 => build_input::<i16>(&dev, sc, frames.clone(), errors),
+                SampleFormat::I32 => build_input::<i32>(&dev, sc, frames.clone(), errors),
+                SampleFormat::U16 => build_input::<u16>(&dev, sc, frames.clone(), errors),
+                SampleFormat::F64 => build_input::<f64>(&dev, sc, frames.clone(), errors),
                 other => Err(format!("unsupported input sample format {other}")),
             }?;
             stream.play().map_err(|e| e.to_string())?;
@@ -146,7 +196,7 @@ impl AudioInput {
     }
 }
 
-fn build_input<T>(dev: &Device, sc: StreamConfig, frames: Sender<Vec<f32>>) -> Result<cpal::Stream, String>
+fn build_input<T>(dev: &Device, sc: StreamConfig, frames: Sender<Vec<f32>>, errors: std_mpsc::Sender<ErrorKind>) -> Result<cpal::Stream, String>
 where
     T: SizedSample,
     f32: FromSample<T>,
@@ -170,7 +220,10 @@ where
                 let _ = frames.try_send(frame);
             }
         },
-        |e| tracing::warn!("audio input stream error: {e}"),
+        move |e| {
+            tracing::warn!("audio input stream error: {e}");
+            if stream_error_action(e.kind()) == StreamErrorAction::Rebuild { let _ = errors.send(e.kind()); }
+        },
         None,
     )
     .map_err(|e| e.to_string())
@@ -186,7 +239,8 @@ impl AudioOutput {
     pub fn start(device: &str) -> Result<Self, String> {
         let device = device.to_string();
         let (tx, rx) = std_mpsc::sync_channel::<Vec<f32>>(OUTPUT_QUEUE_FRAMES);
-        let thread = StreamThread::spawn(move || {
+        let rx = Arc::new(Mutex::new(rx));
+        let thread = StreamThread::spawn_recovering(move |errors| {
             let dev = find_device(&device, false)?;
             let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
             tracing::info!(
@@ -199,11 +253,11 @@ impl AudioOutput {
             let fmt = cfg.sample_format();
             let sc: StreamConfig = cfg.into();
             let stream = match fmt {
-                SampleFormat::F32 => build_output::<f32>(&dev, sc, rx),
-                SampleFormat::I16 => build_output::<i16>(&dev, sc, rx),
-                SampleFormat::I32 => build_output::<i32>(&dev, sc, rx),
-                SampleFormat::U16 => build_output::<u16>(&dev, sc, rx),
-                SampleFormat::F64 => build_output::<f64>(&dev, sc, rx),
+                SampleFormat::F32 => build_output::<f32>(&dev, sc, rx.clone(), errors),
+                SampleFormat::I16 => build_output::<i16>(&dev, sc, rx.clone(), errors),
+                SampleFormat::I32 => build_output::<i32>(&dev, sc, rx.clone(), errors),
+                SampleFormat::U16 => build_output::<u16>(&dev, sc, rx.clone(), errors),
+                SampleFormat::F64 => build_output::<f64>(&dev, sc, rx.clone(), errors),
                 other => Err(format!("unsupported output sample format {other}")),
             }?;
             stream.play().map_err(|e| e.to_string())?;
@@ -221,7 +275,8 @@ impl AudioOutput {
 fn build_output<T>(
     dev: &Device,
     sc: StreamConfig,
-    rx: std_mpsc::Receiver<Vec<f32>>,
+    rx: Arc<Mutex<std_mpsc::Receiver<Vec<f32>>>>,
+    errors: std_mpsc::Sender<ErrorKind>,
 ) -> Result<cpal::Stream, String>
 where
     T: SizedSample + FromSample<f32>,
@@ -234,7 +289,7 @@ where
     dev.build_output_stream(
         sc,
         move |data: &mut [T], _: &_| {
-            while let Ok(frame) = rx.try_recv() {
+            while let Ok(frame) = rx.lock().unwrap_or_else(|p| p.into_inner()).try_recv() {
                 scratch.clear();
                 resampler.process(&frame, &mut scratch);
                 queue.extend(scratch.iter().copied());
@@ -249,7 +304,10 @@ where
                 out.fill(v);
             }
         },
-        |e| tracing::warn!("audio output stream error: {e}"),
+        move |e| {
+            tracing::warn!("audio output stream error: {e}");
+            if stream_error_action(e.kind()) == StreamErrorAction::Rebuild { let _ = errors.send(e.kind()); }
+        },
         None,
     )
     .map_err(|e| e.to_string())
@@ -281,5 +339,27 @@ impl Sink {
 
     pub fn is_null(&self) -> bool {
         matches!(self, Sink::Null)
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn invalidated_devices_rebuild_but_xruns_do_not() {
+        assert_eq!(stream_error_action(ErrorKind::DeviceNotAvailable), StreamErrorAction::Rebuild);
+        assert_eq!(stream_error_action(ErrorKind::StreamInvalidated), StreamErrorAction::Rebuild);
+        assert_eq!(stream_error_action(ErrorKind::Xrun), StreamErrorAction::Ignore);
+        assert_eq!(stream_error_action(ErrorKind::DeviceChanged), StreamErrorAction::Ignore);
+    }
+
+    #[test]
+    fn stream_rebuild_backoff_grows_and_caps_at_ten_seconds() {
+        assert_eq!(
+            (1..=8).map(retry_delay).collect::<Vec<_>>(),
+            [500, 1000, 2000, 4000, 8000, 10000, 10000, 10000]
+                .map(std::time::Duration::from_millis)
+        );
     }
 }
