@@ -45,24 +45,44 @@ fn is_default(name: &str) -> bool {
     n.is_empty() || n.eq_ignore_ascii_case("default")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceChoice<'a> {
+    Default,
+    Configured(&'a str),
+    Missing,
+}
+
+fn choose_device<'a>(configured: &'a str, available: &'a [String]) -> DeviceChoice<'a> {
+    if is_default(configured) {
+        return DeviceChoice::Default;
+    }
+    available
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case(configured.trim()))
+        .map(|name| DeviceChoice::Configured(name))
+        .unwrap_or(DeviceChoice::Missing)
+}
+
 fn find_device(name: &str, input: bool) -> Result<Device, String> {
     let host = cpal::default_host();
     let default = if input { host.default_input_device() } else { host.default_output_device() };
-    if is_default(name) {
-        return default.ok_or_else(|| "no default audio device".to_string());
-    }
-    let wanted = name.trim().to_lowercase();
-    if let Ok(devices) = host.devices() {
-        for d in devices {
-            let usable = if input { d.supports_input() } else { d.supports_output() };
-            let matches = d
-                .description()
-                .map(|desc| desc.name().to_lowercase() == wanted)
-                .unwrap_or(false);
-            if usable && matches {
-                return Ok(d);
+    let devices = host.devices().map(|devices| devices.collect::<Vec<_>>()).unwrap_or_default();
+    let names = devices
+        .iter()
+        .filter(|d| if input { d.supports_input() } else { d.supports_output() })
+        .filter_map(|d| d.description().ok().map(|desc| desc.name().to_string()))
+        .collect::<Vec<_>>();
+    match choose_device(name, &names) {
+        DeviceChoice::Default => return default.ok_or_else(|| "no default audio device".to_string()),
+        DeviceChoice::Configured(selected) => {
+            if let Some(device) = devices.iter().find(|d| {
+                let usable = if input { d.supports_input() } else { d.supports_output() };
+                usable && d.description().map(|desc| desc.name() == selected).unwrap_or(false)
+            }) {
+                return Ok(device.clone());
             }
         }
+        DeviceChoice::Missing => {}
     }
     tracing::warn!(device = name, "audio device not found, using the default one");
     default.ok_or_else(|| "no default audio device".to_string())
@@ -361,5 +381,23 @@ mod recovery_tests {
             [500, 1000, 2000, 4000, 8000, 10000, 10000, 10000]
                 .map(std::time::Duration::from_millis)
         );
+    }
+
+    #[test]
+    fn configured_device_is_used_when_present() {
+        let available = vec!["Headset Mic".to_string(), "USB Mic".to_string()];
+        assert_eq!(choose_device("usb mic", &available), DeviceChoice::Configured("USB Mic"));
+    }
+
+    #[test]
+    fn configured_device_falls_back_to_default_when_absent() {
+        let available = vec!["Headset Mic".to_string()];
+        assert_eq!(choose_device("USB Mic", &available), DeviceChoice::Missing);
+    }
+
+    #[test]
+    fn default_selection_resolves_default_even_when_devices_are_listed() {
+        let available = vec!["Headset Mic".to_string()];
+        assert_eq!(choose_device("default", &available), DeviceChoice::Default);
     }
 }

@@ -8,6 +8,7 @@ export function initialState() {
     everConnected: false,
     status: null, // { muted, deafened, game_mode, in_room }
     config: null, // CoreToUi::Config
+    audio_devices: { inputs: ['default'], outputs: ['default'] },
     mic_level_db: -120, // CoreToUi::MicLevel
     peers: {}, // nome -> { connected, reconnecting, status, stats }
     mismatch: {}, // nome -> true (FingerprintMismatch)
@@ -48,6 +49,12 @@ export function reduce(state, msg) {
       return 'full';
     case 'Config':
       state.config = msg;
+      return 'full';
+    case 'AudioDevices':
+      state.audio_devices = {
+        inputs: Array.isArray(msg.inputs) ? msg.inputs : ['default'],
+        outputs: Array.isArray(msg.outputs) ? msg.outputs : ['default'],
+      };
       return 'full';
     case 'MicLevel':
       state.mic_level_db = Number.isFinite(msg.db) ? msg.db : -120;

@@ -54,6 +54,10 @@ function setMicMeter(on) {
   return send({ type: 'SetMicMeter', on });
 }
 
+function requestAudioDevices() {
+  if (linked()) send({ type: 'ListAudioDevices' });
+}
+
 function syncMicMeter() {
   return setMicMeter(linked() && state.view === 'settings');
 }
@@ -316,9 +320,11 @@ function render() {
 }
 
 function setView(v) {
+  const enteringSettings = v === 'settings' && state.view !== 'settings';
   state.view = v;
   renderNav();
   syncMicMeter();
+  if (enteringSettings) requestAudioDevices();
 }
 
 let toastTimer = null;
@@ -344,6 +350,7 @@ function onLink(link) {
   setLink(state, link === 'connected' ? 'connected' : 'disconnected');
   syncMicMeter();
   if (state.link === 'connected' && was !== 'connected') requestAll();
+  if (state.link === 'connected' && state.view === 'settings') requestAudioDevices();
   render();
 }
 
@@ -408,6 +415,10 @@ for (const el of document.querySelectorAll('[data-view]')) {
 $('add-friend').addEventListener('click', () => {
   setView('settings');
   focusAddFriend();
+});
+
+window.addEventListener('focus', () => {
+  if (state.view === 'settings') requestAudioDevices();
 });
 
 setInterval(() => { if (!document.hidden) tickTimer(); }, 1000);

@@ -198,7 +198,9 @@ button.friend:hover { background: var(--surface-2); }
 .hint-text { font-size: 12px; color: var(--text-faint); }
 .form-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-muted); flex: 1 1 200px; }
-.field input { min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--surface-5); background: var(--surface-2); color: var(--text); }
+.field input, .field select { min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--surface-5); background: var(--surface-2); color: var(--text); }
+.field select:disabled { opacity: .5; }
+.audio-device-field { flex-basis: 100%; }
 .field input.mono-input { font-family: var(--mono); }
 .addr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .addr-value { font-family: var(--mono); font-size: 15px; padding: 8px 12px; border-radius: 10px; background: var(--surface-2); user-select: all; }

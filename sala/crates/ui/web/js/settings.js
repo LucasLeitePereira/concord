@@ -285,7 +285,34 @@ export function initSettings({ state, send, h, icon }) {
     }
     $('mic-volume').disabled = !connected;
     $('vad-threshold').disabled = !connected;
+    renderDeviceSelect('input-device', cfg && cfg.audio.input_device, state.audio_devices.inputs, connected);
+    renderDeviceSelect('output-device', cfg && cfg.audio.output_device, state.audio_devices.outputs, connected);
     renderMicMeter();
+  }
+
+  function renderDeviceSelect(id, configured, available, connected) {
+    const select = $(id);
+    const value = configured || 'default';
+    const names = ['default', ...available.filter((name) => name !== 'default')];
+    if (value !== 'default' && !names.some((name) => name.toLowerCase() === value.toLowerCase())) {
+      names.push(value);
+    }
+    select.replaceChildren(...names.map((name) => h('option', {
+      value: name,
+      selected: name.toLowerCase() === value.toLowerCase(),
+    }, name === 'default' ? 'Padrão do Windows' : name === value && !available.some((device) => device.toLowerCase() === value.toLowerCase())
+      ? `${name} (desconectado)` : name)));
+    select.value = value;
+    select.disabled = !connected;
+  }
+
+  for (const [id, field] of [['input-device', 'input_device'], ['output-device', 'output_device']]) {
+    $(id).addEventListener('change', () => {
+      const cfg = state.config;
+      const value = $(id).value;
+      if (!cfg || cfg.audio[field] === value) return;
+      send({ type: 'UpdateConfig', audio: { ...cfg.audio, [field]: value } });
+    });
   }
 
   for (const [id, mode] of [['mode-vad', 'voice_activity'], ['mode-ptt', 'push_to_talk']]) {
