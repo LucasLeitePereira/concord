@@ -194,6 +194,7 @@ impl PlatformApi for FakePlatform {
 struct Rig {
     ctl: Controller<FakePlatform>,
     platform: FakePlatform,
+    pipe: String,
     ui: IpcClient,
     ipc_rx: mpsc::Receiver<(ClientId, UiToCore)>,
     events: mpsc::UnboundedReceiver<SessionEvent>,
@@ -217,7 +218,7 @@ impl Rig {
             false,
         );
         let ui = IpcClient::connect(&pipe).await.unwrap();
-        Rig { ctl, platform, ui, ipc_rx, events, profile }
+        Rig { ctl, platform, pipe, ui, ipc_rx, events, profile }
     }
 
     /// Sends `cmd` as the UI would, lets the controller handle it, and returns what the UI got.
@@ -446,4 +447,24 @@ async fn room_commands_status_devices_volume_and_meter() {
     rig.pump(Duration::from_millis(150)).await; // in-flight events
     let after = rig.pump(Duration::from_millis(500)).await;
     assert!(!after.iter().any(|m| matches!(m, CoreToUi::MicLevel { .. })), "off stops the events");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mic_meter_stops_when_the_ui_client_disconnects() {
+    let mut rig = Rig::new(vec![]).await;
+    let mut ui = IpcClient::connect(&rig.pipe).await.unwrap();
+    ui.send(&UiToCore::SetMicMeter { on: true }).await.unwrap();
+    let (client, command) = tokio::time::timeout(Duration::from_secs(5), rig.ipc_rx.recv()).await.unwrap().unwrap();
+    assert_eq!(command, UiToCore::SetMicMeter { on: true });
+    rig.ctl.on_command(client, command).await;
+
+    let started = rig.pump(Duration::from_millis(400)).await;
+    assert!(started.iter().any(|m| matches!(m, CoreToUi::MicLevel { .. })), "meter should run while its UI client is connected");
+
+    drop(ui);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    rig.ctl.check_capture_client();
+    rig.pump(Duration::from_millis(150)).await; // discard in-flight level events
+    let after = rig.pump(Duration::from_millis(300)).await;
+    assert!(!after.iter().any(|m| matches!(m, CoreToUi::MicLevel { .. })), "disconnect must stop the mic meter");
 }

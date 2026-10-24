@@ -184,6 +184,8 @@ pub struct Controller<P: PlatformApi> {
     ptt_mode: bool,
     /// The UI client that is capturing a shortcut (`SetHotkeyCapture`).
     capture: Option<ClientId>,
+    /// The UI client that enabled the microphone level meter.
+    mic_meter_client: Option<ClientId>,
     steps: Vec<Step>,
 }
 
@@ -199,6 +201,7 @@ impl<P: PlatformApi> Controller<P> {
             auto_detect: game_cfg.auto_detect,
             ptt_mode,
             capture: None,
+            mic_meter_client: None,
             steps: Vec::new(),
         }
     }
@@ -266,7 +269,7 @@ impl<P: PlatformApi> Controller<P> {
     async fn enter_game_mode(&mut self, trigger: Trigger) {
         info!(%trigger, "entering game mode");
         // The UI is going away: nobody is watching the meter.
-        self.session.set_mic_meter(false);
+        self.stop_mic_meter();
         let outcome = self.host.shutdown_ui().await;
         self.steps.push(Step::UiShutdown(outcome));
         // TODO(F4): close the video viewer.
@@ -389,6 +392,17 @@ impl<P: PlatformApi> Controller<P> {
             info!("capturing client disconnected; restoring shortcuts");
             self.end_capture();
         }
+        if let Some(c) = self.mic_meter_client
+            && !self.host.ipc.has_client(c)
+        {
+            info!("metering client disconnected; stopping microphone meter");
+            self.stop_mic_meter();
+        }
+    }
+
+    fn stop_mic_meter(&mut self) {
+        self.mic_meter_client = None;
+        self.session.set_mic_meter(false);
     }
 
     /// Sends the `Config` (with the Tailscale address) to every UI.
@@ -534,7 +548,14 @@ impl<P: PlatformApi> Controller<P> {
                 };
                 self.host.ipc.send_to(client, &reply);
             }
-            UiToCore::SetMicMeter { on } => self.session.set_mic_meter(on),
+            UiToCore::SetMicMeter { on } => {
+                if on {
+                    self.mic_meter_client = Some(client);
+                    self.session.set_mic_meter(true);
+                } else {
+                    self.stop_mic_meter();
+                }
+            }
             UiToCore::SetHotkeyCapture { on } => {
                 if on {
                     self.start_capture(client);

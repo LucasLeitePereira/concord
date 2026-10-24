@@ -414,13 +414,6 @@ setInterval(() => { if (!document.hidden) tickTimer(); }, 1000);
 
 async function start() {
   render();
-  const appWindow = tauri.window.getCurrentWindow();
-  await appWindow.onCloseRequested(async (event) => {
-    if (!micMeterOn) return;
-    event.preventDefault();
-    await setMicMeter(false);
-    await appWindow.close();
-  });
   await tauri.event.listen('core', (e) => onCore(e.payload));
   await tauri.event.listen('link', (e) => onLink(e.payload));
   // O evento `link` pode ter saído antes de registrarmos o ouvinte.
