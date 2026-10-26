@@ -33,7 +33,7 @@ sala/                      workspace Cargo (nomes internos ainda "sala-*")
   crates/ui/               bin concord-ui.exe: Tauri 2, frontend HTML/CSS/JS puro em web/ (sem npm) — D-016
   installer/concord.iss    Inno Setup (firewall UDP 47800, atalhos, baixa o Tailscale se faltar)
   scripts/                 build-installer.ps1, measure*.ps1
-ontologia/                 domínio (dominio.yaml), mapa conceito→código (mapa-codigo.yaml), decisões D-001..D-021 (decisoes.md)
+ontologia/                 domínio (dominio.yaml), mapa conceito→código (mapa-codigo.yaml), decisões D-001..D-022 (decisoes.md)
 metricas/                  experimento sobre o efeito da ontologia (coletar.py lê transcripts do Claude Code; opcional fora dele)
 .claude/                   agentes e memória do Claude Code; .claude/agent-memory/pleno.md tem armadilhas úteis a qualquer agente
 ```
@@ -48,7 +48,7 @@ cargo test --workspace                                 # obrigatório verde (rod
 powershell -File scripts/build-installer.ps1           # gera target/installer/Concord-Setup-<versão>.exe
 ```
 - **Pronto** = clippy limpo + testes verdes + teste manual do que for visual.
-- `f2_game_mode_end_to_end` e `room_friends_and_call_stats_over_loopback` (f3_settings) às vezes estouram o tempo com a máquina carregada; rode de novo isolado antes de concluir que quebrou.
+- `f2_game_mode_end_to_end`, `room_friends_and_call_stats_over_loopback` (f3_settings) e `f1_call_voice_chat_and_chat_never_on_disk` às vezes estouram o tempo com a máquina carregada; rode de novo isolado antes de concluir que quebrou.
 - Teste manual com 2 instâncias no mesmo PC: `concord.exe --profile a` e `--profile b` (portas 47801/47802, já amigos um do outro em 127.0.0.1). `--synthetic-audio` usa um tom no lugar do microfone. Dados ficam em `%APPDATA%\Concord\[profiles\<p>\]` (config.toml, identidade, logs); na primeira resolução, `Sala` é renomeada para `Concord` quando o destino ainda não existe.
 - Release: suba a versão em `installer/concord.iss` (`AppVersion`) e nos `Cargo.toml`, gere o instalador e rode `gh release create vX.Y.Z <setup.exe>`.
 
@@ -71,7 +71,9 @@ Feito: F1 (rede, voz, identidade), F2 (núcleo residente, modo jogo, bandeja, IP
 2. F4: compartilhamento de tela (WGC + encoder de hardware via FFmpeg LGPL + visualizador wgpu). F5: mesa de sons. README e CI (GitHub Actions) também ficaram para depois.
 Aviso do Windows (SmartScreen, "fornecedor desconhecido"): o instalador não é assinado. Para tirar o aviso é preciso um certificado de assinatura de código (por exemplo, Certum Open Source, para projeto público) e `signtool`/`SignTool=` no Inno Setup; a reputação no SmartScreen ainda leva algum tempo de downloads para se formar. A decisão e o custo são do usuário.
 
-Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo, teste real entre dois PCs via Tailscale, e o instalador baixando o Tailscale (nunca executado de fato).
+Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo e o instalador baixando o Tailscale (nunca executado de fato).
+
+Amigos precisam estar na mesma rede Tailscale: a mesma conta, um convite para a tailnet, ou as máquinas compartilhadas nos dois sentidos. Contas diferentes sem isso não se alcançam, e o app mostra "Fora da sua rede Tailscale" (D-022).
 
 ## 7. Armadilhas conhecidas
 Ver `.claude/agent-memory/pleno.md` (vale para qualquer modelo). As principais:

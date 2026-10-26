@@ -29,6 +29,9 @@ use crate::settings;
 use crate::ui_process::{SHUTDOWN_TIMEOUT, ShutdownOutcome, UiProcess, resolve_ui_exe};
 use crate::voice::clamp_volume;
 
+/// How long "Quit" waits for the session (Bye to friends) before leaving anyway.
+const SESSION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// The part of [`Platform`] the controller needs (fakeable in tests).
 pub trait PlatformApi {
     fn set_tray(&self, state: TrayState);
@@ -622,6 +625,9 @@ impl<P: PlatformApi> Controller<P> {
             SessionEvent::FingerprintMismatch { friend } => {
                 ipc.broadcast(&CoreToUi::FingerprintMismatch { friend });
             }
+            SessionEvent::NotInTailnet { friend } => {
+                ipc.broadcast(&CoreToUi::PeerNotInTailnet { friend });
+            }
             SessionEvent::CallStats { friend, rtt_ms, since_secs } => {
                 ipc.broadcast(&CoreToUi::CallStats { friend, rtt_ms, since_secs });
             }
@@ -635,7 +641,10 @@ impl<P: PlatformApi> Controller<P> {
     /// away when the controller is dropped.
     pub async fn shutdown(mut self) {
         self.host.shutdown_ui().await;
-        self.session.shutdown().await;
+        // "Quit" must always quit, even if the session loop is stuck (T-029).
+        if tokio::time::timeout(SESSION_STOP_TIMEOUT, self.session.shutdown()).await.is_err() {
+            tracing::warn!("session did not stop in time; quitting anyway");
+        }
         self.host.ipc.shutdown().await;
     }
 }

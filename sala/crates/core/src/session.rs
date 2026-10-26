@@ -15,11 +15,11 @@ use sala_protocol::{
     AudioStream, Capabilities, ChatEntry, ControlMessage, MediaDatagram, PROTOCOL_VERSION,
     max_audio_payload,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
 
-use crate::audio_device::{AudioInput, Sink};
+use crate::audio_device::{AudioInput, AudioOutput, Sink};
 use crate::config::{AudioConfig, AudioMode, Config, Friend, Profile};
 use crate::identity::LocalIdentity;
 use crate::net::{Net, NetError, NetEvent, trust_store_from_config};
@@ -86,6 +86,8 @@ pub enum SessionEvent {
     /// Chat received (already stored in the history).
     ChatReceived { friend: String, entry: ChatEntry },
     FingerprintMismatch { friend: String },
+    /// The friend's address is not a peer of this Tailscale (another account, not shared).
+    NotInTailnet { friend: String },
     /// The session itself changed the config (a fingerprint was pinned, TOFU).
     ConfigChanged,
     /// Every 2 s for each connected friend.
@@ -472,21 +474,89 @@ fn spawn_synthetic_source(tx: mpsc::Sender<Vec<f32>>) {
     });
 }
 
-/// Opens the microphone and the output for `audio` (the synthetic source needs no device).
-fn open_audio(source: AudioSource, audio: &AudioConfig, cap_tx: &mpsc::Sender<Vec<f32>>) -> (Option<AudioInput>, Sink) {
-    match source {
-        AudioSource::Synthetic => (None, Sink::Null),
-        AudioSource::Device => {
-            let input = match AudioInput::start(&audio.input_device, cap_tx.clone()) {
-                Ok(i) => Some(i),
-                Err(e) => {
-                    tracing::warn!("no audio input ({e}); not transmitting voice");
-                    None
-                }
-            };
-            (input, Sink::open(&audio.output_device))
-        }
+/// Emits `NotInTailnet` when `friend`'s Tailscale address is not among our peers (D-022).
+fn check_tailnet_peer(shared: &Arc<Shared>, friend: &str) {
+    let address = lock(&shared.config).friends.iter().find(|f| f.name == friend).map(|f| f.address.clone());
+    let Some(ip) = address.and_then(|a| a.parse::<std::net::IpAddr>().ok()) else { return };
+    if !crate::tailscale::in_tailnet_range(ip) {
+        return;
     }
+    let (shared, friend) = (shared.clone(), friend.to_string());
+    tokio::spawn(async move {
+        if crate::tailscale::is_peer(ip).await == Some(false) {
+            tracing::warn!(%friend, %ip, reason = "not_in_tailnet", "friend address is not in this Tailscale network");
+            shared.emit(SessionEvent::NotInTailnet { friend });
+        }
+    });
+}
+
+/// Which audio sides to (re)open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AudioParts {
+    input: bool,
+    output: bool,
+}
+
+impl AudioParts {
+    const BOTH: Self = Self { input: true, output: true };
+
+    fn any(self) -> bool {
+        self.input || self.output
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self { input: self.input || other.input, output: self.output || other.output }
+    }
+}
+
+/// Result of one background open; `None` = that side was not requested.
+type OpenedAudio = (Option<Option<AudioInput>>, Option<Sink>);
+
+/// How long the session waits before trying a missing device again.
+const AUDIO_RETRY: Duration = Duration::from_secs(5);
+
+/// Opens the requested sides of `audio` on a blocking thread: WASAPI can take long or hang,
+/// and the session loop must keep running meanwhile (T-029). `quiet` logs failures at debug
+/// (periodic retries of a device that is still missing).
+fn spawn_open_audio(
+    audio: AudioConfig,
+    parts: AudioParts,
+    cap_tx: mpsc::Sender<Vec<f32>>,
+    quiet: bool,
+) -> oneshot::Receiver<OpenedAudio> {
+    let (tx, rx) = oneshot::channel();
+    tokio::task::spawn_blocking(move || {
+        let input = parts.input.then(|| match AudioInput::start(&audio.input_device, cap_tx) {
+            Ok(i) => Some(i),
+            Err(e) if quiet => {
+                tracing::debug!("audio input still unavailable ({e})");
+                None
+            }
+            Err(e) => {
+                tracing::warn!("no audio input ({e}); not transmitting voice, will retry");
+                None
+            }
+        });
+        let output = parts.output.then(|| match AudioOutput::start(&audio.output_device) {
+            Ok(o) => Sink::Device(o),
+            Err(e) if quiet => {
+                tracing::debug!("audio output still unavailable ({e})");
+                Sink::Null
+            }
+            Err(e) => {
+                tracing::warn!("no audio output ({e}); voice will not be played, will retry");
+                Sink::Null
+            }
+        });
+        // If the session is gone the streams are dropped here, off the runtime.
+        let _ = tx.send((input, output));
+    });
+    rx
+}
+
+/// Drops audio streams off the runtime threads (their `Drop` may wait briefly).
+fn release_audio<T: Send + 'static>(x: T) {
+    tokio::task::spawn_blocking(move || drop(x));
 }
 
 async fn run_loop(
@@ -504,8 +574,15 @@ async fn run_loop(
     if source == AudioSource::Synthetic {
         spawn_synthetic_source(cap_tx.clone());
     }
-    let (mut _input, mut sink) = open_audio(source, &cur_audio, &cap_tx);
-    tracing::info!(synthetic = source == AudioSource::Synthetic, null_sink = sink.is_null(), "voice ready");
+    // Devices open in the background; until then the session runs without them.
+    let mut input: Option<AudioInput> = None;
+    let mut sink = Sink::Null;
+    let mut audio_job = (source == AudioSource::Device)
+        .then(|| spawn_open_audio(cur_audio.clone(), AudioParts::BOTH, cap_tx.clone(), false));
+    // Sides whose device changed while a job was running: reopened when it finishes.
+    let mut audio_pending = AudioParts::default();
+    let mut audio_retry: Option<tokio::time::Instant> = None;
+    tracing::info!(synthetic = source == AudioSource::Synthetic, "voice ready");
     let started = Instant::now();
     let mut playout = interval(Duration::from_millis(20));
     playout.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -589,6 +666,41 @@ async fn run_loop(
                 }
                 continue;
             }
+            opened = async { audio_job.as_mut().expect("guarded").await }, if audio_job.is_some() => {
+                audio_job = None;
+                let Ok((new_input, new_output)) = opened else { continue };
+                if let Some(i) = new_input {
+                    release_audio(std::mem::replace(&mut input, i));
+                }
+                if let Some(s) = new_output {
+                    release_audio(std::mem::replace(&mut sink, s));
+                }
+                tracing::info!(input = input.is_some(), output = !sink.is_null(), "audio devices opened");
+                let pending = std::mem::take(&mut audio_pending);
+                if pending.input {
+                    release_audio(input.take());
+                }
+                if pending.output {
+                    release_audio(std::mem::replace(&mut sink, Sink::Null));
+                }
+                let missing = AudioParts { input: input.is_none(), output: sink.is_null() };
+                if pending.any() {
+                    audio_job = Some(spawn_open_audio(cur_audio.clone(), missing, cap_tx.clone(), false));
+                } else if missing.any() {
+                    audio_retry = Some(tokio::time::Instant::now() + AUDIO_RETRY);
+                }
+                continue;
+            }
+            _ = tokio::time::sleep_until(audio_retry.unwrap_or_else(tokio::time::Instant::now)),
+                if audio_retry.is_some() && audio_job.is_none() =>
+            {
+                audio_retry = None;
+                let missing = AudioParts { input: input.is_none(), output: sink.is_null() };
+                if missing.any() {
+                    audio_job = Some(spawn_open_audio(cur_audio.clone(), missing, cap_tx.clone(), true));
+                }
+                continue;
+            }
             _ = meter_tick.tick(), if meter_on => {
                 shared.emit(SessionEvent::MicLevel { db: engine.take_ui_level() });
                 continue;
@@ -606,15 +718,27 @@ async fn run_loop(
                         if let Err(e) = engine.apply_audio(&audio) {
                             tracing::warn!("cannot apply the audio settings: {e}");
                         }
-                        let devices_changed =
-                            audio.input_device != cur_audio.input_device || audio.output_device != cur_audio.output_device;
+                        let changed = AudioParts {
+                            input: audio.input_device != cur_audio.input_device,
+                            output: audio.output_device != cur_audio.output_device,
+                        };
                         cur_audio = *audio;
-                        if devices_changed {
+                        if changed.any() && source == AudioSource::Device {
                             tracing::info!(input = %cur_audio.input_device, output = %cur_audio.output_device, "reopening the audio devices");
-                            // Close the old streams before opening the new ones.
-                            _input = None;
-                            drop(std::mem::replace(&mut sink, Sink::Null));
-                            (_input, sink) = open_audio(source, &cur_audio, &cap_tx);
+                            if audio_job.is_some() {
+                                audio_pending = audio_pending.union(changed);
+                            } else {
+                                // Close the old streams before opening the new ones.
+                                if changed.input {
+                                    release_audio(input.take());
+                                }
+                                if changed.output {
+                                    release_audio(std::mem::replace(&mut sink, Sink::Null));
+                                }
+                                let missing = AudioParts { input: input.is_none(), output: sink.is_null() };
+                                audio_retry = None;
+                                audio_job = Some(spawn_open_audio(cur_audio.clone(), changed.union(missing), cap_tx.clone(), false));
+                            }
                         }
                     }
                     EngineCmd::MicMeter(on) => {
@@ -724,6 +848,11 @@ async fn run_loop(
             }
             NetEvent::Reconnecting { friend, attempt, delay } => {
                 tracing::info!(%friend, attempt, ?delay, "event: reconnecting");
+                // After a couple of failures (and every ~5 min) check whether the address is
+                // reachable through Tailscale at all; a friend on another account is not.
+                if attempt % 20 == 2 {
+                    check_tailnet_peer(&shared, &friend);
+                }
                 shared.emit(SessionEvent::Reconnecting { friend, attempt });
             }
             NetEvent::Rejected { .. } => {}

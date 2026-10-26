@@ -12,6 +12,7 @@ export function initialState() {
     mic_level_db: -120, // CoreToUi::MicLevel
     peers: {}, // nome -> { connected, reconnecting, status, stats }
     mismatch: {}, // nome -> true (FingerprintMismatch)
+    outsideTailnet: {}, // nome -> true (PeerNotInTailnet; some ao conectar)
     chat: [],
     volumes: {}, // nome -> 0..200 (só da sessão da interface)
     view: 'call',
@@ -64,8 +65,12 @@ export function reduce(state, msg) {
       p.connected = true;
       p.reconnecting = null;
       delete state.mismatch[msg.friend];
+      delete state.outsideTailnet[msg.friend];
       return 'full';
     }
+    case 'PeerNotInTailnet':
+      state.outsideTailnet[msg.friend] = true;
+      return 'full';
     case 'PeerDisconnected': {
       const p = peer(state, msg.friend);
       p.connected = false;
@@ -152,6 +157,9 @@ export function callTarget(state) {
 export function friendStatus(state, name) {
   const p = state.peers[name];
   if (state.mismatch[name]) return { text: 'Identidade diferente', tone: 'danger', dot: 'danger', online: false };
+  if (state.outsideTailnet[name] && !(p && p.connected)) {
+    return { text: 'Fora da sua rede Tailscale', tone: 'danger', dot: 'danger', online: false };
+  }
   if (p && p.reconnecting != null) return { text: 'Reconectando…', tone: 'muted', dot: 'off', online: false };
   if (!p || !p.connected) return { text: 'Offline', tone: 'muted', dot: 'off', online: false };
   const s = p.status;

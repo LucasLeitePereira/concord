@@ -14,6 +14,7 @@ use std::collections::VecDeque;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, ErrorKind, FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
@@ -98,82 +99,188 @@ pub fn list_devices(input: bool) -> Vec<String> {
         .collect()
 }
 
-/// Runs `build` on a new thread, waits for its result, then parks the stream
-/// there until `stop` is signalled (the sender being dropped counts).
+/// How long one stream build may take; WASAPI activation can hang forever.
+const BUILD_TIMEOUT: Duration = Duration::from_secs(5);
+const POLL: Duration = Duration::from_millis(100);
+
+/// What a worker thread reports to its supervisor, tagged with the worker id.
+#[derive(Debug)]
+enum WorkerMsg {
+    Ready,
+    Failed(String),
+    Invalidated(ErrorKind),
+}
+
+enum Wait {
+    Ready,
+    Failed(String),
+    TimedOut,
+    Stopped,
+}
+
+/// Every build attempt runs on a FRESH worker thread (T-029): cpal sets up COM per thread, and
+/// after a device comes back a reused thread failed forever with RPC_E_CHANGED_MODE. The worker
+/// builds the stream, keeps it, and drops it on the same thread (streams are not `Send` on every
+/// backend). A worker that hangs is abandoned, never joined.
+fn spawn_worker<S, F>(id: u64, build: Arc<F>, events: std_mpsc::Sender<(u64, WorkerMsg)>) -> Result<std_mpsc::Sender<()>, String>
+where
+    S: 'static,
+    F: Fn(std_mpsc::Sender<ErrorKind>) -> Result<S, String> + Send + Sync + 'static,
+{
+    let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
+    std::thread::Builder::new()
+        .name("audio-stream".into())
+        .spawn(move || {
+            let (error_tx, error_rx) = std_mpsc::channel();
+            let stream = match build(error_tx) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = events.send((id, WorkerMsg::Failed(e)));
+                    return;
+                }
+            };
+            let _ = events.send((id, WorkerMsg::Ready));
+            loop {
+                match error_rx.recv_timeout(POLL) {
+                    Ok(kind) if stream_error_action(kind) == StreamErrorAction::Rebuild => {
+                        let _ = events.send((id, WorkerMsg::Invalidated(kind)));
+                        break;
+                    }
+                    Ok(kind) => tracing::warn!(?kind, "audio stream error; not rebuilding"),
+                    Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                    // The stream dropped its error callback: only a stop can end us now.
+                    Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                        let _ = stop_rx.recv();
+                        break;
+                    }
+                }
+                if !matches!(stop_rx.try_recv(), Err(std_mpsc::TryRecvError::Empty)) {
+                    break;
+                }
+            }
+            drop(stream);
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(stop_tx)
+}
+
+/// Waits for worker `id` to report Ready/Failed, ignoring stale workers, bounded by `timeout`.
+fn wait_for_build(
+    events: &std_mpsc::Receiver<(u64, WorkerMsg)>,
+    id: u64,
+    timeout: Duration,
+    stop: Option<&std_mpsc::Receiver<()>>,
+) -> Wait {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(stop) = stop
+            && !matches!(stop.try_recv(), Err(std_mpsc::TryRecvError::Empty))
+        {
+            return Wait::Stopped;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Wait::TimedOut;
+        }
+        match events.recv_timeout(left.min(POLL)) {
+            Ok((wid, WorkerMsg::Ready)) if wid == id => return Wait::Ready,
+            Ok((wid, WorkerMsg::Failed(e))) if wid == id => return Wait::Failed(e),
+            Ok(_) | Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => return Wait::Stopped,
+        }
+    }
+}
+
+/// A stream kept alive by a supervisor thread that rebuilds it (on fresh worker threads, with
+/// backoff) whenever the device is invalidated. Dropping the handle stops everything without
+/// waiting for a hung worker.
 struct StreamThread {
     stop: Option<std_mpsc::Sender<()>>,
     join: Option<JoinHandle<()>>,
 }
 
 impl StreamThread {
-    fn spawn_recovering<F>(mut build: F) -> Result<Self, String>
+    fn spawn_recovering<S, F>(build: F) -> Result<Self, String>
     where
-        F: FnMut(std_mpsc::Sender<ErrorKind>) -> Result<cpal::Stream, String> + Send + 'static,
+        S: 'static,
+        F: Fn(std_mpsc::Sender<ErrorKind>) -> Result<S, String> + Send + Sync + 'static,
     {
-        let (ready_tx, ready_rx) = std_mpsc::channel::<Result<(), String>>();
+        Self::spawn_with_timeout(build, BUILD_TIMEOUT)
+    }
+
+    fn spawn_with_timeout<S, F>(build: F, build_timeout: Duration) -> Result<Self, String>
+    where
+        S: 'static,
+        F: Fn(std_mpsc::Sender<ErrorKind>) -> Result<S, String> + Send + Sync + 'static,
+    {
+        let build = Arc::new(build);
+        let (ev_tx, ev_rx) = std_mpsc::channel::<(u64, WorkerMsg)>();
+        let mut id = 0u64;
+        let first = spawn_worker(id, build.clone(), ev_tx.clone())?;
+        match wait_for_build(&ev_rx, id, build_timeout, None) {
+            Wait::Ready => {}
+            Wait::Failed(e) => return Err(e),
+            Wait::TimedOut => return Err("timed out opening the audio device".into()),
+            Wait::Stopped => return Err("audio thread died while starting".into()),
+        }
         let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
-        let join = std::thread::Builder::new().name("audio-stream".into()).spawn(move || {
-            let (error_tx, error_rx) = std_mpsc::channel();
-            let mut stream = match build(error_tx.clone()) {
-                Ok(stream) => { let _ = ready_tx.send(Ok(())); stream }
-                Err(e) => { let _ = ready_tx.send(Err(e)); return; }
-            };
-            let mut attempt = 0;
-            loop {
-                match error_rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                    Ok(kind) if stream_error_action(kind) == StreamErrorAction::Rebuild => {
-                        drop(stream);
+        let join = std::thread::Builder::new()
+            .name("audio-supervisor".into())
+            .spawn(move || {
+                // Dropping the current worker's stop sender ends that worker.
+                let mut worker = Some(first);
+                loop {
+                    // Run until the current worker reports the device invalidated, or a stop.
+                    let invalidated = loop {
+                        if !matches!(stop_rx.try_recv(), Err(std_mpsc::TryRecvError::Empty)) {
+                            return;
+                        }
+                        match ev_rx.recv_timeout(POLL) {
+                            Ok((wid, WorkerMsg::Invalidated(kind))) if wid == id => break kind,
+                            Ok(_) | Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
+                        }
+                    };
+                    drop(worker.take());
+                    let mut attempt = 0u32;
+                    loop {
                         attempt += 1;
                         let delay = retry_delay(attempt);
-                        tracing::warn!(?kind, ?delay, attempt, "rebuilding audio stream");
+                        tracing::warn!(kind = ?invalidated, ?delay, attempt, "rebuilding audio stream");
                         match stop_rx.recv_timeout(delay) {
-                            Ok(()) | Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+                            Ok(()) | Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
                             Err(std_mpsc::RecvTimeoutError::Timeout) => {}
                         }
-                        while error_rx.try_recv().is_ok() {}
-                        match build(error_tx.clone()) {
-                            Ok(new_stream) => {
-                                stream = new_stream;
-                                attempt = 0;
-                                tracing::info!("audio stream recovered");
-                            }
+                        id += 1;
+                        let stop = match spawn_worker(id, build.clone(), ev_tx.clone()) {
+                            Ok(s) => s,
                             Err(e) => {
                                 tracing::warn!(attempt, error = %e, "audio stream rebuild failed");
-                                attempt += 1;
-                                // Keep retrying with capped backoff; the device may return.
-                                loop {
-                                    let delay = retry_delay(attempt);
-                                    match stop_rx.recv_timeout(delay) {
-                                        Ok(()) | Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
-                                        Err(std_mpsc::RecvTimeoutError::Timeout) => {}
-                                    }
-                                    match build(error_tx.clone()) {
-                                        Ok(new_stream) => { stream = new_stream; attempt = 0; tracing::info!("audio stream recovered"); break; }
-                                        Err(e) => { attempt += 1; tracing::warn!(attempt, ?delay, error = %e, "audio stream rebuild failed"); }
-                                    }
-                                }
+                                continue;
                             }
+                        };
+                        match wait_for_build(&ev_rx, id, build_timeout, Some(&stop_rx)) {
+                            Wait::Ready => {
+                                tracing::info!(attempt, "audio stream recovered");
+                                worker = Some(stop);
+                                break;
+                            }
+                            Wait::Failed(e) => tracing::warn!(attempt, error = %e, "audio stream rebuild failed"),
+                            Wait::TimedOut => tracing::warn!(attempt, "audio stream rebuild timed out; abandoning that attempt"),
+                            Wait::Stopped => return,
                         }
                     }
-                    Ok(kind) => tracing::warn!(?kind, "audio stream error; not rebuilding"),
-                    Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                        if stop_rx.try_recv().is_ok() { break; }
-                    }
-                    Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
                 }
-            }
-        }).map_err(|e| e.to_string())?;
-        match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Self { stop: Some(stop_tx), join: Some(join) }),
-            Ok(Err(e)) => { let _ = join.join(); Err(e) }
-            Err(_) => Err("audio thread died while starting".into()),
-        }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Self { stop: Some(stop_tx), join: Some(join) })
     }
 }
 
 impl Drop for StreamThread {
     fn drop(&mut self) {
         drop(self.stop.take());
+        // The supervisor only waits in bounded steps (never on a worker), so this join is short.
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -381,6 +488,86 @@ mod recovery_tests {
             [500, 1000, 2000, 4000, 8000, 10000, 10000, 10000]
                 .map(std::time::Duration::from_millis)
         );
+    }
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Fake stream: keeps the error sender so the test can invalidate it.
+    struct FakeStream;
+
+    #[test]
+    fn supervisor_rebuilds_on_fresh_threads_until_the_device_returns() {
+        let builds = Arc::new(AtomicU32::new(0));
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let errors = Arc::new(Mutex::new(None::<std_mpsc::Sender<ErrorKind>>));
+        let (b, t, e) = (builds.clone(), threads.clone(), errors.clone());
+        let handle = StreamThread::spawn_with_timeout(
+            move |err_tx| {
+                let n = b.fetch_add(1, Ordering::SeqCst);
+                t.lock().unwrap().push(std::thread::current().id());
+                // 1st build ok; after invalidation the next 2 fail, then the device "returns".
+                if n == 1 || n == 2 {
+                    return Err("device gone".into());
+                }
+                *e.lock().unwrap() = Some(err_tx);
+                Ok(FakeStream)
+            },
+            Duration::from_secs(1),
+        )
+        .expect("first build");
+        errors.lock().unwrap().take().unwrap().send(ErrorKind::DeviceNotAvailable).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while builds.load(Ordering::SeqCst) < 4 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(builds.load(Ordering::SeqCst), 4, "recovered after two failures");
+        let ids = threads.lock().unwrap().clone();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "every attempt ran on its own thread");
+        let t0 = Instant::now();
+        drop(handle);
+        assert!(t0.elapsed() < Duration::from_secs(1), "stop is quick");
+    }
+
+    #[test]
+    fn hanging_first_build_times_out_instead_of_blocking() {
+        let t0 = Instant::now();
+        let r = StreamThread::spawn_with_timeout(
+            |_err_tx| -> Result<FakeStream, String> {
+                std::thread::sleep(Duration::from_secs(30));
+                Ok(FakeStream)
+            },
+            Duration::from_millis(200),
+        );
+        assert!(r.is_err());
+        assert!(t0.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn hanging_rebuild_does_not_block_stop() {
+        let builds = Arc::new(AtomicU32::new(0));
+        let errors = Arc::new(Mutex::new(None::<std_mpsc::Sender<ErrorKind>>));
+        let (b, e) = (builds.clone(), errors.clone());
+        let handle = StreamThread::spawn_with_timeout(
+            move |err_tx| {
+                if b.fetch_add(1, Ordering::SeqCst) > 0 {
+                    std::thread::sleep(Duration::from_secs(30));
+                }
+                *e.lock().unwrap() = Some(err_tx);
+                Ok(FakeStream)
+            },
+            Duration::from_secs(5),
+        )
+        .expect("first build");
+        errors.lock().unwrap().take().unwrap().send(ErrorKind::StreamInvalidated).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while builds.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(builds.load(Ordering::SeqCst), 2, "rebuild started and hangs");
+        let t0 = Instant::now();
+        drop(handle);
+        assert!(t0.elapsed() < Duration::from_secs(1), "stop does not wait for the hung build");
     }
 
     #[test]

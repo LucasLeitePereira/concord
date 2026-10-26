@@ -123,6 +123,14 @@ function renderBanners() {
         h('span', {}, 'A conexão foi recusada por segurança. Se ele reinstalou o app, redefina a identidade nos Ajustes.')),
       h('button', { type: 'button', class: 'btn neutral', onclick: () => setView('settings') }, 'Abrir Ajustes')));
   }
+  for (const name of Object.keys(state.outsideTailnet)) {
+    if (state.peers[name] && state.peers[name].connected) continue;
+    out.push(h('div', { class: 'banner danger', role: 'alert' },
+      h('div', { class: 'banner-icon' }, icon('i-alert', 20)),
+      h('div', { class: 'banner-text' },
+        h('strong', {}, `${name} está fora da sua rede Tailscale`),
+        h('span', {}, 'Contas diferentes do Tailscale não se enxergam. Convide a pessoa para a sua rede ou compartilhem as máquinas um com o outro no painel do Tailscale.'))));
+  }
   $('banners').replaceChildren(...out);
 }
 

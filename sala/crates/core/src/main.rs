@@ -8,7 +8,18 @@ use sala_core::session::AudioSource;
 use sala_protocol::PROTOCOL_VERSION;
 
 fn main() {
-    if let Err(e) = run() {
+    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: cannot start the runtime: {e}");
+            std::process::exit(2);
+        }
+    };
+    let result = rt.block_on(run());
+    // A hung audio open (WASAPI) must not keep the process alive after "Quit" (T-029):
+    // don't wait for blocking tasks; detached threads die with the process.
+    rt.shutdown_timeout(std::time::Duration::from_secs(1));
+    if let Err(e) = result {
         eprintln!("error: {e}");
         std::process::exit(2);
     }
@@ -47,7 +58,6 @@ fn init_logging(profile: &Profile) -> Option<tracing_appender::non_blocking::Wor
     }
 }
 
-#[tokio::main]
 async fn run() -> Result<(), String> {
     let args = CliArgs::parse(std::env::args().skip(1))?;
     let (profile, migration) = Profile::resolve_with_outcome(args.profile.as_deref()).map_err(|e| e.to_string())?;

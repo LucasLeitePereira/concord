@@ -170,3 +170,11 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - O `sala-core` usa `nnnoiseless` 0.5.2 sem features opcionais de I/O; o denoiser processa cada frame mono 48 kHz de 20 ms em dois blocos de 480 amostras, entre ganho e medição/VAD.
 - A opção persistida `audio.noise_suppression` instala o processador no início e o liga/desliga ao vivo em `apply_audio`; a UI só envia `UpdateConfig{audio}` e reflete o estado confirmado pelo core.
 - **Data:** 2026-10-23
+
+## D-022 — T-029: áudio nunca bloqueia a sessão; "Sair" sempre sai; amigo fora da tailnet
+- Cada tentativa de abrir um stream cpal roda numa thread nova com prazo de 5 s (`StreamThread` supervisor). Reusar a thread deixava o COM dela inutilizável depois que o dispositivo voltava (`RPC_E_CHANGED_MODE`), e a ativação do WASAPI pode travar para sempre.
+- A sessão abre e reabre dispositivos via `spawn_blocking` e segue sem eles enquanto isso. O lado que faltar é tentado de novo a cada 5 s.
+- "Sair": a parada da sessão tem prazo de 3 s, e o runtime é encerrado com `shutdown_timeout(1 s)`. Threads de áudio travadas não seguram o processo.
+- Tailscale ao abrir: o estado é sondado até `Running` (`next_step`), em vez de uma decisão única.
+- Contas Tailscale diferentes não se enxergam. Depois de 2 falhas de conexão, o core confere `tailscale status --json`. Se o IP do amigo (faixa 100.64/10) não estiver entre os peers, envia o IPC `PeerNotInTailnet`, e a UI mostra um aviso com a solução: convidar para a tailnet ou compartilhar as máquinas nos dois sentidos.
+- **Data:** 2026-10-26

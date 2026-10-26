@@ -2,9 +2,10 @@
 //! running and runs `tailscale up` when the backend is stopped. Never blocks start-up
 //! (the caller runs [`ensure_up`] in the background) and never shows a console window.
 //!
-//! The decision (state -> actions) is the pure [`plan`]; the rest only executes it.
+//! The decision (state -> step) is the pure [`next_step`]; the rest only executes it.
 
 use std::io::Read;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -29,29 +30,36 @@ pub enum Backend {
     Other,
 }
 
-/// What [`plan`] asks for.
+/// What [`next_step`] asks for on one poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
+pub enum Step {
+    /// Backend is `Running`: stop polling.
+    Done,
     /// Start `tailscale-ipn.exe` (the tray app).
     StartTrayApp,
     /// Run `tailscale up`.
     Up,
     /// Log that the user has to sign in on the tray app.
     NoteNeedsLogin,
+    /// Nothing to do yet (`NoState`, `Starting`, retry pacing).
+    Wait,
 }
 
-/// Pure decision: tray app and backend state -> actions, in order.
-pub fn plan(tray_app_running: bool, backend: Backend) -> Vec<Action> {
-    let mut out = Vec::new();
-    if !tray_app_running {
-        out.push(Action::StartTrayApp);
-    }
+/// Minimum time between two tray app starts or two `tailscale up`.
+const RETRY_GAP: Duration = Duration::from_secs(10);
+
+/// Pure decision for one poll (T-029). Polled until `Running`, because right after the
+/// tray app starts the backend is `NoState` and only later turns `Stopped`; a one-shot
+/// decision missed that and never ran `up`. `since_*` = time since that action last ran.
+pub fn next_step(backend: Backend, tray_running: bool, since_tray: Option<Duration>, since_up: Option<Duration>) -> Step {
+    let due = |since: Option<Duration>| since.is_none_or(|d| d >= RETRY_GAP);
     match backend {
-        Backend::Stopped => out.push(Action::Up),
-        Backend::NeedsLogin => out.push(Action::NoteNeedsLogin),
-        Backend::Running | Backend::Other => {}
+        Backend::Running => Step::Done,
+        _ if !tray_running && due(since_tray) => Step::StartTrayApp,
+        Backend::Stopped if due(since_up) => Step::Up,
+        Backend::NeedsLogin => Step::NoteNeedsLogin,
+        _ => Step::Wait,
     }
-    out
 }
 
 /// `BackendState` from the output of `tailscale status --json` (no JSON dependency:
@@ -76,7 +84,13 @@ fn install_dir() -> Option<PathBuf> {
 }
 
 /// Runs a command without a window, with a timeout; returns stdout on success.
-fn run_capture(mut cmd: Command, timeout: Duration) -> Option<String> {
+fn run_capture(cmd: Command, timeout: Duration) -> Option<String> {
+    run_output(cmd, timeout).and_then(|(ok, out)| ok.then_some(out))
+}
+
+/// Like [`run_capture`], but also returns stdout of a failed exit (None only on timeout or
+/// spawn failure): `tailscale status` exits non-zero while stopped yet still prints the state.
+fn run_output(mut cmd: Command, timeout: Duration) -> Option<(bool, String)> {
     use std::os::windows::process::CommandExt;
     cmd.creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     let mut child = cmd.spawn().ok()?;
@@ -92,7 +106,7 @@ fn run_capture(mut cmd: Command, timeout: Duration) -> Option<String> {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let out = reader.join().ok()?;
-                return status.success().then_some(out);
+                return Some((status.success(), out));
             }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             _ => {
@@ -113,7 +127,7 @@ fn tray_app_running() -> bool {
 fn backend(cli: &PathBuf) -> Backend {
     let mut cmd = Command::new(cli);
     cmd.args(["status", "--json"]);
-    run_capture(cmd, STATUS_TIMEOUT).map_or(Backend::Other, |o| parse_backend(&o))
+    run_output(cmd, STATUS_TIMEOUT).map_or(Backend::Other, |(_, o)| parse_backend(&o))
 }
 
 fn start_tray_app(dir: &std::path::Path) {
@@ -131,7 +145,7 @@ fn start_tray_app(dir: &std::path::Path) {
     }
 }
 
-/// Blocking: does what [`plan`] says and waits (bounded) for `Running`.
+/// Blocking: polls the state and does what [`next_step`] says until `Running` (bounded).
 /// Returns true when the backend ended up `Running`.
 fn ensure_up_blocking() -> bool {
     let Some(dir) = install_dir().filter(|d| d.join("tailscale.exe").exists()) else {
@@ -139,28 +153,40 @@ fn ensure_up_blocking() -> bool {
         return false;
     };
     let cli = dir.join("tailscale.exe");
-    let state = backend(&cli);
-    for action in plan(tray_app_running(), state) {
-        match action {
-            Action::StartTrayApp => start_tray_app(&dir),
-            Action::Up => {
+    let deadline = Instant::now() + RUNNING_WAIT;
+    let (mut last_tray, mut last_up): (Option<Instant>, Option<Instant>) = (None, None);
+    let mut noted_login = false;
+    loop {
+        let state = backend(&cli);
+        // Only ask for the process list when it matters (it costs a tasklist run).
+        let tray = state == Backend::Running || tray_app_running();
+        let since = |t: Option<Instant>| t.map(|t| t.elapsed());
+        match next_step(state, tray, since(last_tray), since(last_up)) {
+            Step::Done => {
+                info!("tailscale: running");
+                return true;
+            }
+            Step::StartTrayApp => {
+                start_tray_app(&dir);
+                last_tray = Some(Instant::now());
+            }
+            Step::Up => {
                 let mut cmd = Command::new(&cli);
                 cmd.arg("up");
                 match run_capture(cmd, UP_TIMEOUT) {
                     Some(_) => info!("tailscale: up done"),
                     None => warn!("tailscale: `tailscale up` failed or timed out"),
                 }
+                last_up = Some(Instant::now());
             }
-            Action::NoteNeedsLogin => info!("tailscale: needs login; sign in on the Tailscale tray app"),
-        }
-    }
-    let deadline = Instant::now() + RUNNING_WAIT;
-    loop {
-        if backend(&cli) == Backend::Running {
-            info!("tailscale: running");
-            return true;
+            Step::NoteNeedsLogin if !noted_login => {
+                info!("tailscale: needs login; sign in on the Tailscale tray app");
+                noted_login = true;
+            }
+            Step::NoteNeedsLogin | Step::Wait => {}
         }
         if Instant::now() >= deadline {
+            warn!(?state, "tailscale: not running after {RUNNING_WAIT:?}; giving up");
             return false;
         }
         std::thread::sleep(RUNNING_POLL);
@@ -170,6 +196,40 @@ fn ensure_up_blocking() -> bool {
 /// Background task: true when Tailscale is `Running` at the end.
 pub async fn ensure_up() -> bool {
     tokio::task::spawn_blocking(ensure_up_blocking).await.unwrap_or(false)
+}
+
+/// True for Tailscale's address range (100.64.0.0/10, IPv4) and fd7a:115c:a1e0::/48 (IPv6).
+pub fn in_tailnet_range(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            a == 100 && (64..128).contains(&b)
+        }
+        IpAddr::V6(v6) => v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+    }
+}
+
+/// Whether `ip` is one of the peers in `tailscale status --json` (own tailnet or machines
+/// shared with us). No JSON dependency: looks for the quoted address after the `"Peer"` key
+/// (routes are written as `"a.b.c.d/32"`, so they never match).
+pub fn peer_listed(json: &str, ip: IpAddr) -> bool {
+    let Some(i) = json.find("\"Peer\"") else { return false };
+    json[i..].contains(&format!("\"{ip}\""))
+}
+
+fn is_peer_blocking(ip: IpAddr) -> Option<bool> {
+    let dir = install_dir().filter(|d| d.join("tailscale.exe").exists())?;
+    let mut cmd = Command::new(dir.join("tailscale.exe"));
+    cmd.args(["status", "--json"]);
+    let (_, out) = run_output(cmd, STATUS_TIMEOUT)?;
+    // Peers are only meaningful while running.
+    (parse_backend(&out) == Backend::Running).then(|| peer_listed(&out, ip))
+}
+
+/// `Some(false)` when Tailscale runs and `ip` is not reachable through it (friend on another
+/// account without sharing); `None` when that cannot be told.
+pub async fn is_peer(ip: IpAddr) -> Option<bool> {
+    tokio::task::spawn_blocking(move || is_peer_blocking(ip)).await.ok().flatten()
 }
 
 /// Blocking: `tailscale down` and closes the tray app (the service stays installed).
@@ -197,17 +257,55 @@ pub async fn shut_down() {
 mod tests {
     use super::*;
 
+    const S: fn(u64) -> Option<Duration> = |s| Some(Duration::from_secs(s));
+
     #[test]
-    fn plan_state_to_actions() {
-        use Action::*;
-        assert_eq!(plan(true, Backend::Running), vec![]);
-        assert_eq!(plan(true, Backend::Stopped), vec![Up]);
-        assert_eq!(plan(false, Backend::Stopped), vec![StartTrayApp, Up]);
-        assert_eq!(plan(false, Backend::NeedsLogin), vec![StartTrayApp, NoteNeedsLogin]);
-        assert_eq!(plan(true, Backend::NeedsLogin), vec![NoteNeedsLogin]);
-        // Control: unknown/starting state never runs `up`.
-        assert_eq!(plan(true, Backend::Other), vec![]);
-        assert_eq!(plan(false, Backend::Other), vec![StartTrayApp]);
+    fn reopening_after_quit_reaches_up_once_the_backend_is_stopped() {
+        use Step::*;
+        // Real sequence after Concord quit (`down` + tray app killed): tray off, NoState...
+        assert_eq!(next_step(Backend::Other, false, None, None), StartTrayApp);
+        // ...tray starting, still NoState: wait (the old one-shot decision ended here).
+        assert_eq!(next_step(Backend::Other, true, S(2), None), Wait);
+        // ...then Stopped: run `up`.
+        assert_eq!(next_step(Backend::Stopped, true, S(4), None), Up);
+        assert_eq!(next_step(Backend::Running, true, S(6), S(2)), Done);
+    }
+
+    #[test]
+    fn retries_are_paced() {
+        use Step::*;
+        // Control: `up` is not repeated right away, nor the tray app restarted.
+        assert_eq!(next_step(Backend::Stopped, true, None, S(3)), Wait);
+        assert_eq!(next_step(Backend::Stopped, true, None, S(10)), Up);
+        assert_eq!(next_step(Backend::Other, false, S(3), None), Wait);
+        assert_eq!(next_step(Backend::Other, false, S(12), None), StartTrayApp);
+        assert_eq!(next_step(Backend::NeedsLogin, true, None, None), NoteNeedsLogin);
+        assert_eq!(next_step(Backend::Running, false, None, None), Done);
+    }
+
+    #[test]
+    fn friend_outside_the_tailnet_is_detected() {
+        let json = r#"{"BackendState":"Running","Self":{"TailscaleIPs":["100.70.1.1"]},
+            "Peer":{"nodekey:a":{"HostName":"pc","TailscaleIPs":["100.76.130.127","fd7a:115c:a1e0::1"],
+            "PrimaryRoutes":["100.74.137.67/32"]}}}"#;
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert!(peer_listed(json, ip("100.76.130.127")));
+        assert!(peer_listed(json, ip("fd7a:115c:a1e0::1")));
+        // Control: another tailnet's address, a route and our own address are not peers.
+        assert!(!peer_listed(json, ip("100.74.137.67")));
+        assert!(!peer_listed(json, ip("100.70.1.1")));
+        assert!(!peer_listed(r#"{"Peer":null}"#, ip("100.76.130.127")));
+    }
+
+    #[test]
+    fn tailnet_range() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert!(in_tailnet_range(ip("100.64.0.1")));
+        assert!(in_tailnet_range(ip("100.127.255.254")));
+        assert!(!in_tailnet_range(ip("100.128.0.1")));
+        assert!(!in_tailnet_range(ip("127.0.0.1")));
+        assert!(!in_tailnet_range(ip("192.168.0.10")));
+        assert!(in_tailnet_range(ip("fd7a:115c:a1e0::1")));
     }
 
     #[test]

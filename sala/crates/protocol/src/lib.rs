@@ -405,6 +405,9 @@ pub enum CoreToUi {
     MicLevel { db: f32 },
     /// Every 2 s per connected friend.
     CallStats { friend: String, rtt_ms: u32, since_secs: u64 },
+    /// The friend's address is not reachable through this PC's Tailscale (another account
+    /// without sharing). Cleared by `PeerConnected`.
+    PeerNotInTailnet { friend: String },
 }
 
 /// Encodes an IPC message as exactly one JSON line terminated by `\n`.
@@ -660,6 +663,7 @@ mod tests {
             CoreToUi::PeerReconnecting { friend: "bia".into(), attempt: 3 },
             CoreToUi::PeerStatus { friend: "bia".into(), muted: true, deafened: false, game_mode: true, sharing: false, in_room: false },
             CoreToUi::FingerprintMismatch { friend: "bia".into() },
+            CoreToUi::PeerNotInTailnet { friend: "bia".into() },
             CoreToUi::Config {
                 name: "ana".into(),
                 audio: audio_settings(),
