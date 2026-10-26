@@ -551,6 +551,11 @@ impl<P: PlatformApi> Controller<P> {
                 };
                 self.host.ipc.send_to(client, &reply);
             }
+            UiToCore::ListTailnetPeers => {
+                let (running, peers) =
+                    tokio::task::spawn_blocking(crate::tailscale::list_peers_blocking).await.unwrap_or_default();
+                self.host.ipc.send_to(client, &CoreToUi::TailnetPeers { running, peers });
+            }
             UiToCore::SetMicMeter { on } => {
                 if on {
                     self.mic_meter_client = Some(client);

@@ -353,6 +353,27 @@ pub enum UiToCore {
     /// While on, the core unregisters every global shortcut and the push-to-talk key (so the
     /// UI can capture a combination); turning it off, or the client disconnecting, restores them.
     SetHotkeyCapture { on: bool },
+    /// Answered with `CoreToUi::TailnetPeers` (devices of this PC's Tailscale network).
+    ListTailnetPeers,
+}
+
+/// One device of the Tailscale network (own tailnet or shared with us).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TailnetPeer {
+    /// Device name (Tailscale `HostName`).
+    pub name: String,
+    /// Tailscale IPv4 address.
+    pub address: String,
+    pub online: bool,
+    /// Owner's display name, when Tailscale knows it.
+    #[serde(default)]
+    pub owner: Option<String>,
+    /// Same Tailscale user as this PC.
+    #[serde(default)]
+    pub mine: bool,
+    /// `windows`, `linux`, `android`...
+    #[serde(default)]
+    pub os: String,
 }
 
 /// Events/state from the core to the UI (IPC). Unknown variants must be ignored by the UI (D-012).
@@ -408,6 +429,8 @@ pub enum CoreToUi {
     /// The friend's address is not reachable through this PC's Tailscale (another account
     /// without sharing). Cleared by `PeerConnected`.
     PeerNotInTailnet { friend: String },
+    /// Reply to `ListTailnetPeers`; `running` false = Tailscale off or not found (empty list).
+    TailnetPeers { running: bool, peers: Vec<TailnetPeer> },
 }
 
 /// Encodes an IPC message as exactly one JSON line terminated by `\n`.
@@ -638,6 +661,7 @@ mod tests {
             UiToCore::ListAudioDevices,
             UiToCore::SetMicMeter { on: true },
             UiToCore::SetHotkeyCapture { on: true },
+            UiToCore::ListTailnetPeers,
             UiToCore::SetPeerVolume { friend: "bia".into(), volume: 1.5 },
         ];
         for c in cmds {
@@ -664,6 +688,17 @@ mod tests {
             CoreToUi::PeerStatus { friend: "bia".into(), muted: true, deafened: false, game_mode: true, sharing: false, in_room: false },
             CoreToUi::FingerprintMismatch { friend: "bia".into() },
             CoreToUi::PeerNotInTailnet { friend: "bia".into() },
+            CoreToUi::TailnetPeers {
+                running: true,
+                peers: vec![TailnetPeer {
+                    name: "pc-bia".into(),
+                    address: "100.64.0.2".into(),
+                    online: true,
+                    owner: Some("Bia".into()),
+                    mine: false,
+                    os: "windows".into(),
+                }],
+            },
             CoreToUi::Config {
                 name: "ana".into(),
                 audio: audio_settings(),

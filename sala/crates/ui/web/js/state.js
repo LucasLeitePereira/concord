@@ -13,6 +13,7 @@ export function initialState() {
     peers: {}, // nome -> { connected, reconnecting, status, stats }
     mismatch: {}, // nome -> true (FingerprintMismatch)
     outsideTailnet: {}, // nome -> true (PeerNotInTailnet; some ao conectar)
+    tailnet: null, // null (nunca pediu) | { loading: true } | { running, peers } (TailnetPeers)
     chat: [],
     volumes: {}, // nome -> 0..200 (só da sessão da interface)
     view: 'call',
@@ -68,6 +69,9 @@ export function reduce(state, msg) {
       delete state.outsideTailnet[msg.friend];
       return 'full';
     }
+    case 'TailnetPeers':
+      state.tailnet = { running: !!msg.running, peers: Array.isArray(msg.peers) ? msg.peers : [] };
+      return 'full';
     case 'PeerNotInTailnet':
       state.outsideTailnet[msg.friend] = true;
       return 'full';

@@ -178,3 +178,9 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Tailscale ao abrir: o estado é sondado até `Running` (`next_step`), em vez de uma decisão única.
 - Contas Tailscale diferentes não se enxergam. Depois de 2 falhas de conexão, o core confere `tailscale status --json`. Se o IP do amigo (faixa 100.64/10) não estiver entre os peers, envia o IPC `PeerNotInTailnet`, e a UI mostra um aviso com a solução: convidar para a tailnet ou compartilhar as máquinas nos dois sentidos.
 - **Data:** 2026-10-26
+
+## D-023 — T-030: adicionar amigo pela lista da tailnet
+- Ajustes → Amigos lista os dispositivos de `tailscale status --json` (IPC `ListTailnetPeers` → `TailnetPeers`), pedidos ao abrir Ajustes e no botão "Atualizar". Mostra nome do PC, dono, IP, online e "Já é amigo".
+- Adicionar pede só um apelido, já sugerido (primeiro nome do dono, ou nome do PC). O nome do amigo continua sendo só um rótulo local: a conexão é casada pelo IP e o TOFU, pela identidade. O formulário manual por IP continua.
+- O core passa a depender de `serde_json` (já no workspace) para ler o status.
+- **Data:** 2026-10-26

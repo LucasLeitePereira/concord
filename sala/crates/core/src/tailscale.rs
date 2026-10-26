@@ -232,6 +232,79 @@ pub async fn is_peer(ip: IpAddr) -> Option<bool> {
     tokio::task::spawn_blocking(move || is_peer_blocking(ip)).await.ok().flatten()
 }
 
+#[derive(serde::Deserialize)]
+struct StatusJson {
+    #[serde(rename = "Self")]
+    me: Option<NodeJson>,
+    #[serde(rename = "Peer", default)]
+    peer: Option<std::collections::HashMap<String, NodeJson>>,
+    #[serde(rename = "User", default)]
+    user: Option<std::collections::HashMap<String, UserJson>>,
+}
+
+#[derive(serde::Deserialize)]
+struct NodeJson {
+    #[serde(rename = "HostName", default)]
+    host_name: String,
+    #[serde(rename = "OS", default)]
+    os: String,
+    #[serde(rename = "UserID", default)]
+    user_id: i64,
+    #[serde(rename = "TailscaleIPs", default)]
+    ips: Option<Vec<String>>,
+    #[serde(rename = "Online", default)]
+    online: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct UserJson {
+    #[serde(rename = "DisplayName", default)]
+    display_name: String,
+    #[serde(rename = "LoginName", default)]
+    login_name: String,
+}
+
+/// Devices listed by `tailscale status --json` (not this PC), online first, then by name.
+/// Devices without an IPv4 address are skipped (Concord dials IPv4).
+pub fn parse_peers(json: &str) -> Vec<sala_protocol::TailnetPeer> {
+    let Ok(status) = serde_json::from_str::<StatusJson>(json) else { return Vec::new() };
+    let me = status.me.map(|n| n.user_id);
+    let users = status.user.unwrap_or_default();
+    let mut out: Vec<_> = status
+        .peer
+        .unwrap_or_default()
+        .into_values()
+        .filter_map(|n| {
+            let address = n.ips.unwrap_or_default().into_iter().find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())?;
+            let owner = users.get(&n.user_id.to_string()).and_then(|u| {
+                let name = if u.display_name.is_empty() { &u.login_name } else { &u.display_name };
+                (!name.is_empty()).then(|| name.clone())
+            });
+            Some(sala_protocol::TailnetPeer {
+                name: n.host_name,
+                address,
+                online: n.online,
+                owner,
+                mine: me == Some(n.user_id),
+                os: n.os,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.online.cmp(&a.online).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    out
+}
+
+/// Blocking: `(running, devices)` of this PC's Tailscale network.
+pub fn list_peers_blocking() -> (bool, Vec<sala_protocol::TailnetPeer>) {
+    let Some(dir) = install_dir().filter(|d| d.join("tailscale.exe").exists()) else { return (false, Vec::new()) };
+    let mut cmd = Command::new(dir.join("tailscale.exe"));
+    cmd.args(["status", "--json"]);
+    match run_output(cmd, STATUS_TIMEOUT) {
+        Some((_, out)) if parse_backend(&out) == Backend::Running => (true, parse_peers(&out)),
+        _ => (false, Vec::new()),
+    }
+}
+
 /// Blocking: `tailscale down` and closes the tray app (the service stays installed).
 fn shut_down_blocking() {
     let Some(dir) = install_dir().filter(|d| d.join("tailscale.exe").exists()) else { return };
@@ -295,6 +368,26 @@ mod tests {
         assert!(!peer_listed(json, ip("100.74.137.67")));
         assert!(!peer_listed(json, ip("100.70.1.1")));
         assert!(!peer_listed(r#"{"Peer":null}"#, ip("100.76.130.127")));
+    }
+
+    #[test]
+    fn lists_tailnet_devices_with_owner() {
+        let json = r#"{"BackendState":"Running","Self":{"HostName":"meu-pc","UserID":1,"TailscaleIPs":["100.70.1.1"]},
+            "Peer":{
+              "nodekey:a":{"HostName":"notebook","OS":"windows","UserID":1,"TailscaleIPs":["100.70.1.2"],"Online":false},
+              "nodekey:b":{"HostName":"DESKTOP-LUCAO","OS":"windows","UserID":2,"TailscaleIPs":["fd7a:115c:a1e0::9","100.76.130.127"],"Online":true},
+              "nodekey:c":{"HostName":"so-ipv6","UserID":2,"TailscaleIPs":["fd7a:115c:a1e0::8"],"Online":true}},
+            "User":{"1":{"DisplayName":"Eu","LoginName":"eu@x"},"2":{"DisplayName":"","LoginName":"lucao@x"}}}"#;
+        let peers = parse_peers(json);
+        let names: Vec<_> = peers.iter().map(|p| p.name.as_str()).collect();
+        // Online first; this PC and IPv6-only devices are not listed.
+        assert_eq!(names, ["DESKTOP-LUCAO", "notebook"]);
+        assert_eq!(peers[0].address, "100.76.130.127");
+        assert_eq!(peers[0].owner.as_deref(), Some("lucao@x"));
+        assert!(!peers[0].mine && peers[1].mine);
+        assert_eq!(peers[1].owner.as_deref(), Some("Eu"));
+        assert!(parse_peers(r#"{"BackendState":"Running","Peer":null}"#).is_empty());
+        assert!(parse_peers("garbage").is_empty());
     }
 
     #[test]

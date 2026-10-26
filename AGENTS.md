@@ -33,7 +33,7 @@ sala/                      workspace Cargo (nomes internos ainda "sala-*")
   crates/ui/               bin concord-ui.exe: Tauri 2, frontend HTML/CSS/JS puro em web/ (sem npm) — D-016
   installer/concord.iss    Inno Setup (firewall UDP 47800, atalhos, baixa o Tailscale se faltar)
   scripts/                 build-installer.ps1, measure*.ps1
-ontologia/                 domínio (dominio.yaml), mapa conceito→código (mapa-codigo.yaml), decisões D-001..D-022 (decisoes.md)
+ontologia/                 domínio (dominio.yaml), mapa conceito→código (mapa-codigo.yaml), decisões D-001..D-023 (decisoes.md)
 metricas/                  experimento sobre o efeito da ontologia (coletar.py lê transcripts do Claude Code; opcional fora dele)
 .claude/                   agentes e memória do Claude Code; .claude/agent-memory/pleno.md tem armadilhas úteis a qualquer agente
 ```
@@ -73,7 +73,7 @@ Aviso do Windows (SmartScreen, "fornecedor desconhecido"): o instalador não é 
 
 Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo e o instalador baixando o Tailscale (nunca executado de fato).
 
-Amigos precisam estar na mesma rede Tailscale: a mesma conta, um convite para a tailnet, ou as máquinas compartilhadas nos dois sentidos. Contas diferentes sem isso não se alcançam, e o app mostra "Fora da sua rede Tailscale" (D-022).
+Amigos precisam estar na mesma rede Tailscale: a mesma conta, um convite para a tailnet, ou as máquinas compartilhadas nos dois sentidos. Contas diferentes sem isso não se alcançam, e o app mostra "Fora da sua rede Tailscale" (D-022). Em Ajustes → Amigos, os dispositivos da tailnet aparecem em lista para adicionar só com um apelido (D-023).
 
 ## 7. Armadilhas conhecidas
 Ver `.claude/agent-memory/pleno.md` (vale para qualquer modelo). As principais:

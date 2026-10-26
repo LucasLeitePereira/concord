@@ -168,9 +168,15 @@
         <section class="panel" aria-labelledby="sec-amigos">
           <div class="panel-head">
             <h2 id="sec-amigos">Amigos</h2>
-            <span class="hint-text">Use o IP que o Tailscale mostra no PC do seu amigo</span>
+            <span class="hint-text">Escolha o PC do seu amigo na lista e dê um apelido</span>
           </div>
           <div id="friend-list" role="list" aria-labelledby="sec-amigos"></div>
+          <div class="tn-head">
+            <span class="field-label" id="tn-label">Na sua rede Tailscale</span>
+            <button type="button" class="link-btn" id="tn-scan" data-key="tn-scan">Atualizar</button>
+          </div>
+          <div id="tn-list" role="list" aria-labelledby="tn-label"></div>
+          <span class="hint-text">Ou adicione pelo IP:</span>
           <form class="form-row" id="friend-form" autocomplete="off" novalidate>
             <label class="field">Nome
               <input type="text" id="fr-name" placeholder="Como você chama esse amigo" maxlength="40">

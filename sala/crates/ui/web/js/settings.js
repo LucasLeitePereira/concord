@@ -384,7 +384,100 @@ export function initSettings({ state, send, h, icon }) {
       const again = document.querySelector(`#friend-list [data-key="${CSS.escape(key)}"]`);
       if (again && again !== active) again.focus();
     }
+    renderTailnet();
   }
+
+  // ---------- Na sua rede Tailscale ----------
+
+  const nicks = {}; // endereço -> apelido digitado (sobrevive às re-renderizações)
+  let tnSignature = '';
+
+  function requestTailnet() {
+    if (state.link !== 'connected') return;
+    state.tailnet = { loading: true };
+    renderTailnet();
+    send({ type: 'ListTailnetPeers' });
+  }
+
+  // Apelido sugerido: o primeiro nome do dono (PC de outra pessoa) ou o nome do PC.
+  function suggestedNick(p) {
+    if (!p.mine && p.owner) {
+      const base = p.owner.includes('@') ? p.owner.split('@')[0] : p.owner.trim().split(/\s+/)[0];
+      if (base) return base.slice(0, 40);
+    }
+    return p.name.slice(0, 40);
+  }
+
+  function addFromTailnet(p) {
+    const nick = (nicks[p.address] ?? suggestedNick(p)).trim();
+    const err = $('fr-error');
+    if (!nick) {
+      err.textContent = 'Dê um apelido para esse amigo.';
+      return;
+    }
+    if (friends(state).some((f) => f.name === nick)) {
+      err.textContent = `Já existe um amigo chamado ${nick}. Escolha outro apelido.`;
+      return;
+    }
+    err.textContent = '';
+    send({ type: 'AddFriend', name: nick, address: p.address });
+  }
+
+  function tailnetRow(p, friend) {
+    const meta = [p.owner, p.address, p.os && p.os !== 'windows' ? p.os : null].filter(Boolean).join(' · ');
+    const info = h('div', { class: 'tn-info' },
+      h('span', { class: 'f-name' }, p.name),
+      h('span', { class: 'tn-meta' },
+        h('span', { class: `dot${p.online ? '' : ' off'}` }),
+        `${p.online ? 'Online' : 'Offline'} · ${meta}`));
+    const action = friend
+      ? h('span', { class: 'seal ok' }, icon('i-check', 12), `Já é amigo: ${friend.name}`)
+      : h('div', { class: 'tn-add' },
+        h('input', {
+          type: 'text', maxlength: '40', placeholder: 'Apelido',
+          'aria-label': `Apelido para ${p.name}`, 'data-key': `tn-nick:${p.address}`,
+          value: nicks[p.address] ?? suggestedNick(p),
+          oninput: (e) => { nicks[p.address] = e.target.value; },
+          onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromTailnet(p); } },
+        }),
+        h('button', {
+          type: 'button', class: 'btn primary', 'data-key': `tn-add:${p.address}`,
+          disabled: state.link !== 'connected',
+          onclick: () => addFromTailnet(p),
+        }, 'Adicionar'));
+    return h('div', { role: 'listitem', class: 'f-row' },
+      h('div', { class: 'avatar' }, initial(p.name)), info, action);
+  }
+
+  // Só recria a lista quando algo dela muda: os campos de apelido não perdem o foco nem o texto.
+  function renderTailnet() {
+    const tn = state.tailnet;
+    const list = friends(state);
+    const sig = JSON.stringify([tn, list.map((f) => [f.name, f.address]), state.link]);
+    if (sig === tnSignature) return;
+    tnSignature = sig;
+    $('tn-scan').disabled = state.link !== 'connected' || !!(tn && tn.loading);
+    let rows;
+    if (!tn || tn.loading) {
+      rows = [h('div', { class: 'hint-text' }, 'Procurando dispositivos…')];
+    } else if (!tn.running) {
+      rows = [h('div', { class: 'hint-text' }, 'O Tailscale está desligado ou não foi encontrado.')];
+    } else if (!tn.peers.length) {
+      rows = [h('div', { class: 'hint-text' },
+        'Nenhum outro dispositivo na sua rede. Convide seu amigo pelo painel do Tailscale ou compartilhem as máquinas.')];
+    } else {
+      rows = tn.peers.map((p) => tailnetRow(p, list.find((f) => f.address === p.address)));
+    }
+    const active = document.activeElement;
+    const key = active && active.dataset ? active.dataset.key : null;
+    $('tn-list').replaceChildren(...rows);
+    if (key) {
+      const again = document.querySelector(`#tn-list [data-key="${CSS.escape(key)}"]`);
+      if (again && again !== active) again.focus();
+    }
+  }
+
+  $('tn-scan').addEventListener('click', requestTailnet);
 
   $('name-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -418,5 +511,5 @@ export function initSettings({ state, send, h, icon }) {
     $('friend-form').scrollIntoView({ block: 'center' });
   }
 
-  return { renderSettings, renderMicMeter, focusAddFriend };
+  return { renderSettings, renderMicMeter, focusAddFriend, requestTailnet };
 }

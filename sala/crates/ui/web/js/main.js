@@ -45,7 +45,7 @@ function icon(id, size) {
 
 const linked = () => state.link === 'connected';
 
-const { renderSettings, renderMicMeter, focusAddFriend } = initSettings({ state, send, h, icon });
+const { renderSettings, renderMicMeter, focusAddFriend, requestTailnet } = initSettings({ state, send, h, icon });
 let micMeterOn = false;
 
 function setMicMeter(on) {
@@ -332,7 +332,10 @@ function setView(v) {
   state.view = v;
   renderNav();
   syncMicMeter();
-  if (enteringSettings) requestAudioDevices();
+  if (enteringSettings) {
+    requestAudioDevices();
+    requestTailnet();
+  }
 }
 
 let toastTimer = null;

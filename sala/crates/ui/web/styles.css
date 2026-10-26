@@ -217,6 +217,13 @@ button.friend:hover { background: var(--surface-2); }
 .link-btn { min-height: 36px; padding: 0 12px; border-radius: 8px; border: none; background: transparent; color: var(--text-muted); font-size: 13px; font-weight: 600; }
 .link-btn:hover { background: var(--surface-4); color: var(--text); }
 .link-btn.danger { color: var(--danger-text); }
+.tn-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+#tn-list { display: flex; flex-direction: column; gap: 8px; }
+.tn-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 160px; }
+.tn-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.tn-add { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.tn-add input { min-height: 36px; width: 160px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--surface-5); background: var(--surface-1, var(--surface-2)); color: var(--text); }
+.tn-add .btn { min-height: 36px; padding: 0 14px; }
 .f-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); }
 .f-confirm .btn { min-height: 36px; padding: 0 14px; }
 .btn.danger { background: var(--danger); color: #fff; }
