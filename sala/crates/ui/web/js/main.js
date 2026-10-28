@@ -3,9 +3,10 @@
 
 import {
   initialState, setLink, reduce, friends, inRoom, callPeers, chatPeer, callTarget,
-  friendStatus, micText, formatDuration, callSeconds, formatClock, initial,
+  friendStatus, friendPresence, avatarIndex, micText, formatDuration, callSeconds, formatClock, initial,
 } from './state.js';
 import { initSettings } from './settings.js';
+import { initFriends } from './friends.js';
 
 const tauri = window.__TAURI__;
 const state = initialState();
@@ -45,7 +46,8 @@ function icon(id, size) {
 
 const linked = () => state.link === 'connected';
 
-const { renderSettings, renderMicMeter, focusAddFriend, requestTailnet } = initSettings({ state, send, h, icon });
+const { renderSettings, renderMicMeter } = initSettings({ state, send, h, icon });
+const { renderFriendsView, requestTailnet } = initFriends({ state, send, h, icon });
 let micMeterOn = false;
 
 function setMicMeter(on) {
@@ -62,48 +64,98 @@ function syncMicMeter() {
   return setMicMeter(linked() && state.view === 'settings');
 }
 
+// "Mutado" para a interface inclui silenciado (silenciar também muta).
+function selfFlags() {
+  const s = state.status;
+  return { muted: !!(s && (s.muted || s.deafened)), deafened: !!(s && s.deafened) };
+}
+
+function toggleMute() {
+  const s = state.status;
+  if (!s) return;
+  if (s.deafened) {
+    // Desmutar-se enquanto silenciado volta a ouvir.
+    send({ type: 'SetDeafened', deafened: false });
+    if (s.muted) send({ type: 'SetMuted', muted: false });
+  } else {
+    send({ type: 'SetMuted', muted: !s.muted });
+  }
+}
+
+function toggleDeafen() {
+  send({ type: 'SetDeafened', deafened: !(state.status && state.status.deafened) });
+}
+
+const muteLabel = (muted) => (muted ? 'Desmutar‑se' : 'Mutar-se'); // hífen sem quebra de linha
+const deafLabel = (deaf) => (deaf ? 'Voltar a ouvir' : 'Silenciar');
+
+function joinNames(names) {
+  return names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} e ${names[names.length - 1]}`;
+}
+
+function toneClass(tone) {
+  return tone === 'accent' ? 'live' : tone === 'muted' ? '' : tone;
+}
+
 // ---------- Renderização ----------
 
 function renderFriends() {
-  const box = $('friends');
   const list = friends(state);
   const out = [];
   if (list.length === 0) {
-    out.push(h('div', { class: 'empty-note' }, 'Nenhum amigo ainda.'));
+    out.push(h('p', { class: 'empty-note' }, 'Nenhum amigo ainda.'));
   }
   for (const f of list) {
-    const st = friendStatus(state, f.name);
-    const avatar = h('div', { class: `avatar${st.online ? '' : ' off'}` }, initial(f.name),
-      h('span', { class: `badge ${st.dot === 'off' ? '' : st.dot}` }));
-    const text = h('div', { class: 'friend-text' },
-      h('span', { class: 'friend-name' }, f.name),
-      h('span', { class: `friend-status tone-${st.tone}` }, st.text));
-    const cls = `friend${st.online ? '' : ' off'}`;
-    // Fora da sala, clicar no amigo entra na sala (Call); dentro dela a linha é só informação.
-    if (state.status && !inRoom(state)) {
-      out.push(h('div', { role: 'listitem' }, h('button', {
-        type: 'button', class: cls, 'data-key': `friend:${f.name}`,
-        'aria-label': `Entrar na sala com ${f.name}. ${st.text}`,
+    const pres = friendPresence(state, f.name);
+    const on = pres.key !== 'off';
+    const cls = pres.danger ? 'danger' : pres.key === 'sala' ? 'live' : pres.key === 'online' ? '' : 'off';
+    out.push(h('div', { class: `friend${on ? '' : ' off'}`, role: 'listitem' },
+      h('div', { class: `avatar av-${avatarIndex(f.name)}${on ? '' : ' off'}`, 'aria-hidden': 'true' },
+        initial(f.name), h('span', { class: `badge${on ? ' on' : ''}` })),
+      h('div', { class: 'friend-text' },
+        h('span', { class: 'friend-name' }, f.name),
+        h('span', { class: `friend-status ${cls}` }, pres.text)),
+      pres.canCall && h('button', {
+        type: 'button', class: 'btn-icon', 'data-key': `call:${f.name}`,
+        'aria-label': `Chamar ${f.name} para a sala`, title: `Chamar ${f.name} para a sala`,
         disabled: !linked(),
         onclick: () => send({ type: 'Call', friend: f.name }),
-      }, avatar, text)));
-    } else {
-      out.push(h('div', { role: 'listitem', class: cls }, avatar, text));
-    }
+      }, icon('i-call', 18))));
   }
-  box.replaceChildren(...out);
+  $('friends').replaceChildren(...out);
 }
 
 function renderMe() {
   const name = (state.config && state.config.name) || 'Você';
+  const s = state.status;
   const ok = linked();
+  const { muted, deafened } = selfFlags();
+  const off = !ok || !s;
+  let status = 'Microfone ligado';
+  if (!ok) status = 'Sem conexão';
+  else if (!s) status = 'Conectando…';
+  else if (deafened) status = 'Silenciado';
+  else if (muted) status = 'Mutado';
+  const muteText = muteLabel(muted).replace('‑', '-');
+  const deafText = deafLabel(deafened);
   $('me').replaceChildren(
-    h('div', { class: 'avatar self' }, initial(name)),
+    h('div', { class: 'avatar self', 'aria-hidden': 'true' }, initial(name)),
     h('div', { class: 'me-text' },
       h('span', { class: 'me-name' }, name),
-      h('span', { class: 'me-status' }, h('span', { class: `dot${ok ? '' : ' danger'}` }),
-        ok ? 'Núcleo conectado' : 'Sem conexão')),
-  );
+      h('span', { class: `me-status${!ok || muted ? ' danger' : ''}` }, status)),
+    h('button', {
+      type: 'button', class: `btn-icon${muted ? ' on' : ''}`, 'data-key': 'me-mute',
+      'aria-label': muteText, title: muteText, disabled: off, onclick: toggleMute,
+    }, icon(muted ? 'i-mic-off' : 'i-mic', 18)),
+    h('button', {
+      type: 'button', class: `btn-icon${deafened ? ' on' : ''}`, 'data-key': 'me-deaf',
+      'aria-label': deafText, title: deafText, disabled: off, onclick: toggleDeafen,
+    }, icon(deafened ? 'i-headphones-off' : 'i-headphones', 18)));
+}
+
+function noticeBox(title, text) {
+  return h('div', { class: 'notice' }, icon('i-alert', 16),
+    h('span', {}, h('strong', {}, title), ' ', h('span', { class: 'muted' }, text)));
 }
 
 function renderBanners() {
@@ -120,18 +172,19 @@ function renderBanners() {
       h('div', { class: 'banner-icon' }, icon('i-alert', 20)),
       h('div', { class: 'banner-text' },
         h('strong', {}, `A identidade de ${name} mudou`),
-        h('span', {}, 'A conexão foi recusada por segurança. Se ele reinstalou o app, redefina a identidade nos Ajustes.')),
-      h('button', { type: 'button', class: 'btn neutral', onclick: () => setView('settings') }, 'Abrir Ajustes')));
+        h('span', {}, 'A conexão foi recusada por segurança. Se ele reinstalou o app, redefina a identidade na aba Amigos.')),
+      h('button', { type: 'button', class: 'btn', onclick: () => setView('friends') }, 'Abrir Amigos')));
   }
   for (const name of Object.keys(state.outsideTailnet)) {
     if (state.peers[name] && state.peers[name].connected) continue;
-    out.push(h('div', { class: 'banner danger', role: 'alert' },
-      h('div', { class: 'banner-icon' }, icon('i-alert', 20)),
-      h('div', { class: 'banner-text' },
-        h('strong', {}, `${name} está fora da sua rede Tailscale`),
-        h('span', {}, 'Contas diferentes do Tailscale não se enxergam. Convide a pessoa para a sua rede ou compartilhem as máquinas um com o outro no painel do Tailscale.'))));
+    out.push(noticeBox(`${name} está fora da sua rede Tailscale.`,
+      'Contas diferentes do Tailscale não se enxergam. Convide a pessoa para a sua rede ou compartilhem as máquinas um com o outro no painel do Tailscale.'));
   }
   $('banners').replaceChildren(...out);
+}
+
+function micIcon(off) {
+  return icon(off ? 'i-mic-off' : 'i-mic', 14);
 }
 
 function statusCard(name, p) {
@@ -140,32 +193,51 @@ function statusCard(name, p) {
   const vol = state.volumes[name] ?? 100;
   const slider = h('input', {
     type: 'range', min: '0', max: '200', step: '1', value: String(vol),
-    'aria-label': `Volume de ${name}`, 'data-key': `vol:${name}`,
+    'aria-label': `Volume de ${name}`, 'aria-valuetext': `${vol}%`, 'data-key': `vol:${name}`,
     disabled: !linked(),
     oninput: (e) => {
       const v = Number(e.target.value);
       state.volumes[name] = v;
+      e.target.setAttribute('aria-valuetext', `${v}%`);
       send({ type: 'SetPeerVolume', friend: name, volume: v / 100 });
     },
   });
-  return h('div', { class: 'card' },
-    h('div', { class: 'avatar big' }, initial(name)),
-    h('div', { class: 'who' }, h('strong', {}, name), h('span', { class: `tone-${mic.tone}` }, mic.text)),
-    h('label', { class: 'vol' }, 'Volume', slider));
+  const micOff = !!(p.status && (p.status.muted || p.status.deafened));
+  return h('div', { class: 'tile' },
+    h('div', { class: 'tile-top' }, h('span', { class: 'tile-meta', 'data-rtt': name })),
+    h('div', { class: 'tile-center' },
+      h('div', { class: `avatar xl av-${avatarIndex(name)}`, 'aria-hidden': 'true' }, initial(name)),
+      h('div', { class: 'who' },
+        h('strong', {}, name),
+        h('span', { class: `tile-status ${toneClass(mic.tone)}` }, p.status && micIcon(micOff), mic.text))),
+    h('label', { class: 'tile-vol' }, 'Volume', slider));
 }
 
 function selfCard() {
   const s = state.status;
-  const mic = s ? (s.deafened ? { text: 'Silenciado', tone: 'danger' } : micText(s)) : { text: '', tone: 'muted' };
+  const { muted, deafened } = selfFlags();
+  const mic = s ? (deafened ? { text: 'Silenciado', tone: 'danger' } : micText(s)) : { text: '', tone: 'muted' };
   const a = state.config && state.config.audio;
   const detail = a
     ? `${a.mode === 'push_to_talk' ? 'Aperte para falar' : 'Ativação por voz'} · ${a.bitrate_kbps} kbps`
     : '';
   const name = (state.config && state.config.name) || 'Você';
-  return h('div', { class: 'card' },
-    h('div', { class: 'avatar self big' }, initial(name)),
-    h('div', { class: 'who' }, h('strong', {}, 'Você'), h('span', { class: `tone-${mic.tone}` }, mic.text)),
-    detail && h('span', { class: 'hint' }, detail));
+  return h('div', { class: 'tile' },
+    h('div', { class: 'tile-top' }),
+    h('div', { class: 'tile-center' },
+      h('div', { class: 'avatar xl self', 'aria-hidden': 'true' }, initial(name)),
+      h('div', { class: 'who' },
+        h('strong', {}, 'Você'),
+        h('span', { class: `tile-status ${toneClass(mic.tone)}` }, s && micIcon(muted), mic.text))),
+    h('div', { class: 'tile-self' }, detail));
+}
+
+function emptyState(title, text, action) {
+  return h('div', { class: 'empty' },
+    h('div', { class: 'state-icon', 'aria-hidden': 'true' }, icon('i-users', 22)),
+    h('h2', { class: 'empty-title' }, title),
+    h('p', { class: 'empty-text' }, text),
+    action);
 }
 
 function renderStage() {
@@ -173,26 +245,23 @@ function renderStage() {
   const list = friends(state);
   const peers = callPeers(state);
   if (list.length === 0) {
-    cards.push(h('div', { class: 'card empty' },
-      h('h2', {}, 'Nenhum amigo configurado'),
-      h('p', {}, 'Adicione um amigo pelo nome e pelo IP do Tailscale para chamar. Abra os Ajustes para começar.'),
-      h('button', { type: 'button', class: 'btn primary', onclick: () => setView('settings') }, 'Abrir Ajustes')));
+    cards.push(emptyState('Nenhum amigo configurado',
+      'Adicione um amigo pelo nome e pelo IP do Tailscale para chamar. Abra a aba Amigos para começar.',
+      h('button', { type: 'button', class: 'btn primary', onclick: () => setView('friends') }, 'Adicionar amigo')));
   } else if (!state.status) {
     // ainda sem Status do núcleo: nada a mostrar
   } else if (!inRoom(state)) {
-    cards.push(h('div', { class: 'card empty' },
-      h('h2', {}, 'Você está fora da sala'),
-      h('p', {}, 'Ninguém ouve você e você não ouve ninguém. Toque em Entrar, ou em um amigo, para voltar.')));
+    cards.push(emptyState('Você está fora da sala',
+      'Ninguém ouve você e você não ouve ninguém. Toque em Entrar, ou em um amigo, para voltar.'));
   } else if (peers.length === 0) {
-    cards.push(h('div', { class: 'card empty' },
-      h('h2', {}, 'Sala aberta'),
-      h('p', {}, 'Aguardando amigos entrarem na sala.')));
+    cards.push(emptyState('Sala aberta', 'Aguardando amigos entrarem na sala.'));
     cards.push(selfCard());
   } else {
     for (const n of peers) cards.push(statusCard(n, state.peers[n]));
     cards.push(selfCard());
   }
   $('stage').replaceChildren(...cards);
+  updateTileMeta();
 
   // Banner de transmissão do amigo (o núcleo só anuncia `sharing` quando existir).
   const sharer = callPeers(state).find((n) => state.peers[n].status.sharing);
@@ -202,29 +271,34 @@ function renderStage() {
     h('button', { type: 'button', class: 'btn primary', disabled: !linked(), onclick: () => send({ type: 'OpenViewer' }) }, 'Assistir'))] : []));
 }
 
+function updateTileMeta() {
+  for (const el of document.querySelectorAll('[data-rtt]')) {
+    const p = state.peers[el.dataset.rtt];
+    const text = p && p.stats ? `${p.stats.rtt_ms} ms` : '';
+    if (el.textContent !== text) el.textContent = text;
+  }
+}
+
 function renderHeader() {
   const peers = callPeers(state);
   let title = 'Sala';
   if (state.status) {
     if (!inRoom(state)) title = 'Fora da sala';
-    else if (peers.length) title = `Chamada com ${peers.join(', ')}`;
+    else if (peers.length) title = `Chamada com ${joinNames(peers)}`;
     else title = 'Sala aberta';
   }
   $('title').textContent = title;
 
-  const first = peers.find((n) => state.peers[n].stats) || peers[0];
-  const pill = $('link-pill');
+  const first = peers.find((n) => state.peers[n].stats);
   const timer = $('timer');
-  if (first) {
-    const stats = state.peers[first].stats;
-    pill.hidden = false;
-    $('link-text').textContent = stats ? `Conexão direta · ${stats.rtt_ms} ms` : 'Medindo a conexão…';
-    timer.hidden = !stats;
-  } else {
-    pill.hidden = true;
-    timer.hidden = true;
-  }
+  const count = $('room-count');
+  timer.hidden = !first;
+  const showCount = !!state.status && inRoom(state);
+  count.hidden = !showCount;
+  if (showCount) count.textContent = `${peers.length + 1} na sala`;
+  $('meta-sep').hidden = timer.hidden || count.hidden;
   tickTimer();
+  updateTileMeta();
 
   const kbd = $('game-kbd');
   const hk = state.config && state.config.hotkeys && state.config.hotkeys.toggle_game_mode;
@@ -241,18 +315,17 @@ function tickTimer() {
 function renderControls() {
   const s = state.status;
   const off = !linked() || !s;
-  const muted = !!(s && s.muted);
-  const deaf = !!(s && s.deafened);
+  const { muted, deafened } = selfFlags();
   const btnMute = $('btn-mute');
-  btnMute.setAttribute('aria-pressed', String(muted));
+  btnMute.classList.toggle('on', muted);
   btnMute.disabled = off;
-  $('lbl-mute').textContent = muted ? 'Desmutar‑se' : 'Mutar-se'; // hífen sem quebra de linha
+  $('lbl-mute').textContent = muteLabel(muted);
   $('use-mute').setAttribute('href', muted ? '#i-mic-off' : '#i-mic');
   const btnDeaf = $('btn-deaf');
-  btnDeaf.setAttribute('aria-pressed', String(deaf));
+  btnDeaf.classList.toggle('on', deafened);
   btnDeaf.disabled = off;
-  $('lbl-deaf').textContent = deaf ? 'Voltar a ouvir' : 'Silenciar';
-  $('btn-game').disabled = off;
+  $('lbl-deaf').textContent = deafLabel(deafened);
+  $('use-deaf').setAttribute('href', deafened ? '#i-headphones-off' : '#i-headphones');
   $('game-top').disabled = off;
 
   const room = $('btn-room');
@@ -285,21 +358,22 @@ function renderChat() {
     return;
   }
   const name = chatPeer(state) || 'Amigo';
-  log.replaceChildren(...state.chat.map((e) => h('div', { class: `msg${e.from_self ? ' self' : ''}` },
-    h('div', { class: 'msg-head' }, h('b', {}, e.from_self ? 'Você' : name), h('time', {}, formatClock(e.sent_at))),
+  log.replaceChildren(...state.chat.map((e) => h('div', { class: 'msg' },
+    h('div', { class: 'msg-head' },
+      h('b', { class: `fg-${e.from_self ? 2 : avatarIndex(name)}` }, e.from_self ? 'Você' : name),
+      h('time', {}, formatClock(e.sent_at))),
     h('span', { class: 'msg-text' }, e.text))));
   if (atBottom) log.scrollTop = log.scrollHeight;
 }
 
 function renderNav() {
-  for (const el of document.querySelectorAll('[data-view]')) {
-    if (el.classList.contains('nav-item')) {
-      if (el.dataset.view === state.view) el.setAttribute('aria-current', 'page');
-      else el.removeAttribute('aria-current');
-    }
+  for (const el of document.querySelectorAll('.nav-item[data-view]')) {
+    if (el.dataset.view === state.view) el.setAttribute('aria-current', 'page');
+    else el.removeAttribute('aria-current');
   }
   $('view-call').hidden = state.view !== 'call';
   $('chat').hidden = state.view !== 'call';
+  $('view-friends').hidden = state.view !== 'friends';
   $('view-settings').hidden = state.view !== 'settings';
 }
 
@@ -320,6 +394,7 @@ function render() {
   renderStage();
   renderControls();
   renderChat();
+  renderFriendsView();
   renderSettings();
   if (key) {
     const again = document.querySelector(`[data-key="${CSS.escape(key)}"]`);
@@ -328,14 +403,13 @@ function render() {
 }
 
 function setView(v) {
-  const enteringSettings = v === 'settings' && state.view !== 'settings';
+  const entering = v !== state.view;
   state.view = v;
   renderNav();
   syncMicMeter();
-  if (enteringSettings) {
-    requestAudioDevices();
-    requestTailnet();
-  }
+  if (!entering) return;
+  if (v === 'settings') requestAudioDevices();
+  if (v === 'friends') requestTailnet();
 }
 
 let toastTimer = null;
@@ -399,11 +473,9 @@ function onCore(msg) {
 
 // ---------- Eventos da interface ----------
 
-$('btn-mute').addEventListener('click', () => send({ type: 'SetMuted', muted: !(state.status && state.status.muted) }));
-$('btn-deaf').addEventListener('click', () => send({ type: 'SetDeafened', deafened: !(state.status && state.status.deafened) }));
-const enterGame = () => send({ type: 'EnterGameMode' });
-$('btn-game').addEventListener('click', enterGame);
-$('game-top').addEventListener('click', enterGame);
+$('btn-mute').addEventListener('click', toggleMute);
+$('btn-deaf').addEventListener('click', toggleDeafen);
+$('game-top').addEventListener('click', () => send({ type: 'EnterGameMode' }));
 $('btn-room').addEventListener('click', () => {
   if (inRoom(state)) {
     send({ type: 'HangUp' });
@@ -420,13 +492,10 @@ $('chat-form').addEventListener('submit', (e) => {
   send({ type: 'SendChat', text });
   input.value = '';
 });
-for (const el of document.querySelectorAll('[data-view]')) {
+for (const el of document.querySelectorAll('.nav-item[data-view]')) {
   el.addEventListener('click', () => setView(el.dataset.view));
 }
-$('add-friend').addEventListener('click', () => {
-  setView('settings');
-  focusAddFriend();
-});
+$('add-friend').addEventListener('click', () => setView('friends'));
 
 window.addEventListener('focus', () => {
   if (state.view === 'settings') requestAudioDevices();

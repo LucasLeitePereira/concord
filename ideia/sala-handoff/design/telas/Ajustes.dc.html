@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<title>Sala — ajustes</title>
+<title>Concord — ajustes</title>
 <script src="./support.js"></script>
 </head>
 <body>
@@ -10,151 +10,269 @@
 <helmet>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap">
 <style>
-body{margin:0;background:#0F1012}
-a{color:#A0A6AD;text-decoration:none}a:hover{color:#EDEEF0}
-button,select,input{font:inherit}
-button{cursor:pointer}
+body{margin:0}
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #3DD68C;outline-offset:2px}
+.limite{-webkit-appearance:none;appearance:none;background:transparent;margin:0}
+.limite::-webkit-slider-runnable-track{height:44px;background:transparent}
+.limite::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:30px;margin-top:7px;border-radius:5px;background:#EDEEF0;border:3px solid #17191C;cursor:ew-resize}
+.limite::-moz-range-track{height:44px;background:transparent}
+.limite::-moz-range-thumb{width:8px;height:24px;border-radius:5px;background:#EDEEF0;border:3px solid #17191C;cursor:ew-resize}
 </style>
 </helmet>
-<div style="width: 1000px; height: 900px; box-sizing: border-box; background: #0F1012; color: #EDEEF0; font-family: 'Manrope', system-ui, sans-serif; font-size: 14px; padding: 28px; display: flex; flex-direction: column; gap: 20px">
+<div style="min-height: 1120px; width: 100%; box-sizing: border-box; background: #0F1012; color: #EDEEF0; font-family: 'Manrope', system-ui, sans-serif; font-size: 14px; display: flex; flex-wrap: wrap">
 
-<a href="Main.dc.html" style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; align-self: flex-start; min-height: 32px">
-<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"></path></svg>
-Voltar para a chamada
-</a>
+<div style="flex: 1 1 280px; max-width: 100%; display: flex; flex-direction: column; background: #141619; border-right: 1px solid #23262A">
+<dc-import name="Lateral" ativo="ajustes" presenca="chamada" accent="{{accent}}" hint-size="100%,800px"></dc-import>
+</div>
+
+<main style="flex: 999 1 640px; min-width: 0; box-sizing: border-box; padding: 28px 32px 40px; display: flex; flex-direction: column; gap: 20px">
 <h1 style="margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em">Ajustes</h1>
 
-<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start">
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start">
 
-<section aria-labelledby="sec-audio" style="border-radius: 16px; background: #17191C; border: 1px solid #23262A; padding: 20px; display: flex; flex-direction: column; gap: 16px">
+<section aria-labelledby="sec-audio" style="border-radius: 16px; background: #17191C; border: 1px solid #23262A; padding: 20px; display: flex; flex-direction: column; gap: 18px">
 <h2 id="sec-audio" style="margin: 0; font-size: 16px; font-weight: 700">Áudio</h2>
-<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #A0A6AD">
-Microfone
-<select style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid #2A2E33; background: #1A1C20; color: #EDEEF0"><option>Headset USB (Microfone)</option><option>Padrão do Windows</option></select>
-</label>
-<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #A0A6AD">
-Saída
-<select style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid #2A2E33; background: #1A1C20; color: #EDEEF0"><option>Headset USB (Fones)</option><option>Padrão do Windows</option></select>
-</label>
 
-<div style="display: flex; flex-direction: column; gap: 8px">
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 12px">
-<span style="font-size: 13px; color: #A0A6AD">Nível do microfone</span>
-<button type="button" style="min-height: 36px; padding: 0 12px; border-radius: 9px; border: 1px solid #2A2E33; background: transparent; color: #EDEEF0; font-size: 13px; font-weight: 600">Ouvir minha voz</button>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<label for="aj-mic" style="font-size: 13px; color: #A0A6AD">Microfone</label>
+<select id="aj-mic" defaultValue="headset" style="min-height: 44px; box-sizing: border-box; padding: 0 10px; border-radius: 10px; border: 1px solid #2A2E33; background: #1A1C20; color: #EDEEF0; font-family: inherit; font-size: 14px"><option value="headset">Headset USB (microfone)</option><option value="padrao">Padrão do Windows</option></select>
 </div>
-<div aria-hidden="true" style="position: relative; height: 10px; border-radius: 5px; background: #23262A">
-<div style="height: 10px; width: 58%; border-radius: 5px; background: {{accent}}"></div>
-<div style="position: absolute; left: 40%; top: -4px; width: 2px; height: 18px; background: #EDEEF0; border-radius: 1px"></div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<label for="aj-saida" style="font-size: 13px; color: #A0A6AD">Saída</label>
+<select id="aj-saida" defaultValue="headset" style="min-height: 44px; box-sizing: border-box; padding: 0 10px; border-radius: 10px; border: 1px solid #2A2E33; background: #1A1C20; color: #EDEEF0; font-family: inherit; font-size: 14px"><option value="headset">Headset USB (fones)</option><option value="padrao">Padrão do Windows</option></select>
 </div>
-<span style="font-size: 12px; color: #858C94">A linha branca é o limite: abaixo dela, sua voz não é enviada.</span>
+
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px">
+<label for="aj-vol" style="font-size: 13px; color: #A0A6AD">Volume do microfone</label>
+<span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px">{{micVolText}}</span>
+</div>
+<input id="aj-vol" type="range" min="0" max="200" value="{{micVol}}" onChange="{{onMicVol}}" style="width: 100%; min-height: 44px; margin: 0; accent-color: {{accent}}">
 </div>
 
 <div style="display: flex; flex-direction: column; gap: 8px">
-<span style="font-size: 13px; color: #A0A6AD">Como seu microfone liga</span>
-<div role="radiogroup" aria-label="Modo de ativação" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; border-radius: 12px; background: #0F1012">
-<button type="button" role="radio" aria-checked="{{vadChecked}}" onClick="{{pickVad}}" style="min-height: 40px; border-radius: 9px; border: none; background: {{vadBg}}; color: {{vadColor}}; font-weight: 600">Ativação por voz</button>
-<button type="button" role="radio" aria-checked="{{pttChecked}}" onClick="{{pickPtt}}" style="min-height: 40px; border-radius: 9px; border: none; background: {{pttBg}}; color: {{pttColor}}; font-weight: 600">Aperte para falar</button>
+<span id="lbl-modo" style="font-size: 13px; color: #A0A6AD">Como seu microfone liga</span>
+<div role="radiogroup" aria-labelledby="lbl-modo" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; border-radius: 12px; background: #0F1012">
+<button type="button" role="radio" aria-checked="{{vadChecked}}" onClick="{{pickVad}}" style="min-height: 44px; border-radius: 9px; border: none; background: {{vadBg}}; color: {{vadColor}}; font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer">Ativação por voz</button>
+<button type="button" role="radio" aria-checked="{{pttChecked}}" onClick="{{pickPtt}}" style="min-height: 44px; border-radius: 9px; border: none; background: {{pttBg}}; color: {{pttColor}}; font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer">Aperte para falar</button>
 </div>
+</div>
+
 <sc-if value="{{isPtt}}" hint-placeholder-val="{{ false }}">
-<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 10px; background: #1A1C20">
-<span style="font-size: 13px">Tecla para falar</span>
-<span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; padding: 4px 10px; border-radius: 6px; background: #23262A; color: #C9CDD2">Mouse 4</span>
+<div style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 4px 0 12px; border-radius: 10px; background: #1A1C20">
+<span style="flex-grow: 1">Tecla para falar</span>
+<span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #23262A; color: #C9CDD2">Mouse 4</span>
+<button type="button" aria-label="Alterar a tecla para falar" style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: none; background: transparent; color: #A0A6AD; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer">Alterar</button>
 </div>
 </sc-if>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 12px">
+<span id="lbl-nivel" style="font-size: 13px; color: #A0A6AD">Nível do microfone</span>
+<span role="status" style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: {{meterStateColor}}"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: {{meterStateColor}}"></span>{{meterState}}</span>
+</div>
+<div style="position: relative; height: 44px">
+<div aria-hidden="true" style="position: absolute; left: 0; right: 0; top: 17px; height: 10px; border-radius: 5px; background: #23262A; overflow: hidden">
+<div style="height: 10px; width: {{levelWidth}}; background: {{meterColor}}"></div>
+</div>
+<sc-if value="{{isVad}}" hint-placeholder-val="{{ true }}">
+<input class="limite" type="range" min="0" max="100" value="{{threshold}}" onChange="{{onThreshold}}" aria-label="Limite de sensibilidade" aria-valuetext="{{thresholdText}}" aria-describedby="nivel-ajuda" style="position: absolute; left: 0; top: 0; width: 100%; height: 44px">
+</sc-if>
+</div>
+<span id="nivel-ajuda" style="font-size: 12px; line-height: 1.5; color: #A0A6AD">{{meterHelp}}</span>
 </div>
 
-<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #A0A6AD">
-Qualidade da voz
-<select style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid #2A2E33; background: #1A1C20; color: #EDEEF0"><option>Alta · 96 kbps (recomendado)</option><option>Máxima · 128 kbps</option><option>Econômica · 64 kbps</option></select>
-</label>
-<label style="display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px">
-<span style="display: flex; flex-direction: column; gap: 2px"><span style="font-weight: 600">Supressão de ruído</span><span style="font-size: 12px; color: #A0A6AD">Remove barulho de teclado e ventilador. Usa um pouco de processador.</span></span>
-<input type="checkbox" style="width: 20px; height: 20px; flex-shrink: 0; accent-color: {{accent}}">
+<button type="button" onClick="{{toggleListen}}" style="align-self: flex-start; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: #1F2226; color: #EDEEF0; font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15v-3a8 8 0 0 1 16 0v3"></path><rect x="3" y="14" width="4" height="6" rx="1.5"></rect><rect x="17" y="14" width="4" height="6" rx="1.5"></rect></svg>
+{{listenLabel}}
+</button>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<label for="aj-qual" style="font-size: 13px; color: #A0A6AD">Qualidade da voz</label>
+<select id="aj-qual" defaultValue="96" style="min-height: 44px; box-sizing: border-box; padding: 0 10px; border-radius: 10px; border: 1px solid #2A2E33; background: #1A1C20; color: #EDEEF0; font-family: inherit; font-size: 14px"><option value="96">Alta · 96 kbps (recomendado)</option><option value="128">Máxima · 128 kbps</option><option value="64">Econômica · 64 kbps</option></select>
+</div>
+
+<label style="display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; padding: 4px 0; cursor: pointer">
+<span style="display: flex; flex-direction: column; gap: 2px"><span style="font-weight: 600">Supressão de ruído</span><span style="font-size: 12px; line-height: 1.5; color: #A0A6AD">Tira barulho de teclado e ventilador. Usa um pouco do processador.</span></span>
+<input type="checkbox" style="width: 20px; height: 20px; flex-shrink: 0; margin: 0; accent-color: {{accent}}; cursor: pointer">
 </label>
 </section>
 
 <div style="display: flex; flex-direction: column; gap: 16px">
-<section aria-labelledby="sec-jogo" style="border-radius: 16px; background: #17191C; border: 1px solid #23262A; padding: 20px; display: flex; flex-direction: column; gap: 14px">
-<h2 id="sec-jogo" style="margin: 0; font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; color: #F5C27A">
-<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="10" rx="5"></rect><path d="M7 10v4M5 12h4"></path></svg>
+
+<section aria-labelledby="sec-jogo" style="border-radius: 16px; background: #17191C; border: 1px solid #23262A; padding: 20px; display: flex; flex-direction: column; gap: 12px">
+<h2 id="sec-jogo" style="margin: 0; font-size: 16px; font-weight: 700; color: #F5C27A; display: flex; align-items: center; gap: 8px">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="10" rx="5"></rect><path d="M7 10v4M5 12h4"></path><circle cx="16" cy="11" r="0.8"></circle><circle cx="18" cy="13" r="0.8"></circle></svg>
 Modo jogo
 </h2>
-<label style="display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px">
-<span style="display: flex; flex-direction: column; gap: 2px"><span style="font-weight: 600">Entrar sozinho ao abrir um jogo</span><span style="font-size: 12px; color: #A0A6AD">Detecta tela cheia e os jogos da lista</span></span>
-<input type="checkbox" checked style="width: 20px; height: 20px; flex-shrink: 0; accent-color: {{accent}}">
+<label style="display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; padding: 4px 0; cursor: pointer">
+<span style="display: flex; flex-direction: column; gap: 2px"><span style="font-weight: 600">Entrar sozinho ao abrir um jogo</span><span style="font-size: 12px; line-height: 1.5; color: #A0A6AD">Quando um jogo da lista abre ou algo fica em tela cheia.</span></span>
+<input type="checkbox" defaultChecked="{{ true }}" style="width: 20px; height: 20px; flex-shrink: 0; margin: 0; accent-color: {{accent}}; cursor: pointer">
 </label>
-<div style="display: flex; flex-wrap: wrap; gap: 8px">
-<span style="display: flex; align-items: center; gap: 4px; padding: 4px 4px 4px 10px; border-radius: 8px; background: #1A1C20; border: 1px solid #2A2E33; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px">valorant.exe<button type="button" aria-label="Remover valorant.exe" style="width: 28px; height: 28px; border: none; border-radius: 6px; background: transparent; color: #858C94; display: flex; align-items: center; justify-content: center"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></button></span>
-<span style="display: flex; align-items: center; gap: 4px; padding: 4px 4px 4px 10px; border-radius: 8px; background: #1A1C20; border: 1px solid #2A2E33; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px">cs2.exe<button type="button" aria-label="Remover cs2.exe" style="width: 28px; height: 28px; border: none; border-radius: 6px; background: transparent; color: #858C94; display: flex; align-items: center; justify-content: center"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></button></span>
-<button type="button" style="min-height: 36px; padding: 0 12px; border-radius: 8px; border: 1px dashed #3A3F45; background: transparent; color: #A0A6AD; font-size: 13px; font-weight: 600">+ Adicionar jogo</button>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span id="lbl-jogos" style="font-size: 13px; color: #A0A6AD">Jogos</span>
+<ul aria-labelledby="lbl-jogos" style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px">
+<sc-for list="{{games}}" as="g" hint-placeholder-count="2">
+<li style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 4px 0 12px; border-radius: 10px; background: #1A1C20">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#A0A6AD" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="10" rx="5"></rect><path d="M7 10v4M5 12h4"></path></svg>
+<span style="flex-grow: 1; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px">{{g.name}}</span>
+<button type="button" aria-label="{{g.removeLabel}}" onClick="{{g.remove}}" style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: none; background: transparent; color: #FF8A8E; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer">Remover</button>
+</li>
+</sc-for>
+</ul>
+<button type="button" style="align-self: flex-start; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-radius: 10px; border: none; background: transparent; color: #A0A6AD; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+Adicionar jogo
+</button>
 </div>
-<label style="display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px">
-<span style="font-weight: 600">Continuar transmitindo no modo jogo</span>
-<input type="checkbox" style="width: 20px; height: 20px; flex-shrink: 0; accent-color: {{accent}}">
+<label style="display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; padding: 4px 0; cursor: pointer">
+<span style="display: flex; flex-direction: column; gap: 2px"><span style="font-weight: 600">Continuar transmitindo no modo jogo</span><span style="font-size: 12px; line-height: 1.5; color: #A0A6AD">Se você estiver transmitindo, a transmissão não para.</span></span>
+<input type="checkbox" style="width: 20px; height: 20px; flex-shrink: 0; margin: 0; accent-color: {{accent}}; cursor: pointer">
 </label>
 </section>
 
 <section aria-labelledby="sec-atalhos" style="border-radius: 16px; background: #17191C; border: 1px solid #23262A; padding: 20px; display: flex; flex-direction: column; gap: 6px">
-<h2 id="sec-atalhos" style="margin: 0 0 8px; font-size: 16px; font-weight: 700">Atalhos</h2>
+<h2 id="sec-atalhos" style="margin: 0 0 6px; font-size: 16px; font-weight: 700">Atalhos</h2>
 <sc-for list="{{hotkeys}}" as="h" hint-placeholder-count="4">
-<div style="display: flex; align-items: center; gap: 12px; min-height: 44px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="display: flex; align-items: center; gap: 10px; min-height: 44px">
 <span style="flex-grow: 1">{{h.label}}</span>
-<span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; padding: 4px 10px; border-radius: 6px; background: #23262A; color: #C9CDD2">{{h.keys}}</span>
-<button type="button" aria-label="{{h.aria}}" style="min-height: 36px; padding: 0 10px; border-radius: 8px; border: none; background: transparent; color: #A0A6AD; font-size: 13px; font-weight: 600">Alterar</button>
+<sc-if value="{{h.idle}}" hint-placeholder-val="{{ true }}">
+<span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #23262A; color: #C9CDD2">{{h.keys}}</span>
+<button type="button" aria-label="{{h.changeLabel}}" onClick="{{h.start}}" style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: none; background: transparent; color: #A0A6AD; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer">Alterar</button>
+</sc-if>
+<sc-if value="{{h.capturing}}" hint-placeholder-val="{{ false }}">
+<button type="button" onKeyDown="{{h.onKey}}" aria-label="{{h.captureLabel}}" aria-describedby="{{h.errId}}" style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px dashed {{h.captureBorder}}; background: #1A1C20; color: {{h.captureColor}}; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; cursor: pointer">{{h.captureText}}</button>
+<button type="button" onClick="{{h.cancel}}" style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: none; background: transparent; color: #A0A6AD; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer">Cancelar</button>
+</sc-if>
+</div>
+<sc-if value="{{h.hasError}}" hint-placeholder-val="{{ false }}">
+<span id="{{h.errId}}" role="alert" style="display: flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 13px; color: #FF8A8E">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 16.5h.01"></path></svg>
+{{h.error}}
+</span>
+</sc-if>
 </div>
 </sc-for>
 </section>
-</div>
-</div>
 
-<section aria-labelledby="sec-amigos" style="border-radius: 16px; background: #17191C; border: 1px solid #23262A; padding: 20px; display: flex; flex-direction: column; gap: 14px">
-<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px">
-<h2 id="sec-amigos" style="margin: 0; font-size: 16px; font-weight: 700">Amigos</h2>
-<span style="font-size: 12px; color: #858C94">Use o IP que o Tailscale mostra no PC do seu amigo</span>
+<section aria-labelledby="sec-voce" style="border-radius: 16px; background: #17191C; border: 1px solid #23262A; padding: 20px; display: flex; flex-direction: column; gap: 16px">
+<h2 id="sec-voce" style="margin: 0; font-size: 16px; font-weight: 700">Você</h2>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<label for="aj-nome" style="font-size: 13px; color: #A0A6AD">Seu nome</label>
+<div style="display: flex; gap: 8px">
+<input id="aj-nome" type="text" value="{{nome}}" onChange="{{onNome}}" style="flex-grow: 1; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 10px; border: 1px solid #2A2E33; background: #1A1C20; color: #EDEEF0; font-family: inherit; font-size: 14px">
+<button type="button" onClick="{{saveNome}}" style="min-height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: #1F2226; color: #EDEEF0; font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer">{{saveLabel}}</button>
 </div>
-<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: #1A1C20">
-<div style="width: 32px; height: 32px; border-radius: 50%; background: #1E3B33; color: #8FE8BB; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px">P</div>
-<span style="font-weight: 600">Pedro</span>
-<span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #A0A6AD">100.101.12.7</span>
-<span style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8FE8BB; padding: 3px 8px; border-radius: 999px; background: #1E3B33">
-<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"></path></svg>
-Identidade verificada
-</span>
-<button type="button" style="margin-left: auto; min-height: 36px; padding: 0 12px; border-radius: 8px; border: none; background: transparent; color: #FF8A8E; font-size: 13px; font-weight: 600">Remover</button>
+<span style="font-size: 12px; color: #A0A6AD">É assim que seus amigos veem você.</span>
 </div>
-<form style="display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end" onSubmit="{{noSubmit}}">
-<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #A0A6AD; flex: 1 1 200px">
-Nome
-<input type="text" placeholder="Como você chama esse amigo" style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid #2A2E33; background: #1A1C20; color: #EDEEF0">
-</label>
-<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #A0A6AD; flex: 1 1 200px">
-IP do Tailscale
-<input type="text" placeholder="100.x.x.x" style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid #2A2E33; background: #1A1C20; color: #EDEEF0; font-family: 'JetBrains Mono', ui-monospace, monospace">
-</label>
-<button type="submit" style="min-height: 44px; padding: 0 18px; border-radius: 12px; border: none; background: {{accent}}; color: #06281A; font-weight: 700">Adicionar amigo</button>
-</form>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span id="lbl-end" style="font-size: 13px; color: #A0A6AD">Seu endereço</span>
+<div style="display: flex; gap: 8px; align-items: center">
+<span style="flex-grow: 1; min-height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 10px; border: 1px solid #23262A; background: #1A1C20; display: flex; align-items: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px">100.71.20.3</span>
+<button type="button" onClick="{{copy}}" aria-label="{{copyAria}}" style="display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-radius: 10px; border: none; background: transparent; color: #A0A6AD; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer">
+<sc-if value="{{copied}}" hint-placeholder-val="{{ false }}">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"></path></svg>
+</sc-if>
+<sc-if value="{{notCopied}}" hint-placeholder-val="{{ true }}">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>
+</sc-if>
+{{copyLabel}}
+</button>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: #A0A6AD">
+<span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: #1E3B33; color: #8FE8BB; font-weight: 600"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: {{accent}}"></span>Tailscale conectado</span>
+Seus amigos usam este endereço para adicionar você.
+</div>
+</div>
 </section>
+
+</div>
+</div>
+</main>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#3DD68C","options":["#3DD68C","#4CC9F0","#F2A93B","#B79CFF"]},"$preview":{"width":1000,"height":900}}'>
+<script type="text/x-dc" data-dc-script data-props='{"atalho":{"editor":"enum","options":["normal","capturando","conflito"],"default":"normal"},"accent":{"editor":"color","default":"#3DD68C","options":["#3DD68C","#4CC9F0","#B79CFF"]},"$preview":{"width":1280,"height":1120}}'>
 class Component extends DCLogic {
   constructor(props) {
     super(props);
-    this.state = { mode: 'vad' };
+    this.state = Object.assign({
+      mode: 'vad',
+      micVol: 100,
+      threshold: 40,
+      listening: false,
+      games: ['valorant.exe', 'cs2.exe'],
+      keys: [
+        { id: 'mute', label: 'Mutar-se', keys: 'Ctrl+Shift+M' },
+        { id: 'silence', label: 'Silenciar', keys: 'Ctrl+Shift+D' },
+        { id: 'game', label: 'Modo jogo', keys: 'Ctrl+Shift+G' },
+        { id: 'open', label: 'Abrir o Concord', keys: 'Ctrl+Shift+C' }
+      ],
+      nome: 'Lucas',
+      saved: false,
+      copied: false
+    }, this.captureState(props.atalho));
+  }
+  captureState(a) {
+    if (a === 'capturando') return { capturing: 'open', conflict: null };
+    if (a === 'conflito') return { capturing: 'open', conflict: { combo: 'Ctrl+Shift+M', owner: 'Mutar-se' } };
+    return { capturing: null, conflict: null };
+  }
+  componentDidUpdate(prev) {
+    if (prev.atalho !== this.props.atalho) this.setState(this.captureState(this.props.atalho));
   }
   renderVals() {
     const accent = this.props.accent ?? '#3DD68C';
     const ptt = this.state.mode === 'ptt';
-    const keys = [
-      ['Mutar microfone', 'Ctrl+Shift+M'],
-      ['Ensurdecer', 'Ctrl+Shift+D'],
-      ['Entrar e sair do modo jogo', 'Ctrl+Shift+G'],
-      ['Abrir a Sala', 'Ctrl+Shift+S']
-    ];
+    const level = 58;
+    const above = !ptt && level >= this.state.threshold;
+    const keyName = (e) => {
+      if (e.key === ' ') return 'Espaço';
+      if (e.key.length === 1) return e.key.toUpperCase();
+      return e.key;
+    };
+    const hotkeys = this.state.keys.map((h) => {
+      const capturing = this.state.capturing === h.id;
+      const conflict = capturing ? this.state.conflict : null;
+      return {
+        label: h.label,
+        keys: h.keys,
+        idle: !capturing,
+        capturing,
+        hasError: !!conflict,
+        error: conflict ? 'Esse atalho já está em uso por ' + conflict.owner + '.' : '',
+        errId: 'erro-atalho-' + h.id,
+        changeLabel: 'Alterar atalho: ' + h.label,
+        captureLabel: 'Novo atalho para ' + h.label + '. Aperte as teclas. Esc cancela.',
+        captureText: conflict ? conflict.combo : 'Aperte a nova tecla…',
+        captureBorder: conflict ? '#FF8A8E' : accent,
+        captureColor: conflict ? '#FF8A8E' : '#EDEEF0',
+        start: () => this.setState({ capturing: h.id, conflict: null }),
+        cancel: () => this.setState({ capturing: null, conflict: null }),
+        onKey: (e) => {
+          if (e.key === 'Tab') return;
+          e.preventDefault();
+          if (e.key === 'Escape') return this.setState({ capturing: null, conflict: null });
+          if (['Control', 'Shift', 'Alt', 'Meta'].indexOf(e.key) >= 0) return;
+          const parts = [];
+          if (e.ctrlKey) parts.push('Ctrl');
+          if (e.altKey) parts.push('Alt');
+          if (e.shiftKey) parts.push('Shift');
+          parts.push(keyName(e));
+          const combo = parts.join('+');
+          const other = this.state.keys.find((k) => k.keys === combo && k.id !== h.id);
+          if (other) return this.setState({ conflict: { combo, owner: other.label } });
+          return this.setState({ keys: this.state.keys.map((k) => (k.id === h.id ? Object.assign({}, k, { keys: combo }) : k)), capturing: null, conflict: null });
+        }
+      };
+    });
     return {
       accent,
+      micVol: this.state.micVol,
+      micVolText: this.state.micVol + '%',
+      onMicVol: (e) => this.setState({ micVol: Number(e.target.value) }),
       isPtt: ptt,
+      isVad: !ptt,
       vadChecked: String(!ptt),
       pttChecked: String(ptt),
       vadBg: ptt ? 'transparent' : '#2A2E33',
@@ -163,8 +281,27 @@ class Component extends DCLogic {
       pttColor: ptt ? '#EDEEF0' : '#A0A6AD',
       pickVad: () => this.setState({ mode: 'vad' }),
       pickPtt: () => this.setState({ mode: 'ptt' }),
-      hotkeys: keys.map(([label, k]) => ({ label, keys: k, aria: 'Alterar atalho: ' + label })),
-      noSubmit: (e) => { if (e && e.preventDefault) e.preventDefault(); }
+      levelWidth: level + '%',
+      meterColor: above ? accent : '#858C94',
+      meterState: ptt ? 'Segure Mouse 4 para falar' : (above ? 'Transmitindo' : 'Abaixo do limite'),
+      meterStateColor: above ? accent : '#858C94',
+      meterHelp: ptt ? 'No modo Aperte para falar, sua voz só sai enquanto você segura a tecla.' : 'Arraste o marcador. Abaixo dele, sua voz não é enviada.',
+      threshold: this.state.threshold,
+      thresholdText: this.state.threshold + '%',
+      onThreshold: (e) => this.setState({ threshold: Number(e.target.value) }),
+      listenLabel: this.state.listening ? 'Parar de ouvir' : 'Ouvir minha voz',
+      toggleListen: () => this.setState({ listening: !this.state.listening }),
+      games: this.state.games.map((g) => ({ name: g, removeLabel: 'Remover ' + g, remove: () => this.setState({ games: this.state.games.filter((x) => x !== g) }) })),
+      hotkeys,
+      nome: this.state.nome,
+      onNome: (e) => this.setState({ nome: e.target.value, saved: false }),
+      saveNome: () => this.setState({ saved: true }),
+      saveLabel: this.state.saved ? 'Salvo' : 'Salvar',
+      copied: this.state.copied,
+      notCopied: !this.state.copied,
+      copyLabel: this.state.copied ? 'Copiado' : 'Copiar',
+      copyAria: this.state.copied ? 'Endereço copiado' : 'Copiar seu endereço',
+      copy: () => this.setState({ copied: true })
     };
   }
 }

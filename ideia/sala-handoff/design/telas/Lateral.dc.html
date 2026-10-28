@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Concord — barra lateral</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<nav aria-label="Navegação principal" style="width: 100%; min-height: 800px; box-sizing: border-box; background: #141619; color: #EDEEF0; font-family: 'Manrope', system-ui, sans-serif; font-size: 14px; padding: 20px 14px 14px; display: flex; flex-direction: column; gap: 22px">
+
+<div style="display: flex; align-items: center; gap: 10px; padding: 0 8px; min-height: 32px">
+<div aria-hidden="true" style="width: 30px; height: 30px; border-radius: 9px; background: {{accent}}; color: #06281A; display: flex; align-items: center; justify-content: center">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="5.5"></circle><circle cx="15" cy="12" r="5.5"></circle></svg>
+</div>
+<span style="font-size: 18px; font-weight: 700; letter-spacing: -0.01em">Concord</span>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 2px">
+<a href="Main.dc.html" aria-current="{{n.chamada.current}}" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; background: {{n.chamada.bg}}; color: {{n.chamada.color}}; font-weight: {{n.chamada.weight}}; text-decoration: none">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15v-3a8 8 0 0 1 16 0v3"></path><rect x="3" y="14" width="4" height="6" rx="1.5"></rect><rect x="17" y="14" width="4" height="6" rx="1.5"></rect></svg>
+Chamada
+</a>
+<a href="Amigos.dc.html" aria-current="{{n.amigos.current}}" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; background: {{n.amigos.bg}}; color: {{n.amigos.color}}; font-weight: {{n.amigos.weight}}; text-decoration: none">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"></circle><path d="M2.5 20a6.5 6.5 0 0 1 13 0"></path><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"></path></svg>
+Amigos
+</a>
+<a href="Compartilhar.dc.html" aria-current="{{n.tela.current}}" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; background: {{n.tela.bg}}; color: {{n.tela.color}}; font-weight: {{n.tela.weight}}; text-decoration: none">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg>
+Compartilhar tela
+<sc-if value="{{transmitindo}}" hint-placeholder-val="{{ false }}">
+<span style="margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: {{accent}}"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: {{accent}}"></span>Ao vivo</span>
+</sc-if>
+</a>
+<a href="Sons.dc.html" aria-current="{{n.sons.current}}" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; background: {{n.sons.bg}}; color: {{n.sons.color}}; font-weight: {{n.sons.weight}}; text-decoration: none">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h2l2-5 3 10 3-14 3 12 2-3h3"></path></svg>
+Mesa de sons
+</a>
+<a href="Ajustes.dc.html" aria-current="{{n.ajustes.current}}" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; background: {{n.ajustes.bg}}; color: {{n.ajustes.color}}; font-weight: {{n.ajustes.weight}}; text-decoration: none">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><circle cx="16" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg>
+Ajustes
+</a>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 2px">
+<h2 style="margin: 0; padding: 0 12px 6px; font-size: 12px; font-weight: 600; color: #858C94">Amigos</h2>
+<sc-if value="{{hasFriends}}" hint-placeholder-val="{{ true }}">
+<sc-for list="{{friends}}" as="f" hint-placeholder-count="4">
+<div style="display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 2px 0 12px; border-radius: 10px">
+<div aria-hidden="true" style="position: relative; width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; background: {{f.avBg}}; color: {{f.avFg}}; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px">{{f.letter}}<span style="position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; border-radius: 50%; background: {{f.dot}}; border: 2px solid #141619"></span></div>
+<div style="display: flex; flex-direction: column; min-width: 0; flex-grow: 1">
+<span style="font-weight: 600; color: {{f.nameColor}}">{{f.name}}</span>
+<span style="font-size: 12px; color: {{f.statusColor}}">{{f.status}}</span>
+</div>
+<sc-if value="{{f.canCall}}" hint-placeholder-val="{{ false }}">
+<button type="button" aria-label="{{f.callLabel}}" title="{{f.callLabel}}" style="width: 44px; height: 44px; flex-shrink: 0; border-radius: 10px; border: none; background: transparent; color: #A0A6AD; display: flex; align-items: center; justify-content: center; cursor: pointer">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h3.5l2 5-2.5 1.5a11 11 0 0 0 5.5 5.5L15 13.5l5 2V19a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"></path></svg>
+</button>
+</sc-if>
+</div>
+</sc-for>
+</sc-if>
+<sc-if value="{{noFriends}}" hint-placeholder-val="{{ false }}">
+<p style="margin: 0; padding: 4px 12px 8px; font-size: 13px; line-height: 1.5; color: #A0A6AD">Nenhum amigo ainda.</p>
+</sc-if>
+<a href="Amigos.dc.html" style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; border-radius: 10px; color: #A0A6AD; font-size: 13px; font-weight: 600; text-decoration: none">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+Adicionar amigo
+</a>
+</div>
+
+<div style="margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border-radius: 12px; background: #1A1C20">
+<div aria-hidden="true" style="width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; background: #352C4A; color: #CDBEF5; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px">L</div>
+<div style="display: flex; flex-direction: column; min-width: 0; flex-grow: 1">
+<span style="font-weight: 600">Lucas</span>
+<span style="font-size: 12px; color: {{selfColor}}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{selfStatus}}</span>
+</div>
+<button type="button" aria-label="{{muteLabel}}" title="{{muteLabel}}" onClick="{{toggleMute}}" style="width: 44px; height: 44px; flex-shrink: 0; border-radius: 10px; border: none; background: {{muteBg}}; color: {{muteColor}}; display: flex; align-items: center; justify-content: center; cursor: pointer">
+<sc-if value="{{muted}}" hint-placeholder-val="{{ false }}">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M3 3l18 18"></path></svg>
+</sc-if>
+<sc-if value="{{unmuted}}" hint-placeholder-val="{{ true }}">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg>
+</sc-if>
+</button>
+<button type="button" aria-label="{{silenceLabel}}" title="{{silenceLabel}}" onClick="{{toggleSilence}}" style="width: 44px; height: 44px; flex-shrink: 0; border-radius: 10px; border: none; background: {{silenceBg}}; color: {{silenceColor}}; display: flex; align-items: center; justify-content: center; cursor: pointer">
+<sc-if value="{{silenced}}" hint-placeholder-val="{{ false }}">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15v-3a8 8 0 0 1 16 0v3"></path><rect x="3" y="14" width="4" height="6" rx="1.5"></rect><rect x="17" y="14" width="4" height="6" rx="1.5"></rect><path d="M3 3l18 18"></path></svg>
+</sc-if>
+<sc-if value="{{unsilenced}}" hint-placeholder-val="{{ true }}">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15v-3a8 8 0 0 1 16 0v3"></path><rect x="3" y="14" width="4" height="6" rx="1.5"></rect><rect x="17" y="14" width="4" height="6" rx="1.5"></rect></svg>
+</sc-if>
+</button>
+</div>
+</nav>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"ativo":{"editor":"enum","options":["chamada","amigos","tela","sons","ajustes"],"default":"chamada"},"presenca":{"editor":"enum","options":["chamada","livre","off","sem"],"default":"chamada"},"transmitindo":{"editor":"boolean","default":false},"muted":{"editor":null},"silenced":{"editor":null},"onToggleMute":{"editor":null},"onToggleSilence":{"editor":null},"accent":{"editor":"color","default":"#3DD68C","options":["#3DD68C","#4CC9F0","#B79CFF"]},"$preview":{"width":280,"height":800}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { muted: false, silenced: false };
+  }
+  renderVals() {
+    const accent = this.props.accent ?? '#3DD68C';
+    const ativo = this.props.ativo ?? 'chamada';
+    const presenca = this.props.presenca ?? 'chamada';
+    const controlled = typeof this.props.onToggleMute === 'function';
+    const silenced = controlled ? !!this.props.silenced : this.state.silenced;
+    const muted = (controlled ? !!this.props.muted : this.state.muted) || silenced;
+    const item = (id) => ({
+      current: ativo === id ? 'page' : 'false',
+      bg: ativo === id ? '#1F2226' : 'transparent',
+      color: ativo === id ? '#EDEEF0' : '#A0A6AD',
+      weight: ativo === id ? '700' : '600'
+    });
+    const inCall = presenca === 'chamada';
+    const mk = (name, letter, avBg, avFg, st) => {
+      if (st === 'sala') return { name, letter, avBg, avFg, dot: accent, nameColor: '#EDEEF0', status: 'Na sala', statusColor: accent, canCall: false, callLabel: '' };
+      if (st === 'online') return { name, letter, avBg, avFg, dot: accent, nameColor: '#EDEEF0', status: 'Online', statusColor: '#A0A6AD', canCall: true, callLabel: inCall ? 'Chamar ' + name + ' para a sala' : 'Ligar para ' + name };
+      return { name, letter, avBg: '#2A2E33', avFg: '#A0A6AD', dot: '#4A5057', nameColor: '#A0A6AD', status: 'Offline', statusColor: '#858C94', canCall: false, callLabel: '' };
+    };
+    const people = [
+      ['Pedro', 'P', '#1E3B33', '#8FE8BB'],
+      ['Ana', 'A', '#213547', '#9CCBF0'],
+      ['Camila', 'C', '#3D2433', '#F2B8D2'],
+      ['Bruno', 'B', '#2A2E33', '#A0A6AD']
+    ];
+    const states = {
+      chamada: ['sala', 'sala', 'online', 'offline'],
+      livre: ['online', 'online', 'offline', 'offline'],
+      off: ['offline', 'offline', 'offline', 'offline']
+    };
+    const friends = presenca === 'sem' ? [] : people.map((p, i) => mk(p[0], p[1], p[2], p[3], (states[presenca] || states.chamada)[i]));
+    return {
+      accent,
+      n: { chamada: item('chamada'), amigos: item('amigos'), tela: item('tela'), sons: item('sons'), ajustes: item('ajustes') },
+      transmitindo: !!this.props.transmitindo,
+      friends,
+      hasFriends: friends.length > 0,
+      noFriends: friends.length === 0,
+      muted,
+      unmuted: !muted,
+      silenced,
+      unsilenced: !silenced,
+      selfStatus: silenced ? 'Silenciado' : (muted ? 'Mutado' : 'Microfone ligado'),
+      selfColor: muted ? '#FF8A8E' : '#A0A6AD',
+      muteLabel: muted ? 'Desmutar-se' : 'Mutar-se',
+      muteBg: muted ? '#3A1C1E' : 'transparent',
+      muteColor: muted ? '#FF8A8E' : '#A0A6AD',
+      silenceLabel: silenced ? 'Voltar a ouvir' : 'Silenciar',
+      silenceBg: silenced ? '#3A1C1E' : 'transparent',
+      silenceColor: silenced ? '#FF8A8E' : '#A0A6AD',
+      toggleMute: () => {
+        if (controlled) return this.props.onToggleMute();
+        if (this.state.silenced) return this.setState({ silenced: false, muted: false });
+        return this.setState({ muted: !this.state.muted });
+      },
+      toggleSilence: () => {
+        if (typeof this.props.onToggleSilence === 'function') return this.props.onToggleSilence();
+        return this.setState({ silenced: !this.state.silenced });
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>

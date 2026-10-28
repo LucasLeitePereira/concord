@@ -44,6 +44,9 @@
 - Duas instâncias que se discam em teste: porta livre via `UdpSocket::bind("127.0.0.1:0")`, ler e soltar.
 
 - sala-ui (Tauri 2 sem tauri-cli): frontend em `crates/ui/web/` usa `window.__TAURI__` (withGlobalTauri); registre o ouvinte antes de pedir `link_state`. Build frio ≈ 12 min: rode clippy e test separados ou em background.
+- Pacotes: UI = `-p sala-ui` (bin `concord-ui`), núcleo = `-p sala-core` (bin `concord`). O `web/` é embutido no build: mudou o frontend, recompile. Arquivos do `web/` são LF (`.gitattributes`).
+- JS sem infra de teste: `node --check` + um `.mjs` no scratchpad importando `state.js` por `file:///` (ele não usa DOM).
+- `main.render()` recria a lateral e os tiles: todo elemento interativo precisa de `data-key` para devolver o foco; valores que mudam sem render completo (latência do `CallStats`) usam um atualizador próprio (`updateTileMeta`).
 
 ## Convenções do projeto (Sala)
 - Spec: `ideia/sala-handoff/PLANO-CLAUDE-CODE.md`; design: `ideia/sala-handoff/design/`.

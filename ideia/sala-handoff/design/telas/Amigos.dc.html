@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Concord — amigos</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div style="min-height: 1280px; width: 100%; box-sizing: border-box; background: #0F1012; color: #EDEEF0; font-family: 'Manrope', system-ui, sans-serif; font-size: 14px; display: flex; flex-wrap: wrap">
+
+<div style="flex: 1 1 280px; max-width: 100%; display: flex; flex-direction: column; background: #141619; border-right: 1px solid #23262A">
+<dc-import name="Lateral" ativo="amigos" presenca="{{presenca}}" accent="{{accent}}" hint-size="100%,800px"></dc-import>
+</div>
+
+<main style="flex: 999 1 640px; min-width: 0; box-sizing: border-box; padding: 28px 32px 40px">
+<div style="max-width: 880px; display: flex; flex-direction: column; gap: 20px">
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<h1 style="margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em">Amigos</h1>
+<p style="margin: 0; font-size: 14px; color: #A0A6AD">Conexão direta entre os PCs, pela rede do Tailscale.</p>
+</div>
+
+<sc-if value="{{hasFriends}}" hint-placeholder-val="{{ true }}">
+<section aria-labelledby="sec-seus" style="border-radius: 16px; background: #17191C; border: 1px solid #23262A; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; align-items: baseline; gap: 10px">
+<h2 id="sec-seus" style="margin: 0; font-size: 16px; font-weight: 700">Seus amigos</h2>
+<span style="font-size: 13px; color: #A0A6AD">{{friendCount}}</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<sc-for list="{{friends}}" as="f" hint-placeholder-count="4">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-height: 64px; box-sizing: border-box; padding: 10px 8px 10px 12px; border-radius: 12px; background: #1A1C20">
+<div aria-hidden="true" style="position: relative; width: 40px; height: 40px; flex-shrink: 0; border-radius: 50%; background: {{f.avBg}}; color: {{f.avFg}}; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px">{{f.letter}}<span style="position: absolute; right: -1px; bottom: -1px; width: 11px; height: 11px; border-radius: 50%; background: {{f.dot}}; border: 2px solid #1A1C20"></span></div>
+<div style="flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+<span style="font-size: 15px; font-weight: 600; color: {{f.nameColor}}">{{f.name}}</span>
+<sc-if value="{{f.verified}}" hint-placeholder-val="{{ true }}">
+<span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; background: #23262A; color: #C9CDD2; font-size: 12px; font-weight: 600">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"></path><path d="M8.5 12l2.5 2.5 4.5-5"></path></svg>
+Identidade verificada
+</span>
+</sc-if>
+</div>
+<span style="font-size: 12px; color: #A0A6AD; font-family: 'JetBrains Mono', ui-monospace, monospace">{{f.ip}}</span>
+<sc-if value="{{f.fora}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; align-items: flex-start; gap: 8px; margin-top: 4px; padding: 8px 10px; border-radius: 10px; border: 1px solid #2A2E33; font-size: 12px; line-height: 1.5">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#EDEEF0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink: 0; margin-top: 1px"><path d="M12 3l10 18H2z"></path><path d="M12 10v5M12 18h.01"></path></svg>
+<span><span style="font-weight: 600; color: #EDEEF0">Fora da sua rede Tailscale.</span> <span style="color: #A0A6AD">Para conectar, vocês precisam estar na mesma tailnet, ou ele precisa compartilhar a máquina com você.</span></span>
+</div>
+</sc-if>
+</div>
+<span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: {{f.pillBg}}; color: {{f.pillColor}}; font-size: 12px; font-weight: 600"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: {{f.dot}}"></span>{{f.presence}}</span>
+<button type="button" aria-label="{{f.removeLabel}}" onClick="{{f.remove}}" style="min-height: 44px; padding: 0 12px; border-radius: 10px; border: none; background: transparent; color: #FF8A8E; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer">Remover</button>
+</div>
+</sc-for>
+</div>
+</section>
+</sc-if>
+
+<sc-if value="{{noFriends}}" hint-placeholder-val="{{ false }}">
+<section aria-labelledby="sec-vazio" style="border-radius: 16px; border: 1px dashed #2A2E33; padding: 40px 28px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px">
+<div aria-hidden="true" style="width: 56px; height: 56px; border-radius: 50%; background: #1F2226; color: #A0A6AD; display: flex; align-items: center; justify-content: center">
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"></circle><path d="M2.5 20a6.5 6.5 0 0 1 13 0"></path><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"></path></svg>
+</div>
+<h2 id="sec-vazio" style="margin: 0; font-size: 17px; font-weight: 700">Nenhum amigo ainda</h2>
+<p style="margin: 0; max-width: 520px; font-size: 14px; line-height: 1.6; color: #A0A6AD">O Concord liga seu PC direto ao dos seus amigos usando o Tailscale. Para adicionar alguém, vocês dois precisam estar na mesma rede do Tailscale (a tailnet). Quem estiver nela aparece logo abaixo. Você também pode adicionar pelo IP.</p>
+</section>
+</sc-if>
+
+<section aria-labelledby="sec-rede" aria-busy="{{loadingStr}}" style="border-radius: 16px; background: #17191C; border: 1px solid #23262A; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 2px">
+<h2 id="sec-rede" style="margin: 0; font-size: 16px; font-weight: 700">Na sua rede Tailscale</h2>
+<span style="font-size: 13px; color: #A0A6AD">Dispositivos da sua tailnet que podem virar amigos.</span>
+</div>
+<button type="button" onClick="{{refresh}}" disabled="{{loading}}" style="display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-radius: 10px; border: none; background: transparent; color: {{refreshColor}}; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4"></path></svg>
+Atualizar
+</button>
+</div>
+
+<sc-if value="{{redeLista}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<sc-for list="{{devices}}" as="d" hint-placeholder-count="5">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-height: 64px; box-sizing: border-box; padding: 10px 10px 10px 12px; border-radius: 12px; background: #1A1C20">
+<div aria-hidden="true" style="width: 40px; height: 40px; flex-shrink: 0; border-radius: 10px; background: #23262A; color: #C9CDD2; display: flex; align-items: center; justify-content: center">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg>
+</div>
+<div style="flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+<span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; font-weight: 500">{{d.host}}</span>
+<span style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: #A0A6AD">de {{d.owner}}<span aria-hidden="true">·</span><span style="font-family: 'JetBrains Mono', ui-monospace, monospace">{{d.ip}}</span><span aria-hidden="true">·</span><span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: {{d.dot}}"></span>{{d.status}}</span></span>
+</div>
+<sc-if value="{{d.isFriend}}" hint-placeholder-val="{{ false }}">
+<span style="display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 12px; font-size: 13px; color: #A0A6AD">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"></path></svg>
+Já é seu amigo
+</span>
+</sc-if>
+<sc-if value="{{d.canAdd}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<label for="{{d.nickId}}" style="font-size: 12px; color: #A0A6AD">Apelido</label>
+<input id="{{d.nickId}}" type="text" value="{{d.nickVal}}" onChange="{{d.onNick}}" style="width: 170px; min-height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 10px; border: 1px solid #2A2E33; background: #1A1C20; color: #EDEEF0; font-family: inherit; font-size: 14px">
+</div>
+<button type="button" onClick="{{d.add}}" aria-label="{{d.addLabel}}" style="min-height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: #1F2226; color: #EDEEF0; font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer">Adicionar</button>
+</div>
+</sc-if>
+</div>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{redeCarregando}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<p role="status" style="margin: 0; font-size: 13px; color: #A0A6AD">Procurando dispositivos na sua rede…</p>
+<div aria-hidden="true" style="display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 12px; box-sizing: border-box; border-radius: 12px; background: #1A1C20"><div style="width: 40px; height: 40px; border-radius: 10px; background: #23262A"></div><div style="display: flex; flex-direction: column; gap: 8px; flex-grow: 1"><div style="width: 32%; height: 10px; border-radius: 5px; background: #23262A"></div><div style="width: 52%; height: 8px; border-radius: 4px; background: #1F2226"></div></div></div>
+<div aria-hidden="true" style="display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 12px; box-sizing: border-box; border-radius: 12px; background: #1A1C20"><div style="width: 40px; height: 40px; border-radius: 10px; background: #23262A"></div><div style="display: flex; flex-direction: column; gap: 8px; flex-grow: 1"><div style="width: 26%; height: 10px; border-radius: 5px; background: #23262A"></div><div style="width: 44%; height: 8px; border-radius: 4px; background: #1F2226"></div></div></div>
+<div aria-hidden="true" style="display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 12px; box-sizing: border-box; border-radius: 12px; background: #1A1C20"><div style="width: 40px; height: 40px; border-radius: 10px; background: #23262A"></div><div style="display: flex; flex-direction: column; gap: 8px; flex-grow: 1"><div style="width: 36%; height: 10px; border-radius: 5px; background: #23262A"></div><div style="width: 48%; height: 8px; border-radius: 4px; background: #1F2226"></div></div></div>
+</div>
+</sc-if>
+
+<sc-if value="{{redeVazia}}" hint-placeholder-val="{{ false }}">
+<div style="border-radius: 12px; border: 1px dashed #2A2E33; padding: 28px 24px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px">
+<div aria-hidden="true" style="width: 48px; height: 48px; border-radius: 50%; background: #1F2226; color: #A0A6AD; display: flex; align-items: center; justify-content: center">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg>
+</div>
+<span style="font-size: 15px; font-weight: 700">Nenhum outro dispositivo na sua rede Tailscale</span>
+<span style="max-width: 460px; font-size: 13px; line-height: 1.6; color: #A0A6AD">Peça para seu amigo entrar na mesma tailnet ou compartilhar a máquina dele com você. Depois, clique em Atualizar.</span>
+</div>
+</sc-if>
+
+<sc-if value="{{redeErro}}" hint-placeholder-val="{{ false }}">
+<div role="alert" style="border-radius: 12px; border: 1px solid #2A2E33; background: #1A1C20; padding: 28px 24px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px">
+<div aria-hidden="true" style="width: 48px; height: 48px; border-radius: 50%; background: #23262A; color: #EDEEF0; display: flex; align-items: center; justify-content: center">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"></path><path d="M12 10v5M12 18h.01"></path></svg>
+</div>
+<span style="font-size: 15px; font-weight: 700">Tailscale desligado ou não encontrado</span>
+<span style="max-width: 460px; font-size: 13px; line-height: 1.6; color: #A0A6AD">Abra o Tailscale e confira se você está conectado. Sem ele, ninguém consegue entrar na sua sala.</span>
+<button type="button" onClick="{{retry}}" style="margin-top: 4px; min-height: 44px; padding: 0 18px; border-radius: 12px; border: none; background: #1F2226; color: #EDEEF0; font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer">Tentar de novo</button>
+</div>
+</sc-if>
+</section>
+
+<section aria-labelledby="sec-ip" style="border-radius: 16px; background: #17191C; border: 1px solid #23262A; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-direction: column; gap: 2px">
+<h2 id="sec-ip" style="margin: 0; font-size: 16px; font-weight: 700">Adicionar pelo IP</h2>
+<span style="font-size: 13px; color: #A0A6AD">Use o IP que o Tailscale mostra no PC do seu amigo.</span>
+</div>
+<form onSubmit="{{submitIp}}" noValidate="{{ true }}" style="display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px">
+<div style="flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<label for="ip-nome" style="font-size: 13px; color: #A0A6AD">Nome</label>
+<input id="ip-nome" type="text" value="{{ipNome}}" onChange="{{onNome}}" placeholder="Como você chama esse amigo" aria-invalid="{{nomeInvalid}}" aria-describedby="ip-nome-erro" style="min-height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 10px; border: 1px solid {{nomeBorder}}; background: #1A1C20; color: #EDEEF0; font-family: inherit; font-size: 14px">
+<sc-if value="{{hasNomeErro}}" hint-placeholder-val="{{ false }}">
+<span id="ip-nome-erro" style="display: flex; align-items: flex-start; gap: 6px; font-size: 13px; line-height: 1.4; color: #FF8A8E">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink: 0; margin-top: 2px"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 16.5h.01"></path></svg>
+{{nomeErro}}
+</span>
+</sc-if>
+</div>
+<div style="flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<label for="ip-addr" style="font-size: 13px; color: #A0A6AD">IP do Tailscale</label>
+<input id="ip-addr" type="text" inputMode="decimal" value="{{ip}}" onChange="{{onIp}}" placeholder="100.x.y.z" aria-invalid="{{ipInvalid}}" aria-describedby="ip-addr-erro" style="min-height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 10px; border: 1px solid {{ipBorder}}; background: #1A1C20; color: #EDEEF0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px">
+<sc-if value="{{hasIpErro}}" hint-placeholder-val="{{ false }}">
+<span id="ip-addr-erro" style="display: flex; align-items: flex-start; gap: 6px; font-size: 13px; line-height: 1.4; color: #FF8A8E">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink: 0; margin-top: 2px"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 16.5h.01"></path></svg>
+{{ipErro}}
+</span>
+</sc-if>
+</div>
+<button type="submit" style="margin-top: 24px; min-height: 44px; padding: 0 18px; border-radius: 12px; border: none; background: {{accent}}; color: #06281A; font-family: inherit; font-size: 14px; font-weight: 700; cursor: pointer">Adicionar amigo</button>
+</form>
+<sc-if value="{{hasOk}}" hint-placeholder-val="{{ false }}">
+<p role="status" style="margin: 0; display: flex; align-items: center; gap: 8px; font-size: 13px; color: #A0A6AD">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{accent}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"></path></svg>
+{{okMsg}}
+</p>
+</sc-if>
+</section>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"cenario":{"editor":"enum","options":["padrao","vazio","carregando","erro"],"default":"padrao"},"accent":{"editor":"color","default":"#3DD68C","options":["#3DD68C","#4CC9F0","#B79CFF"]},"$preview":{"width":1280,"height":1280}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.timer = null;
+    this.state = this.initial(props.cenario);
+  }
+  initial(cen) {
+    const erro = cen === 'erro';
+    return {
+      removed: [],
+      added: [],
+      nicks: {},
+      loading: false,
+      recovered: false,
+      ipNome: erro ? 'Rafa' : '',
+      ip: erro ? '192.168.0.12' : '',
+      nomeErro: '',
+      ipErro: erro ? 'Esse IP não é da rede Tailscale. Os endereços do Tailscale começam com 100.' : '',
+      okMsg: ''
+    };
+  }
+  componentDidUpdate(prev) {
+    if (prev.cenario !== this.props.cenario) this.setState(this.initial(this.props.cenario));
+  }
+  componentWillUnmount() {
+    if (this.timer) clearTimeout(this.timer);
+  }
+  load(after) {
+    if (this.timer) clearTimeout(this.timer);
+    this.setState({ loading: true });
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.setState(Object.assign({ loading: false }, after || {}));
+    }, 1200);
+  }
+  renderVals() {
+    const accent = this.props.accent ?? '#3DD68C';
+    const cen = this.props.cenario ?? 'padrao';
+    const semAmigos = cen === 'vazio';
+    const off = cen === 'erro' && !this.state.recovered;
+    const base = semAmigos ? [] : [
+      { id: 'pedro', name: 'Pedro', letter: 'P', avBg: '#1E3B33', avFg: '#8FE8BB', ip: '100.101.12.7', st: 'sala', verified: true, fora: false },
+      { id: 'ana', name: 'Ana', letter: 'A', avBg: '#213547', avFg: '#9CCBF0', ip: '100.88.4.21', st: 'sala', verified: true, fora: false },
+      { id: 'camila', name: 'Camila', letter: 'C', avBg: '#3D2433', avFg: '#F2B8D2', ip: '100.77.9.102', st: 'online', verified: true, fora: false },
+      { id: 'bruno', name: 'Bruno', letter: 'B', avBg: '#2A2E33', avFg: '#A0A6AD', ip: '100.64.80.9', st: 'offline', verified: true, fora: true }
+    ];
+    const extra = this.state.added.map((a) => ({ id: a.id, name: a.name, letter: a.name.charAt(0).toUpperCase(), avBg: '#1F3A3D', avFg: '#9FE0E6', ip: a.ip, st: 'online', verified: false, fora: false }));
+    const removed = this.state.removed;
+    const friends = base.concat(extra).filter((f) => removed.indexOf(f.id) < 0).map((f) => {
+      const st = off ? 'offline' : f.st;
+      const isOff = st === 'offline';
+      const pres = st === 'sala'
+        ? { presence: 'Na sala', pillBg: '#1E3B33', pillColor: '#8FE8BB', dot: accent }
+        : (st === 'online'
+          ? { presence: 'Online', pillBg: '#23262A', pillColor: '#C9CDD2', dot: accent }
+          : { presence: 'Offline', pillBg: '#23262A', pillColor: '#A0A6AD', dot: '#4A5057' });
+      return Object.assign({}, f, pres, {
+        avBg: isOff ? '#2A2E33' : f.avBg,
+        avFg: isOff ? '#A0A6AD' : f.avFg,
+        nameColor: isOff ? '#A0A6AD' : '#EDEEF0',
+        removeLabel: 'Remover ' + f.name,
+        remove: () => this.setState({ removed: this.state.removed.concat([f.id]) })
+      });
+    });
+    let rede = 'lista';
+    if (semAmigos) rede = 'vazia';
+    if (off) rede = 'erro';
+    if (cen === 'carregando' || this.state.loading) rede = 'carregando';
+    const friendIps = friends.map((f) => f.ip);
+    const devices = [
+      { id: 'd1', host: 'pc-pedro', owner: 'Pedro', ip: '100.101.12.7', online: true },
+      { id: 'd2', host: 'notebook-ana', owner: 'Ana', ip: '100.88.4.21', online: true },
+      { id: 'd3', host: 'pc-camila', owner: 'Camila', ip: '100.77.9.102', online: true },
+      { id: 'd4', host: 'desktop-rafa', owner: 'Rafael', ip: '100.92.33.140', online: true },
+      { id: 'd5', host: 'notebook-ju', owner: 'Júlia', ip: '100.70.15.66', online: false }
+    ].map((d) => {
+      const isFriend = friendIps.indexOf(d.ip) >= 0;
+      const nick = this.state.nicks[d.id] ?? d.owner;
+      return Object.assign({}, d, {
+        isFriend,
+        canAdd: !isFriend,
+        dot: d.online ? accent : '#4A5057',
+        status: d.online ? 'Online' : 'Offline',
+        nickId: 'apelido-' + d.id,
+        nickVal: nick,
+        addLabel: 'Adicionar ' + d.host + ' como ' + (nick || d.owner),
+        onNick: (e) => this.setState({ nicks: Object.assign({}, this.state.nicks, { [d.id]: e.target.value }) }),
+        add: () => this.setState({ added: this.state.added.concat([{ id: 'dev-' + d.id, name: (nick || d.owner).trim() || d.owner, ip: d.ip }]) })
+      });
+    });
+    const n = friends.length;
+    return {
+      accent,
+      presenca: semAmigos ? 'sem' : (off ? 'off' : 'chamada'),
+      friends,
+      hasFriends: n > 0,
+      noFriends: n === 0,
+      friendCount: n === 1 ? '1 amigo' : n + ' amigos',
+      devices,
+      redeLista: rede === 'lista',
+      redeCarregando: rede === 'carregando',
+      redeVazia: rede === 'vazia',
+      redeErro: rede === 'erro',
+      loading: this.state.loading,
+      loadingStr: String(rede === 'carregando'),
+      refreshColor: this.state.loading ? '#858C94' : '#A0A6AD',
+      refresh: () => this.load(),
+      retry: () => this.load({ recovered: true }),
+      ipNome: this.state.ipNome,
+      ip: this.state.ip,
+      nomeErro: this.state.nomeErro,
+      ipErro: this.state.ipErro,
+      hasNomeErro: !!this.state.nomeErro,
+      hasIpErro: !!this.state.ipErro,
+      nomeInvalid: String(!!this.state.nomeErro),
+      ipInvalid: String(!!this.state.ipErro),
+      nomeBorder: this.state.nomeErro ? '#FF8A8E' : '#2A2E33',
+      ipBorder: this.state.ipErro ? '#FF8A8E' : '#2A2E33',
+      hasOk: !!this.state.okMsg,
+      okMsg: this.state.okMsg,
+      onNome: (e) => this.setState({ ipNome: e.target.value, nomeErro: '', okMsg: '' }),
+      onIp: (e) => this.setState({ ip: e.target.value, ipErro: '', okMsg: '' }),
+      submitIp: (e) => {
+        if (e && e.preventDefault) e.preventDefault();
+        const nome = this.state.ipNome.trim();
+        const ip = this.state.ip.trim();
+        const nomeErro = nome ? '' : 'Dê um nome para esse amigo.';
+        const valid = /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip);
+        const ipErro = !ip ? 'Digite o IP do Tailscale do seu amigo.' : (valid ? '' : 'Esse IP não é da rede Tailscale. Os endereços do Tailscale começam com 100.');
+        if (nomeErro || ipErro) return this.setState({ nomeErro, ipErro, okMsg: '' });
+        return this.setState({ added: this.state.added.concat([{ id: 'ip-' + ip, name: nome, ip }]), ipNome: '', ip: '', okMsg: nome + ' foi adicionado aos seus amigos.' });
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>

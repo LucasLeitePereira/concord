@@ -203,6 +203,32 @@ export function formatClock(sentAt) {
   return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
 
+// Cor estável do avatar (1..5) a partir do nome; o fingerprint não chega à interface.
+export function avatarIndex(name) {
+  let hash = 0;
+  for (const ch of String(name || '')) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+  return (hash % 5) + 1;
+}
+
+// Presença na lateral e em Amigos: { key: 'sala'|'online'|'off', text, danger, canCall }.
+export function friendPresence(state, name) {
+  const p = state.peers[name];
+  if (state.mismatch[name]) return { key: 'off', text: 'Identidade diferente', danger: true, canCall: false };
+  if (p && p.reconnecting != null) return { key: 'off', text: 'Reconectando…', danger: false, canCall: false };
+  if (!p || !p.connected) return { key: 'off', text: 'Offline', danger: false, canCall: false };
+  if (p.status && p.status.in_room) return { key: 'sala', text: 'Na sala', danger: false, canCall: false };
+  return { key: 'online', text: 'Online', danger: false, canCall: true };
+}
+
+// Validação da faixa do Tailscale (100.64.0.0/10). Devolve true/false.
+export function isTailscaleIp(ip) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(ip).trim());
+  if (!m) return false;
+  const o = m.slice(1).map(Number);
+  if (o.some((n) => n > 255)) return false;
+  return o[0] === 100 && o[1] >= 64 && o[1] <= 127;
+}
+
 export function initial(name) {
   const t = (name || '?').trim();
   return t ? Array.from(t)[0].toUpperCase() : '?';

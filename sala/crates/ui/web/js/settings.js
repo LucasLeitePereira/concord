@@ -1,6 +1,5 @@
-// Tela Ajustes: "Seu endereço", "Seu nome", "Atalhos" e "Amigos". Só envia comandos; o estado vem do `Config` do núcleo (D-010).
-
-import { friends, initial } from './state.js';
+// Tela Ajustes: Áudio, Modo jogo, Atalhos e Você. Só envia comandos; o estado vem do `Config` do núcleo (D-010).
+// A aba Amigos está em friends.js.
 
 const NAMED = {
   Space: 'Space', Enter: 'Enter', NumpadEnter: 'Enter', Tab: 'Tab', Backspace: 'Backspace',
@@ -44,122 +43,97 @@ export function needsModifier(combo) {
 }
 
 const HOTKEYS = [
-  { field: 'toggle_mute', label: 'Mutar-se/Desmutar-se' },
-  { field: 'toggle_deafen', label: 'Silenciar/Voltar a ouvir' },
+  { field: 'toggle_mute', label: 'Mutar-se' },
+  { field: 'toggle_deafen', label: 'Silenciar' },
   { field: 'toggle_game_mode', label: 'Modo jogo' },
 ];
+const PTT = { field: 'push_to_talk', label: 'Tecla para falar' };
+
+const BITRATES = [
+  [96, 'Alta · 96 kbps (recomendado)'],
+  [128, 'Máxima · 128 kbps'],
+  [64, 'Econômica · 64 kbps'],
+];
+
+// Limites do medidor/limite de sensibilidade (dB).
+const DB_MIN = -80;
+const DB_MAX = -10;
 
 export function initSettings({ state, send, h, icon }) {
   const $ = (id) => document.getElementById(id);
-  let confirming = null; // { kind: 'remove' | 'reset', name }
-  let pendingAdd = null; // nome enviado, aguardando o Config novo
   let shownName = null; // último Config.name colocado no campo
+  let pendingName = null; // nome enviado, aguardando o Config novo
+  let nameSaved = false;
   let volumeDragging = false;
   let thresholdDragging = false;
 
-  const address = (f) => (f.port ? `${f.address}:${f.port}` : f.address);
+  const linked = () => state.link === 'connected' && !!state.config;
 
-  function ask(kind, name) {
-    confirming = { kind, name };
-    renderSettings();
-    const btn = document.querySelector('[data-key="confirm-yes"]');
-    if (btn) btn.focus();
-  }
-
-  function cancel(returnKey) {
-    confirming = null;
-    renderSettings();
-    const back = document.querySelector(`[data-key="${CSS.escape(returnKey)}"]`);
-    if (back) back.focus();
-  }
-
-  function confirmRow(f) {
-    const remove = confirming.kind === 'remove';
-    const question = remove
-      ? `Remover ${f.name} da sua lista de amigos?`
-      : `Resetar a identidade de ${f.name}? Use se o amigo reinstalou ou trocou de PC; a próxima conexão confiará na identidade nova.`;
-    return h('div', { class: 'f-confirm', role: 'group', 'aria-label': 'Confirmação' },
-      h('span', {}, question),
-      h('button', {
-        type: 'button', class: `btn ${remove ? 'danger' : 'neutral'}`, 'data-key': 'confirm-yes',
-        onclick: () => {
-          confirming = null;
-          send(remove ? { type: 'RemoveFriend', name: f.name } : { type: 'ResetFingerprint', name: f.name });
-          renderSettings();
-        },
-      }, remove ? 'Remover' : 'Resetar'),
-      h('button', {
-        type: 'button', class: 'btn neutral',
-        onclick: () => cancel(`${remove ? 'rm' : 'reset'}:${f.name}`),
-      }, 'Cancelar'));
-  }
-
-  function friendRow(f) {
-    const mine = confirming && confirming.name === f.name;
-    const seal = f.verified
-      ? h('span', { class: 'seal ok' }, icon('i-check', 12), 'Identidade verificada')
-      : h('span', { class: 'seal pending' }, 'Ainda não conectou');
-    const actions = h('div', { class: 'f-actions' },
-      f.verified && h('button', {
-        type: 'button', class: 'link-btn', 'data-key': `reset:${f.name}`,
-        title: 'Use se o amigo reinstalou ou trocou de PC',
-        'aria-label': `Resetar identidade de ${f.name}. Use se o amigo reinstalou ou trocou de PC`,
-        onclick: () => ask('reset', f.name),
-      }, 'Resetar identidade'),
-      h('button', {
-        type: 'button', class: 'link-btn danger', 'data-key': `rm:${f.name}`,
-        'aria-label': `Remover ${f.name}`,
-        onclick: () => ask('remove', f.name),
-      }, 'Remover'));
-    return h('div', { role: 'listitem', class: 'f-row' },
-      h('div', { class: 'avatar' }, initial(f.name)),
-      h('span', { class: 'f-name' }, f.name),
-      h('span', { class: 'f-addr' }, address(f)),
-      seal,
-      actions,
-      mine && confirmRow(f));
-  }
+  // ---------- Você ----------
 
   let copiedTimer = null;
-  let copied = false;
 
   function renderAddress(addr) {
     const row = $('my-address');
     if (row.dataset.addr === String(addr)) return; // não recriar (preserva foco e "Copiado")
     row.dataset.addr = String(addr);
     if (!addr) {
-      row.replaceChildren(h('span', {}, 'Tailscale não encontrado.'));
-      $('my-address-hint').textContent = 'Instale em tailscale.com/download e entre na mesma rede do seu amigo.';
+      row.replaceChildren(h('div', { class: 'notice' }, icon('i-alert', 16),
+        h('span', {}, h('strong', {}, 'Tailscale não encontrado.'), ' ',
+          h('span', { class: 'muted' }, 'Instale em tailscale.com/download e entre na mesma rede do seu amigo.'))));
+      $('my-address-hint').replaceChildren();
       return;
     }
     const btn = h('button', {
-      type: 'button', class: 'btn neutral', 'data-key': 'copy-addr',
+      type: 'button', class: 'btn-text', 'data-key': 'copy-addr', 'aria-label': 'Copiar seu endereço',
       onclick: async () => {
         try {
           await navigator.clipboard.writeText(addr);
-          copied = true;
         } catch {
-          copied = false;
-          $('fr-error').textContent = 'Não consegui copiar; selecione o endereço e copie com Ctrl+C.';
+          $('addr-error').replaceChildren(icon('i-info', 14), 'Não consegui copiar; selecione o endereço e copie com Ctrl+C.');
           return;
         }
-        btn.textContent = 'Copiado';
+        $('addr-error').replaceChildren();
+        setCopyButton(btn, true);
         clearTimeout(copiedTimer);
-        copiedTimer = setTimeout(() => { btn.textContent = 'Copiar'; copied = false; }, 2000);
+        copiedTimer = setTimeout(() => setCopyButton(btn, false), 2000);
       },
-    }, 'Copiar');
-    row.replaceChildren(h('span', { class: 'addr-value' }, addr), btn);
-    $('my-address-hint').textContent = 'Mande para o seu amigo colar em Adicionar amigo.';
+    });
+    setCopyButton(btn, false);
+    row.replaceChildren(h('div', { class: 'input-row' }, h('span', { class: 'input readonly', 'aria-labelledby': 'lbl-end' }, addr), btn));
+    $('my-address-hint').replaceChildren(h('div', { class: 'hint-text', style: 'display:flex;flex-wrap:wrap;align-items:center;gap:8px' },
+      h('span', { class: 'pill live' }, h('span', { class: 'dot', 'aria-hidden': 'true' }), 'Tailscale conectado'),
+      'Seus amigos usam este endereço para adicionar você.'));
   }
+
+  function setCopyButton(btn, copied) {
+    btn.setAttribute('aria-label', copied ? 'Endereço copiado' : 'Copiar seu endereço');
+    btn.replaceChildren(icon(copied ? 'i-check' : 'i-copy', 15), copied ? 'Copiado' : 'Copiar');
+  }
+
+  $('name-input').addEventListener('input', () => {
+    nameSaved = false;
+    $('name-save').textContent = 'Salvar';
+  });
+
+  $('name-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = $('name-input').value.trim();
+    if (!name || name === shownName) return;
+    pendingName = name;
+    send({ type: 'UpdateConfig', name });
+  });
 
   // ---------- Atalhos ----------
 
   let capturing = null; // campo de `hotkeys` sendo capturado
+  let hkError = null; // { field, combo, message } da captura em curso
   let hkSignature = '';
 
   function stopCapture(sendOff = true) {
     if (!capturing) return;
     capturing = null;
+    hkError = null;
     if (sendOff) send({ type: 'SetHotkeyCapture', on: false });
     renderHotkeys();
   }
@@ -171,9 +145,17 @@ export function initSettings({ state, send, h, icon }) {
     }
     const wasCapturing = capturing !== null;
     capturing = field;
-    $('hk-error').textContent = '';
+    hkError = null;
     if (!wasCapturing) send({ type: 'SetHotkeyCapture', on: true });
     renderHotkeys();
+  }
+
+  // Quem já usa a combinação (rótulo), ou null.
+  function ownerOf(combo, field) {
+    const hk = state.config && state.config.hotkeys;
+    if (!hk) return null;
+    const other = [...HOTKEYS, PTT].find((x) => x.field !== field && String(hk[x.field]).toLowerCase() === combo.toLowerCase());
+    return other ? other.label : null;
   }
 
   function finishCapture(combo) {
@@ -182,11 +164,19 @@ export function initSettings({ state, send, h, icon }) {
       stopCapture();
       return;
     }
-    if (field !== 'push_to_talk' && needsModifier(combo)) {
-      $('hk-error').textContent = 'Use Ctrl, Alt ou Shift junto com a tecla (ou uma tecla F1 a F24).';
+    const owner = ownerOf(combo, field);
+    if (owner) {
+      hkError = { field, combo, message: `Esse atalho já está em uso por ${owner}.` };
+      renderHotkeys();
+      return;
+    }
+    if (field !== PTT.field && needsModifier(combo)) {
+      hkError = { field, combo, message: 'Use Ctrl, Alt ou Shift junto com a tecla (ou uma tecla F1 a F24).' };
+      renderHotkeys();
       return;
     }
     capturing = null;
+    hkError = null;
     const hotkeys = { ...state.config.hotkeys, [field]: combo };
     send({ type: 'UpdateConfig', hotkeys });
     send({ type: 'SetHotkeyCapture', on: false });
@@ -195,6 +185,11 @@ export function initSettings({ state, send, h, icon }) {
 
   function onCaptureKey(e) {
     if (!capturing) return;
+    // Tab sai da captura sem prender o foco.
+    if (e.code === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      stopCapture();
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     const combo = comboFromKeyEvent(e);
@@ -215,79 +210,97 @@ export function initSettings({ state, send, h, icon }) {
   window.addEventListener('mouseup', (e) => { if (capturing && (e.button === 3 || e.button === 4)) e.preventDefault(); }, true);
   window.addEventListener('blur', () => stopCapture());
 
-  function hotkeyRow(field, label, value) {
+  function hotkeyRow({ field, label }, value, extra = '') {
     const on = capturing === field;
-    return h('div', { class: 'hk-row' },
-      h('span', { class: 'hk-label' }, label),
-      h('span', { class: 'kbd' }, on ? 'Pressione a combinação… Esc cancela' : (value || 'Nenhum')),
-      h('button', {
-        type: 'button', class: `link-btn${on ? ' capturing' : ''}`, 'data-key': `hk:${field}`,
-        'aria-label': `Alterar atalho: ${label}`, disabled: state.link !== 'connected',
-        onclick: () => startCapture(field),
-      }, on ? 'Cancelar' : 'Alterar'));
+    const err = on && hkError && hkError.field === field ? hkError : null;
+    const errId = `hk-err-${field}`;
+    const controls = on
+      ? [
+        h('button', {
+          type: 'button', class: `capture${err ? ' conflict' : ''}`, 'data-key': `hk:${field}`,
+          'aria-label': `Novo atalho para ${label}. Aperte as teclas. Esc cancela.`,
+          'aria-describedby': err ? errId : false,
+        }, err ? err.combo : 'Aperte a nova tecla…'),
+        h('button', { type: 'button', class: 'btn-text', onclick: () => stopCapture() }, 'Cancelar'),
+      ]
+      : [
+        h('span', { class: 'kbd' }, value || 'Nenhum'),
+        h('button', {
+          type: 'button', class: 'btn-text', 'data-key': `hk:${field}`,
+          'aria-label': `Alterar atalho: ${label}`, disabled: !linked(),
+          onclick: () => startCapture(field),
+        }, 'Alterar'),
+      ];
+    return h('div', { class: `hk-item ${extra}` },
+      h('div', { class: 'hk-row' }, h('span', { class: 'hk-label' }, label), controls),
+      err && h('span', { class: 'hk-error', id: errId, role: 'alert' }, icon('i-info', 14), err.message));
   }
 
   function renderHotkeys() {
     const cfg = state.config;
-    const connected = state.link === 'connected' && !!cfg;
+    const connected = linked();
     if (capturing && !connected) capturing = null;
     const mode = cfg ? cfg.audio.mode : null;
-    const noiseSuppression = cfg ? cfg.audio.noise_suppression : false;
-    const sig = JSON.stringify([cfg && cfg.hotkeys, mode, noiseSuppression, capturing, connected]);
+    const sig = JSON.stringify([cfg && cfg.hotkeys, mode, capturing, hkError, connected]);
     if (sig === hkSignature) return;
     hkSignature = sig;
-    for (const [id, m] of [['mode-vad', 'voice_activity'], ['mode-ptt', 'push_to_talk']]) {
-      const b = $(id);
-      b.setAttribute('aria-checked', String(mode === m));
-      b.disabled = !connected;
-    }
-    $('noise-suppression').checked = noiseSuppression;
-    $('noise-suppression').disabled = !connected;
-    const rows = cfg ? HOTKEYS.map(({ field, label }) => hotkeyRow(field, label, cfg.hotkeys[field])) : [];
-    if (cfg && mode === 'push_to_talk') {
-      rows.push(hotkeyRow('push_to_talk', 'Tecla para falar', cfg.hotkeys.push_to_talk));
-    }
     const active = document.activeElement;
     const key = active && active.dataset ? active.dataset.key : null;
-    $('hotkey-list').replaceChildren(...rows);
+    $('hotkey-list').replaceChildren(...(cfg ? HOTKEYS.map((x) => hotkeyRow(x, cfg.hotkeys[x.field])) : []));
+    $('ptt-row').replaceChildren(...(cfg && mode === 'push_to_talk' ? [hotkeyRow(PTT, cfg.hotkeys.push_to_talk, 'ptt-row')] : []));
     if (key) {
-      const again = document.querySelector(`#hotkey-list [data-key="${CSS.escape(key)}"]`);
-      if (again) again.focus();
+      const again = document.querySelector(`#view-settings [data-key="${CSS.escape(key)}"]`);
+      if (again && again !== active) again.focus();
     }
+  }
+
+  // ---------- Áudio ----------
+
+  function setText(el, text) {
+    if (el.textContent !== text) el.textContent = text;
   }
 
   function renderMicMeter() {
     const cfg = state.config;
+    const vad = !!cfg && cfg.audio.mode === 'voice_activity';
     const db = Number.isFinite(state.mic_level_db) ? state.mic_level_db : -120;
     const threshold = Number($('vad-threshold').value);
-    const levelPercent = Math.max(0, Math.min(100, (db + 80) / 80 * 100));
-    const thresholdPercent = Math.max(0, Math.min(100, (threshold + 80) / 80 * 100));
-    const meter = $('mic-meter');
-    $('mic-meter-fill').style.width = `${levelPercent}%`;
-    $('mic-meter-fill').classList.toggle('transmitting', db >= threshold);
-    meter.setAttribute('aria-valuenow', String(Math.max(-80, Math.min(0, db))));
-    $('mic-threshold-line').style.left = `${thresholdPercent}%`;
-    $('mic-sensitivity').hidden = !cfg || cfg.audio.mode !== 'voice_activity';
+    const pct = Math.max(0, Math.min(100, (db - DB_MIN) / (DB_MAX - DB_MIN) * 100));
+    const above = vad && db >= threshold;
+    $('mic-meter-fill').style.width = `${pct}%`;
+    $('mic-meter-fill').classList.toggle('transmitting', above);
+    $('vad-threshold').hidden = !vad;
+    $('vad-threshold').setAttribute('aria-valuetext', `${threshold} dB`);
+    const line = $('mic-threshold-line');
+    line.hidden = !vad;
+    line.style.setProperty('--p', String((threshold - DB_MIN) / (DB_MAX - DB_MIN)));
+    $('vad-threshold-value').hidden = !vad;
+    setText($('vad-threshold-value'), `${threshold} dB`.replace('-', '−'));
+    $('meter-state').classList.toggle('on', above);
+    if (!cfg) {
+      setText($('meter-state-text'), 'Abaixo do limite');
+      return;
+    }
+    setText($('lbl-nivel'), vad ? 'Sensibilidade' : 'Nível do microfone');
+    if (vad) {
+      setText($('meter-state-text'), above ? 'Transmitindo' : 'Abaixo do limite');
+      setText($('nivel-ajuda'), 'Arraste o marcador. Abaixo dele, sua voz não é enviada.');
+    } else {
+      setText($('meter-state-text'), `Segure ${cfg.hotkeys.push_to_talk} para falar`);
+      setText($('nivel-ajuda'), 'No modo Aperte para falar, sua voz só sai enquanto você segura a tecla.');
+    }
   }
 
-  function renderAudioControls() {
-    const cfg = state.config;
-    const connected = state.link === 'connected' && !!cfg;
-    const volume = cfg ? cfg.audio.input_volume : 100;
-    const threshold = cfg ? cfg.audio.vad_threshold : -50;
-    if (!volumeDragging) {
-      $('mic-volume').value = String(volume);
-      $('mic-volume-value').value = `${volume}%`;
+  function renderBitrate(value, connected) {
+    const select = $('bitrate');
+    if (select.dataset.v !== String(value)) {
+      select.dataset.v = String(value);
+      const opts = BITRATES.map(([v, label]) => h('option', { value: String(v) }, label));
+      if (!BITRATES.some(([v]) => v === value)) opts.push(h('option', { value: String(value) }, `Personalizada · ${value} kbps`));
+      select.replaceChildren(...opts);
+      select.value = String(value);
     }
-    if (!thresholdDragging) {
-      $('vad-threshold').value = String(Math.max(-80, Math.min(-10, threshold)));
-      $('vad-threshold-value').value = `${threshold} dB`;
-    }
-    $('mic-volume').disabled = !connected;
-    $('vad-threshold').disabled = !connected;
-    renderDeviceSelect('input-device', cfg && cfg.audio.input_device, state.audio_devices.inputs, connected);
-    renderDeviceSelect('output-device', cfg && cfg.audio.output_device, state.audio_devices.outputs, connected);
-    renderMicMeter();
+    select.disabled = !connected;
   }
 
   function renderDeviceSelect(id, configured, available, connected) {
@@ -306,12 +319,46 @@ export function initSettings({ state, send, h, icon }) {
     select.disabled = !connected;
   }
 
+  function renderAudioControls() {
+    const cfg = state.config;
+    const connected = linked();
+    const a = cfg ? cfg.audio : null;
+    const volume = a ? a.input_volume : 100;
+    const threshold = a ? a.vad_threshold : -50;
+    if (!volumeDragging) {
+      $('mic-volume').value = String(volume);
+      $('mic-volume-value').value = `${volume}%`;
+    }
+    if (!thresholdDragging) {
+      $('vad-threshold').value = String(Math.max(DB_MIN, Math.min(DB_MAX, threshold)));
+    }
+    $('mic-volume').disabled = !connected;
+    $('vad-threshold').disabled = !connected;
+    for (const [id, m] of [['mode-vad', 'voice_activity'], ['mode-ptt', 'push_to_talk']]) {
+      const b = $(id);
+      b.setAttribute('aria-checked', String(!!a && a.mode === m));
+      b.disabled = !connected;
+    }
+    $('noise-suppression').checked = !!a && a.noise_suppression;
+    $('noise-suppression').disabled = !connected;
+    renderBitrate(a ? a.bitrate_kbps : 96, connected);
+    renderDeviceSelect('input-device', a && a.input_device, state.audio_devices.inputs, connected);
+    renderDeviceSelect('output-device', a && a.output_device, state.audio_devices.outputs, connected);
+    renderMicMeter();
+  }
+
+  function updateAudio(patch) {
+    const cfg = state.config;
+    if (!cfg) return;
+    send({ type: 'UpdateConfig', audio: { ...cfg.audio, ...patch } });
+  }
+
   for (const [id, field] of [['input-device', 'input_device'], ['output-device', 'output_device']]) {
     $(id).addEventListener('change', () => {
       const cfg = state.config;
       const value = $(id).value;
       if (!cfg || cfg.audio[field] === value) return;
-      send({ type: 'UpdateConfig', audio: { ...cfg.audio, [field]: value } });
+      updateAudio({ [field]: value });
     });
   }
 
@@ -319,14 +366,21 @@ export function initSettings({ state, send, h, icon }) {
     $(id).addEventListener('click', () => {
       const cfg = state.config;
       if (!cfg || cfg.audio.mode === mode) return;
-      send({ type: 'UpdateConfig', audio: { ...cfg.audio, mode } });
+      updateAudio({ mode });
     });
   }
+
+  $('bitrate').addEventListener('change', () => {
+    const cfg = state.config;
+    const bitrate_kbps = Number($('bitrate').value);
+    if (!cfg || cfg.audio.bitrate_kbps === bitrate_kbps) return;
+    updateAudio({ bitrate_kbps });
+  });
 
   $('noise-suppression').addEventListener('change', () => {
     const cfg = state.config;
     if (!cfg || cfg.audio.noise_suppression === $('noise-suppression').checked) return;
-    send({ type: 'UpdateConfig', audio: { ...cfg.audio, noise_suppression: $('noise-suppression').checked } });
+    updateAudio({ noise_suppression: $('noise-suppression').checked });
   });
 
   $('mic-volume').addEventListener('input', () => {
@@ -338,12 +392,11 @@ export function initSettings({ state, send, h, icon }) {
     const cfg = state.config;
     const input_volume = Number($('mic-volume').value);
     if (!cfg || cfg.audio.input_volume === input_volume) return;
-    send({ type: 'UpdateConfig', audio: { ...cfg.audio, input_volume } });
+    updateAudio({ input_volume });
   });
 
   $('vad-threshold').addEventListener('input', () => {
     thresholdDragging = true;
-    $('vad-threshold-value').value = `${$('vad-threshold').value} dB`;
     renderMicMeter();
   });
   $('vad-threshold').addEventListener('change', () => {
@@ -351,165 +404,72 @@ export function initSettings({ state, send, h, icon }) {
     const cfg = state.config;
     const vad_threshold = Number($('vad-threshold').value);
     if (!cfg || cfg.audio.vad_threshold === vad_threshold) return;
-    send({ type: 'UpdateConfig', audio: { ...cfg.audio, vad_threshold } });
+    updateAudio({ vad_threshold });
   });
+
+  // ---------- Modo jogo ----------
+
+  function updateGameMode(patch) {
+    const cfg = state.config;
+    if (!cfg) return;
+    send({ type: 'UpdateConfig', game_mode: { ...cfg.game_mode, ...patch } });
+  }
+
+  $('game-auto').addEventListener('change', () => {
+    const cfg = state.config;
+    if (!cfg || cfg.game_mode.auto_detect === $('game-auto').checked) return;
+    updateGameMode({ auto_detect: $('game-auto').checked });
+  });
+  $('game-keep').addEventListener('change', () => {
+    const cfg = state.config;
+    if (!cfg || cfg.game_mode.keep_sharing_in_game_mode === $('game-keep').checked) return;
+    updateGameMode({ keep_sharing_in_game_mode: $('game-keep').checked });
+  });
+
+  function renderGameMode() {
+    const cfg = state.config;
+    const connected = linked();
+    const gm = cfg ? cfg.game_mode : null;
+    $('game-auto').checked = !!gm && gm.auto_detect;
+    $('game-auto').disabled = !connected;
+    $('game-keep').checked = !!gm && gm.keep_sharing_in_game_mode;
+    $('game-keep').disabled = !connected;
+    const games = gm ? gm.games : [];
+    const list = $('game-list');
+    const sig = JSON.stringify([games, connected]);
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    list.replaceChildren(...(games.length
+      ? games.map((g) => h('li', { class: 'row compact' },
+        icon('i-gamepad', 16),
+        h('span', { class: 'row-title mono', style: 'flex-grow:1' }, g),
+        h('button', {
+          type: 'button', class: 'btn-text danger', 'aria-label': `Remover ${g}`, disabled: !connected,
+          onclick: () => updateGameMode({ games: state.config.game_mode.games.filter((x) => x !== g) }),
+        }, 'Remover')))
+      : [h('li', { class: 'hint-text' }, 'Nenhum jogo na lista.')]));
+  }
+
+  // ---------- Conjunto ----------
 
   function renderSettings() {
     const cfg = state.config;
     if (cfg) renderAddress(cfg.my_address || null);
     renderHotkeys();
     renderAudioControls();
+    renderGameMode();
     const input = $('name-input');
     if (cfg && cfg.name !== shownName) {
       shownName = cfg.name;
       input.value = cfg.name;
     }
-    $('name-save').disabled = state.link !== 'connected' || !cfg;
-    $('fr-add').disabled = state.link !== 'connected';
-
-    const list = friends(state);
-    if (confirming && !list.some((f) => f.name === confirming.name)) confirming = null;
-    if (pendingAdd && list.some((f) => f.name === pendingAdd)) {
-      pendingAdd = null;
-      $('fr-name').value = '';
-      $('fr-addr').value = '';
-      $('fr-error').textContent = '';
+    if (cfg && pendingName && cfg.name === pendingName) {
+      pendingName = null;
+      nameSaved = true;
     }
-    const active = document.activeElement;
-    const key = active && active.dataset ? active.dataset.key : null;
-    $('friend-list').replaceChildren(...(list.length
-      ? list.map(friendRow)
-      : [h('div', { class: 'hint-text' }, 'Nenhum amigo ainda.')]));
-    if (key) {
-      const again = document.querySelector(`#friend-list [data-key="${CSS.escape(key)}"]`);
-      if (again && again !== active) again.focus();
-    }
-    renderTailnet();
+    $('name-save').textContent = nameSaved ? 'Salvo' : 'Salvar';
+    $('name-save').disabled = !linked();
   }
 
-  // ---------- Na sua rede Tailscale ----------
-
-  const nicks = {}; // endereço -> apelido digitado (sobrevive às re-renderizações)
-  let tnSignature = '';
-
-  function requestTailnet() {
-    if (state.link !== 'connected') return;
-    state.tailnet = { loading: true };
-    renderTailnet();
-    send({ type: 'ListTailnetPeers' });
-  }
-
-  // Apelido sugerido: o primeiro nome do dono (PC de outra pessoa) ou o nome do PC.
-  function suggestedNick(p) {
-    if (!p.mine && p.owner) {
-      const base = p.owner.includes('@') ? p.owner.split('@')[0] : p.owner.trim().split(/\s+/)[0];
-      if (base) return base.slice(0, 40);
-    }
-    return p.name.slice(0, 40);
-  }
-
-  function addFromTailnet(p) {
-    const nick = (nicks[p.address] ?? suggestedNick(p)).trim();
-    const err = $('fr-error');
-    if (!nick) {
-      err.textContent = 'Dê um apelido para esse amigo.';
-      return;
-    }
-    if (friends(state).some((f) => f.name === nick)) {
-      err.textContent = `Já existe um amigo chamado ${nick}. Escolha outro apelido.`;
-      return;
-    }
-    err.textContent = '';
-    send({ type: 'AddFriend', name: nick, address: p.address });
-  }
-
-  function tailnetRow(p, friend) {
-    const meta = [p.owner, p.address, p.os && p.os !== 'windows' ? p.os : null].filter(Boolean).join(' · ');
-    const info = h('div', { class: 'tn-info' },
-      h('span', { class: 'f-name' }, p.name),
-      h('span', { class: 'tn-meta' },
-        h('span', { class: `dot${p.online ? '' : ' off'}` }),
-        `${p.online ? 'Online' : 'Offline'} · ${meta}`));
-    const action = friend
-      ? h('span', { class: 'seal ok' }, icon('i-check', 12), `Já é amigo: ${friend.name}`)
-      : h('div', { class: 'tn-add' },
-        h('input', {
-          type: 'text', maxlength: '40', placeholder: 'Apelido',
-          'aria-label': `Apelido para ${p.name}`, 'data-key': `tn-nick:${p.address}`,
-          value: nicks[p.address] ?? suggestedNick(p),
-          oninput: (e) => { nicks[p.address] = e.target.value; },
-          onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromTailnet(p); } },
-        }),
-        h('button', {
-          type: 'button', class: 'btn primary', 'data-key': `tn-add:${p.address}`,
-          disabled: state.link !== 'connected',
-          onclick: () => addFromTailnet(p),
-        }, 'Adicionar'));
-    return h('div', { role: 'listitem', class: 'f-row' },
-      h('div', { class: 'avatar' }, initial(p.name)), info, action);
-  }
-
-  // Só recria a lista quando algo dela muda: os campos de apelido não perdem o foco nem o texto.
-  function renderTailnet() {
-    const tn = state.tailnet;
-    const list = friends(state);
-    const sig = JSON.stringify([tn, list.map((f) => [f.name, f.address]), state.link]);
-    if (sig === tnSignature) return;
-    tnSignature = sig;
-    $('tn-scan').disabled = state.link !== 'connected' || !!(tn && tn.loading);
-    let rows;
-    if (!tn || tn.loading) {
-      rows = [h('div', { class: 'hint-text' }, 'Procurando dispositivos…')];
-    } else if (!tn.running) {
-      rows = [h('div', { class: 'hint-text' }, 'O Tailscale está desligado ou não foi encontrado.')];
-    } else if (!tn.peers.length) {
-      rows = [h('div', { class: 'hint-text' },
-        'Nenhum outro dispositivo na sua rede. Convide seu amigo pelo painel do Tailscale ou compartilhem as máquinas.')];
-    } else {
-      rows = tn.peers.map((p) => tailnetRow(p, list.find((f) => f.address === p.address)));
-    }
-    const active = document.activeElement;
-    const key = active && active.dataset ? active.dataset.key : null;
-    $('tn-list').replaceChildren(...rows);
-    if (key) {
-      const again = document.querySelector(`#tn-list [data-key="${CSS.escape(key)}"]`);
-      if (again && again !== active) again.focus();
-    }
-  }
-
-  $('tn-scan').addEventListener('click', requestTailnet);
-
-  $('name-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const name = $('name-input').value.trim();
-    if (!name || name === shownName) return;
-    send({ type: 'UpdateConfig', name });
-  });
-
-  $('friend-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const name = $('fr-name').value.trim();
-    const addr = $('fr-addr').value.trim();
-    const err = $('fr-error');
-    if (!name) {
-      err.textContent = 'Digite o nome do amigo.';
-      $('fr-name').focus();
-      return;
-    }
-    if (!addr) {
-      err.textContent = 'Digite o IP do Tailscale do amigo (100.x.y.z).';
-      $('fr-addr').focus();
-      return;
-    }
-    err.textContent = '';
-    pendingAdd = name;
-    send({ type: 'AddFriend', name, address: addr });
-  });
-
-  function focusAddFriend() {
-    $('fr-name').focus();
-    $('friend-form').scrollIntoView({ block: 'center' });
-  }
-
-  return { renderSettings, renderMicMeter, focusAddFriend, requestTailnet };
+  return { renderSettings, renderMicMeter };
 }
