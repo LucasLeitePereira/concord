@@ -63,7 +63,9 @@ powershell -File scripts/build-installer.ps1           # gera target/installer/C
 - Antes de mudar arquitetura, protocolo ou formato persistido, leia `ontologia/decisoes.md` e registre uma decisão nova (D-0NN) curta.
 - Edite código com a ferramenta de edição do harness, nunca com heredoc/sed/Python no Git Bash (arquivos CRLF; já corrompeu edições várias vezes).
 
-## 6. Estado atual (2026-10-23)
+## 6. Estado atual (2026-10-29)
+> Esta seção é a **passagem de bastão** e o único lugar com o estado do projeto: atualize-a ao fechar cada tarefa e comece a próxima em sessão nova. Trabalhe em fatias pequenas (um assunto por tarefa), leia só o trecho da função (não arquivos grandes inteiros) e rode só o teste do que mudou; a rodada completa de clippy + testes é uma vez no fim.
+
 Feito: F1 (rede, voz, identidade), F2 (núcleo residente, modo jogo, bandeja, IPC), F3 parcial (UI no design revisado no Claude Design em 2026-10-28: lateral única, Chamada, aba Amigos, Ajustes em 2 colunas — T-031), F6 parcial (instalador Inno Setup, release no GitHub).
 Design atual: `ideia/sala-handoff/design/DESIGN.md` + `telas/` (inclui Compartilhar e Visualizador para o F4). Exceção pedida pelo usuário: o medidor de sensibilidade segue o visual antigo (linha branca + marcador redondo + valor em dB).
 `--synthetic-audio` troca **só o microfone** por um tom e abre a saída real (D-024): dá para ouvir os sons e a voz do outro perfil. Os testes de integração usam `AudioSource::Synthetic` (sem nenhum dispositivo).

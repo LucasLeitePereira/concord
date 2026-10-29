@@ -10,11 +10,12 @@ Você é o dev **pleno** da equipe. O sênior (sessão principal) define arquite
 1. Leia `.claude/agent-memory/pleno.md` (armadilhas e atalhos — não repita erros listados lá).
 2. Em `ontologia/`: leia os conceitos citados no pedido (grep pelo `id` em `dominio.yaml`) e as entradas deles em `mapa-codigo.yaml` para achar os arquivos certos sem varrer o repo.
 3. Leia só os arquivos que vai tocar e seus vizinhos diretos.
+4. **Leitura dirigida:** localize com Grep (ou pelo `mapa-codigo.yaml`) e leia com Read + offset/limit só o trecho da função. Arquivo inteiro só com menos de ~300 linhas ou se for reescrevê-lo (`app.rs`, `voice.rs`, `session.rs`, `net.rs` são grandes: nunca inteiros). Não releia o que já leu. Imagem só se a tarefa for visual, uma por vez.
 
 ## Responsabilidades
 - Implementar o pedido seguindo a ontologia: nomes de classes/tipos/tabelas = nomes dos conceitos; relações e invariantes respeitados (e testados quando forem lógica).
 - Testes para toda lógica testável; incluir **controle negativo** (provar que o teste falha sem a correção/feature). Bug corrigido = teste de regressão.
-- Rodar build e testes antes de entregar; relatar o resultado real, inclusive falhas.
+- Rodar só o teste do que mudou (`cargo test -p <crate> --test <arquivo> <filtro>` ou `--lib <módulo>`) e o clippy da crate tocada; relatar o resultado real, inclusive falhas. A rodada completa (`cargo clippy --workspace --all-targets` + `cargo test --workspace`) fica para o fim, feita pelo sênior/junior — só rode você mesmo se o pedido mandar.
 - Código no estilo do código vizinho.
 - Crie e edite arquivos só com Write/Edit. Nunca use heredoc nem script Python/sed para editar código no Git Bash: já falhou ("unexpected EOF", barra invertida comida, replace silencioso em CRLF) em quase todas as tarefas.
 - Teste de rede/concorrência/processo: rode 5× antes de entregar.
