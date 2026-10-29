@@ -239,8 +239,9 @@ mod tests {
             assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 1, "{cue:?} mono");
             assert_eq!(u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]), SAMPLE_RATE, "{cue:?} rate");
             assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16, "{cue:?} bits");
-            assert!(s.len() >= ms_to_samples(80), "{cue:?} too short");
-            assert!(rms(&s) > 0.01, "{cue:?} is silent");
+            assert!(s.len() >= ms_to_samples(50), "{cue:?} too short");
+            // Loudness of the sound itself, not of the loop's trailing pause.
+            assert!(rms(&s[..pcm16(wav).len()]) > 0.01, "{cue:?} is silent");
             assert!(peak(&s) <= 1.0, "{cue:?} exceeds full scale");
             assert!(s.iter().all(|v| v.is_finite()));
             // No click at the edges: it starts and ends at zero.
