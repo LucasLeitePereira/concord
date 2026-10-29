@@ -13,14 +13,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sala_protocol::{
     AudioStream, Capabilities, ChatEntry, ControlMessage, MediaDatagram, PROTOCOL_VERSION,
-    max_audio_payload,
+    RING_PROTOCOL_VERSION, max_audio_payload,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
 
 use crate::audio_device::{AudioInput, AudioOutput, Sink};
+use crate::calls::{CallBook, CallEnd, RING_TIMEOUT};
 use crate::config::{AudioConfig, AudioMode, Config, Friend, Profile};
+use crate::cues::Cue;
 use crate::identity::LocalIdentity;
 use crate::net::{Net, NetError, NetEvent, trust_store_from_config};
 use crate::voice::{Activation, SineSource, VoiceEngine};
@@ -28,10 +30,29 @@ use crate::voice::{Activation, SineSource, VoiceEngine};
 /// Where captured audio comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioSource {
-    /// Sine wave generator, null sink (tests, `--synthetic-audio`).
+    /// Sine wave generator and a null sink: no audio device is opened at all (tests).
     Synthetic,
+    /// Sine wave instead of the microphone, but the configured output device is opened
+    /// (`--synthetic-audio`).
+    SyntheticMic,
     /// Configured input/output devices.
     Device,
+}
+
+impl AudioSource {
+    /// The microphone is replaced by a sine wave.
+    fn synthetic_mic(self) -> bool {
+        matches!(self, AudioSource::Synthetic | AudioSource::SyntheticMic)
+    }
+
+    /// The device sides this source opens (the rest stays synthetic / null).
+    fn device_parts(self) -> AudioParts {
+        match self {
+            AudioSource::Synthetic => AudioParts::default(),
+            AudioSource::SyntheticMic => AudioParts { input: false, output: true },
+            AudioSource::Device => AudioParts::BOTH,
+        }
+    }
 }
 
 /// Voice counters of one friend. Kept after `Disconnected` (they hold no content).
@@ -47,20 +68,14 @@ pub struct VoiceCounters {
 }
 
 /// The `Status` flags (local or of a friend).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StatusFlags {
     pub muted: bool,
     pub deafened: bool,
     pub game_mode: bool,
     pub sharing: bool,
-    /// In the room (D-015); everybody starts in it.
+    /// In the room (D-015); everybody starts outside it (D-024).
     pub in_room: bool,
-}
-
-impl Default for StatusFlags {
-    fn default() -> Self {
-        StatusFlags { muted: false, deafened: false, game_mode: false, sharing: false, in_room: true }
-    }
 }
 
 impl StatusFlags {
@@ -72,6 +87,46 @@ impl StatusFlags {
             sharing: self.sharing,
             in_room: self.in_room,
         }
+    }
+}
+
+/// What [`Session::call`] did besides entering the room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallStart {
+    /// The friend's PC is ringing (or already was).
+    Ringing,
+    /// The friend is already in the room: joining was enough.
+    AlreadyInRoom,
+    /// The friend is not connected: nothing to ring.
+    Offline,
+    /// The friend's Concord predates rings (`CallResult unsupported` was emitted).
+    Unsupported,
+}
+
+/// The sound of one local status change (the room wins over deafen, deafen over mute:
+/// deafening also mutes, and one click must make one sound).
+fn local_change_cue(before: StatusFlags, after: StatusFlags) -> Option<Cue> {
+    if before.in_room != after.in_room {
+        Some(if after.in_room { Cue::SelfJoin } else { Cue::SelfLeave })
+    } else if before.deafened != after.deafened {
+        Some(if after.deafened { Cue::Deafen } else { Cue::Undeafen })
+    } else if before.muted != after.muted {
+        Some(if after.muted { Cue::Mute } else { Cue::Unmute })
+    } else {
+        None
+    }
+}
+
+/// The sound of a friend entering/leaving the room, heard only while we are in it.
+/// `before`: what we knew (`None` = no `Status` yet, i.e. outside).
+fn peer_room_cue(local_in_room: bool, before: Option<bool>, now: bool) -> Option<Cue> {
+    if !local_in_room {
+        return None;
+    }
+    match (before.unwrap_or(false), now) {
+        (false, true) => Some(Cue::PeerJoin),
+        (true, false) => Some(Cue::PeerLeave),
+        _ => None,
     }
 }
 
@@ -94,10 +149,18 @@ pub enum SessionEvent {
     CallStats { friend: String, rtt_ms: u32, since_secs: u64 },
     /// Microphone level while the UI meter is on (~every 50 ms).
     MicLevel { db: f32 },
+    /// The rings changed (D-024): snapshot of who rings us and whom we ring.
+    Calls { incoming: Vec<String>, outgoing: Vec<String> },
+    /// A ring ended without the friend joining.
+    CallResult { friend: String, end: CallEnd },
 }
 
 /// Commands for the loop, which owns the `VoiceEngine`.
 enum EngineCmd {
+    /// One-shot notification sound.
+    Cue(Cue),
+    /// The looping ring sound (`None` = silence).
+    CueLoop(Option<Cue>),
     Muted(bool),
     Deafened(bool),
     Ptt(bool),
@@ -118,6 +181,10 @@ struct State {
     local: Activation,
     game_mode: bool,
     in_room: bool,
+    /// Rings in progress (D-024).
+    calls: CallBook,
+    /// `protocol_version` of each connected friend's `Hello` (rings need `RING_PROTOCOL_VERSION`).
+    proto: HashMap<String, u16>,
 }
 
 impl State {
@@ -139,11 +206,26 @@ struct Shared {
     /// The live configuration (friends, pins, settings). Lock order: `state` before `config`.
     config: Mutex<Config>,
     profile: Profile,
+    /// Commands for the loop (also used to play cues from any thread).
+    commands: mpsc::UnboundedSender<EngineCmd>,
+    next_call_id: AtomicU64,
+    /// How long we ring a friend (`RING_TIMEOUT`; shortened by tests).
+    ring_timeout: Mutex<Duration>,
 }
 
 impl Shared {
     fn emit(&self, ev: SessionEvent) {
         let _ = self.events.send(ev);
+    }
+
+    fn cue(&self, cue: Cue) {
+        let _ = self.commands.send(EngineCmd::Cue(cue));
+    }
+
+    /// The rings in `st` changed: set the ring loop and tell the layer above.
+    fn calls_changed(&self, st: &State) {
+        let _ = self.commands.send(EngineCmd::CueLoop(st.calls.loop_cue()));
+        self.emit(SessionEvent::Calls { incoming: st.calls.incoming(), outgoing: st.calls.outgoing() });
     }
 
     /// Configured friends, in config order.
@@ -201,12 +283,17 @@ impl Session {
                 peers: HashMap::new(),
                 local: Activation::new(AudioMode::VoiceActivity, 0),
                 game_mode: false,
-                in_room: true,
+                in_room: false,
+                calls: CallBook::default(),
+                proto: HashMap::new(),
             }),
             next_chat_id: AtomicU64::new(unix_ms().saturating_mul(1000)),
             events: events_tx,
             config: Mutex::new(config),
             profile,
+            commands: cmd_tx.clone(),
+            next_call_id: AtomicU64::new(unix_ms().saturating_mul(1000)),
+            ring_timeout: Mutex::new(RING_TIMEOUT),
         });
         let (stop, stop_rx) = watch::channel(false);
         let task = tokio::spawn(run_loop(
@@ -254,6 +341,9 @@ impl Session {
         }
         let after = state.local_status();
         if after != before {
+            if let Some(cue) = local_change_cue(before, after) {
+                self.shared.cue(cue);
+            }
             let msg = after.to_message();
             for f in &self.shared.friend_names() {
                 if self.net.is_connected(f)
@@ -285,9 +375,104 @@ impl Session {
         self.change_local(None, |s| s.game_mode = on);
     }
 
-    /// Enters/leaves the room (D-015), announced to the friends (`Status`).
+    /// Enters/leaves the room (D-015), announced to the friends (`Status`). Entering answers
+    /// every incoming ring; leaving cancels the rings we were making (D-024).
     pub fn set_in_room(&self, in_room: bool) {
         self.change_local(Some(EngineCmd::InRoom(in_room)), |s| s.in_room = in_room);
+        let mut st = lock(&self.shared.state);
+        let mut changed = false;
+        if in_room {
+            changed = st.calls.clear_in();
+        } else {
+            for (friend, call_id) in st.calls.take_all_out() {
+                changed = true;
+                if let Err(e) = self.net.send_control(&friend, ControlMessage::RingCancel { call_id }) {
+                    tracing::debug!(%friend, "cannot cancel the ring: {e}");
+                }
+            }
+        }
+        if changed {
+            self.shared.calls_changed(&st);
+        }
+    }
+
+    /// Enters the room and rings `friend` (D-024). Nobody is rung when the friend is already
+    /// in the room, is offline, or runs a Concord too old to understand rings.
+    pub fn call(&self, friend: &str) -> CallStart {
+        self.set_in_room(true);
+        let call_id = {
+            let mut st = lock(&self.shared.state);
+            if st.peers.get(friend).is_some_and(|p| p.in_room) {
+                return CallStart::AlreadyInRoom;
+            }
+            if !self.net.is_connected(friend) {
+                return CallStart::Offline;
+            }
+            if st.proto.get(friend).copied().unwrap_or(0) < RING_PROTOCOL_VERSION {
+                self.shared.emit(SessionEvent::CallResult { friend: friend.to_string(), end: CallEnd::Unsupported });
+                return CallStart::Unsupported;
+            }
+            if st.calls.outgoing_id(friend).is_some() {
+                return CallStart::Ringing;
+            }
+            let call_id = self.shared.next_call_id.fetch_add(1, Ordering::Relaxed);
+            if let Err(e) = self.net.send_control(friend, ControlMessage::Ring { call_id }) {
+                tracing::warn!(%friend, "cannot ring: {e}");
+                return CallStart::Offline;
+            }
+            st.calls.ring_out(friend, call_id);
+            self.shared.calls_changed(&st);
+            call_id
+        };
+        tracing::info!(%friend, call_id, "ringing");
+        let (shared, net, friend) = (self.shared.clone(), self.net.clone(), friend.to_string());
+        let timeout = *lock(&self.shared.ring_timeout);
+        tokio::spawn(async move {
+            tokio::time::sleep(timeout).await;
+            let mut st = lock(&shared.state);
+            if st.calls.end_out(&friend, call_id) {
+                tracing::info!(%friend, call_id, "ring timed out");
+                let _ = net.send_control(&friend, ControlMessage::RingCancel { call_id });
+                shared.cue(Cue::CallFailed);
+                shared.calls_changed(&st);
+                shared.emit(SessionEvent::CallResult { friend, end: CallEnd::Timeout });
+            }
+        });
+        CallStart::Ringing
+    }
+
+    /// Answers a ring by entering the room (D-024).
+    pub fn accept_call(&self, friend: &str) {
+        tracing::info!(%friend, "call accepted");
+        self.set_in_room(true);
+    }
+
+    /// Refuses the ring of `friend`; the caller is told (D-024).
+    pub fn decline_call(&self, friend: &str) {
+        let mut st = lock(&self.shared.state);
+        if let Some(call_id) = st.calls.answer_in(friend) {
+            tracing::info!(%friend, call_id, "call declined");
+            if let Err(e) = self.net.send_control(friend, ControlMessage::RingDecline { call_id }) {
+                tracing::debug!(%friend, "cannot send the decline: {e}");
+            }
+            self.shared.calls_changed(&st);
+        }
+    }
+
+    /// `(incoming, outgoing)` rings now.
+    pub fn calls(&self) -> (Vec<String>, Vec<String>) {
+        let st = lock(&self.shared.state);
+        (st.calls.incoming(), st.calls.outgoing())
+    }
+
+    /// Plays a notification sound (D-024).
+    pub fn play_cue(&self, cue: Cue) {
+        self.shared.cue(cue);
+    }
+
+    /// Shortens (tests) or restores the time a ring lasts; applies to the next ring.
+    pub fn set_ring_timeout(&self, timeout: Duration) {
+        *lock(&self.shared.ring_timeout) = timeout;
     }
 
     /// Snapshot of the live configuration.
@@ -571,18 +756,21 @@ async fn run_loop(
     // Voice: microphone (device or synthetic) -> engine -> Net; Net -> engine -> sink.
     let (cap_tx, mut cap_rx) = mpsc::channel::<Vec<f32>>(16);
     let mut cur_audio = lock(&shared.config).audio.clone();
-    if source == AudioSource::Synthetic {
+    if source.synthetic_mic() {
         spawn_synthetic_source(cap_tx.clone());
     }
+    // Only the sides this source opens as real devices are (re)opened, ever.
+    let device_parts = source.device_parts();
     // Devices open in the background; until then the session runs without them.
     let mut input: Option<AudioInput> = None;
     let mut sink = Sink::Null;
-    let mut audio_job = (source == AudioSource::Device)
-        .then(|| spawn_open_audio(cur_audio.clone(), AudioParts::BOTH, cap_tx.clone(), false));
+    let mut audio_job = device_parts
+        .any()
+        .then(|| spawn_open_audio(cur_audio.clone(), device_parts, cap_tx.clone(), false));
     // Sides whose device changed while a job was running: reopened when it finishes.
     let mut audio_pending = AudioParts::default();
     let mut audio_retry: Option<tokio::time::Instant> = None;
-    tracing::info!(synthetic = source == AudioSource::Synthetic, "voice ready");
+    tracing::info!(synthetic_mic = source.synthetic_mic(), real_output = device_parts.output, "voice ready");
     let started = Instant::now();
     let mut playout = interval(Duration::from_millis(20));
     playout.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -683,7 +871,10 @@ async fn run_loop(
                 if pending.output {
                     release_audio(std::mem::replace(&mut sink, Sink::Null));
                 }
-                let missing = AudioParts { input: input.is_none(), output: sink.is_null() };
+                let missing = AudioParts {
+                    input: input.is_none() && device_parts.input,
+                    output: sink.is_null() && device_parts.output,
+                };
                 if pending.any() {
                     audio_job = Some(spawn_open_audio(cur_audio.clone(), missing, cap_tx.clone(), false));
                 } else if missing.any() {
@@ -695,7 +886,10 @@ async fn run_loop(
                 if audio_retry.is_some() && audio_job.is_none() =>
             {
                 audio_retry = None;
-                let missing = AudioParts { input: input.is_none(), output: sink.is_null() };
+                let missing = AudioParts {
+                    input: input.is_none() && device_parts.input,
+                    output: sink.is_null() && device_parts.output,
+                };
                 if missing.any() {
                     audio_job = Some(spawn_open_audio(cur_audio.clone(), missing, cap_tx.clone(), true));
                 }
@@ -719,11 +913,11 @@ async fn run_loop(
                             tracing::warn!("cannot apply the audio settings: {e}");
                         }
                         let changed = AudioParts {
-                            input: audio.input_device != cur_audio.input_device,
-                            output: audio.output_device != cur_audio.output_device,
+                            input: audio.input_device != cur_audio.input_device && device_parts.input,
+                            output: audio.output_device != cur_audio.output_device && device_parts.output,
                         };
                         cur_audio = *audio;
-                        if changed.any() && source == AudioSource::Device {
+                        if changed.any() {
                             tracing::info!(input = %cur_audio.input_device, output = %cur_audio.output_device, "reopening the audio devices");
                             if audio_job.is_some() {
                                 audio_pending = audio_pending.union(changed);
@@ -735,12 +929,17 @@ async fn run_loop(
                                 if changed.output {
                                     release_audio(std::mem::replace(&mut sink, Sink::Null));
                                 }
-                                let missing = AudioParts { input: input.is_none(), output: sink.is_null() };
+                                let missing = AudioParts {
+                                    input: input.is_none() && device_parts.input,
+                                    output: sink.is_null() && device_parts.output,
+                                };
                                 audio_retry = None;
                                 audio_job = Some(spawn_open_audio(cur_audio.clone(), changed.union(missing), cap_tx.clone(), false));
                             }
                         }
                     }
+                    EngineCmd::Cue(c) => engine.play_cue(c),
+                    EngineCmd::CueLoop(c) => engine.set_cue_loop(c),
                     EngineCmd::MicMeter(on) => {
                         engine.set_ui_meter(on);
                         if on && !meter_on {
@@ -805,13 +1004,49 @@ async fn run_loop(
             NetEvent::Control { friend, msg } => match msg {
                 ControlMessage::Hello { name, app_version, protocol_version, .. } => {
                     tracing::info!(%friend, %name, %app_version, protocol_version, "event: Hello");
+                    lock(&shared.state).proto.insert(friend, protocol_version);
                 }
                 ControlMessage::Status { muted, deafened, game_mode, sharing, in_room } => {
                     tracing::info!(%friend, muted, deafened, game_mode, sharing, in_room, "event: Status");
                     let status = StatusFlags { muted, deafened, game_mode, sharing, in_room };
-                    lock(&shared.state).peers.insert(friend.clone(), status);
+                    {
+                        let mut st = lock(&shared.state);
+                        let before = st.peers.insert(friend.clone(), status).map(|p| p.in_room);
+                        if let Some(cue) = peer_room_cue(st.in_room, before, in_room) {
+                            shared.cue(cue);
+                        }
+                        // The friend joined: our ring was answered (no message needed).
+                        if in_room && st.calls.drop_out(&friend).is_some() {
+                            shared.calls_changed(&st);
+                        }
+                    }
                     engine.set_peer_in_room(&friend, in_room);
                     shared.emit(SessionEvent::PeerStatus { friend, status });
+                }
+                ControlMessage::Ring { call_id } => {
+                    let mut st = lock(&shared.state);
+                    // Already in the room: the friend's `Status` is the whole news.
+                    if !st.in_room && st.calls.ring_in(&friend, call_id) {
+                        tracing::info!(%friend, call_id, "event: ringing us");
+                        shared.calls_changed(&st);
+                    }
+                }
+                ControlMessage::RingCancel { call_id } => {
+                    let mut st = lock(&shared.state);
+                    if st.calls.cancel_in(&friend, call_id) {
+                        tracing::info!(%friend, call_id, "event: ring cancelled");
+                        shared.calls_changed(&st);
+                        shared.emit(SessionEvent::CallResult { friend, end: CallEnd::Cancelled });
+                    }
+                }
+                ControlMessage::RingDecline { call_id } => {
+                    let mut st = lock(&shared.state);
+                    if st.calls.end_out(&friend, call_id) {
+                        tracing::info!(%friend, call_id, "event: ring declined");
+                        shared.cue(Cue::CallFailed);
+                        shared.calls_changed(&st);
+                        shared.emit(SessionEvent::CallResult { friend, end: CallEnd::Declined });
+                    }
                 }
                 // Never log chat text: id and size only.
                 ControlMessage::Chat { id, text, sent_at } => {
@@ -841,7 +1076,14 @@ async fn run_loop(
                 {
                     let mut st = lock(&shared.state);
                     st.history.remove(&friend);
-                    st.peers.remove(&friend);
+                    let was_in_room = st.peers.remove(&friend).is_some_and(|p| p.in_room);
+                    st.proto.remove(&friend);
+                    if let Some(cue) = peer_room_cue(st.in_room, Some(was_in_room), false) {
+                        shared.cue(cue);
+                    }
+                    if st.calls.forget(&friend) {
+                        shared.calls_changed(&st);
+                    }
                 }
                 tracing::info!(%friend, "event: disconnected");
                 shared.emit(SessionEvent::Disconnected { friend });
@@ -881,5 +1123,58 @@ fn publish_voice_counters(engine: &VoiceEngine, shared: &Shared) {
             c.lost = p.jitter.lost;
             c.late_dropped = p.jitter.late_dropped;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flags(muted: bool, deafened: bool, in_room: bool) -> StatusFlags {
+        StatusFlags { muted, deafened, in_room, ..StatusFlags::default() }
+    }
+
+    #[test]
+    fn everybody_starts_outside_the_room() {
+        assert!(!StatusFlags::default().in_room);
+    }
+
+    #[test]
+    fn one_local_change_makes_one_sound() {
+        let base = flags(false, false, true);
+        assert_eq!(local_change_cue(flags(false, false, false), base), Some(Cue::SelfJoin));
+        assert_eq!(local_change_cue(base, flags(false, false, false)), Some(Cue::SelfLeave));
+        assert_eq!(local_change_cue(base, flags(true, false, true)), Some(Cue::Mute));
+        assert_eq!(local_change_cue(flags(true, false, true), base), Some(Cue::Unmute));
+        // Deafening also mutes, but only the deafen sound plays.
+        assert_eq!(local_change_cue(base, flags(true, true, true)), Some(Cue::Deafen));
+        assert_eq!(local_change_cue(flags(true, true, true), flags(true, false, true)), Some(Cue::Undeafen));
+        // Control: nothing changed that has a sound.
+        assert_eq!(local_change_cue(base, base), None);
+        let game = StatusFlags { game_mode: true, ..base };
+        assert_eq!(local_change_cue(base, game), None);
+    }
+
+    #[test]
+    fn peer_room_sounds_need_us_in_the_room() {
+        assert_eq!(peer_room_cue(true, Some(false), true), Some(Cue::PeerJoin));
+        assert_eq!(peer_room_cue(true, None, true), Some(Cue::PeerJoin));
+        assert_eq!(peer_room_cue(true, Some(true), false), Some(Cue::PeerLeave));
+        // Control: outside the room we hear nothing about it; no change, no sound.
+        assert_eq!(peer_room_cue(false, Some(false), true), None);
+        assert_eq!(peer_room_cue(false, Some(true), false), None);
+        assert_eq!(peer_room_cue(true, Some(true), true), None);
+        assert_eq!(peer_room_cue(true, None, false), None);
+    }
+
+    #[test]
+    fn only_the_device_source_opens_the_microphone() {
+        assert_eq!(AudioSource::Device.device_parts(), AudioParts::BOTH);
+        // `--synthetic-audio`: tone for the mic, real output.
+        assert_eq!(AudioSource::SyntheticMic.device_parts(), AudioParts { input: false, output: true });
+        assert!(AudioSource::SyntheticMic.synthetic_mic());
+        // Tests: no device at all.
+        assert!(!AudioSource::Synthetic.device_parts().any());
+        assert!(!AudioSource::Device.synthetic_mic());
     }
 }

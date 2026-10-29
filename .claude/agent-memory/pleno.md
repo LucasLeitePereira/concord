@@ -41,7 +41,12 @@
 - Capturar logs `tracing` em teste tokio multi-thread exige `set_global_default` (um `#[test]` por arquivo); `set_default` é por thread.
 - `Controller::steps()`: passos novos (ex. `Step::Cause`) vão no fim da sequência; testes exigem `UiShutdown` como passo 0 (D-012).
 - Hora local no log: feature `local-time` do `tracing-subscriber` + `LocalTime::rfc_3339()` funciona no Windows/tokio.
-- Duas instâncias que se discam em teste: porta livre via `UdpSocket::bind("127.0.0.1:0")`, ler e soltar.
+- Duas instâncias que se discam em teste: porta livre via `UdpSocket::bind("127.0.0.1:0")`, ler e soltar; guarde as portas já entregues no processo (testes paralelos recebem a mesma → EADDRINUSE).
+- Duas sessões que se discam ao mesmo tempo trocam a conexão duplicada ~1 s depois (`Disconnected`+`Connected`): teste que age logo após conectar fica flaky → `settle_connection` (~1,6 s) de `f3_settings.rs`.
+- Variante nova de `ControlMessage`: peer antigo derruba o stream de controle no erro de decode → só enviar com gate por `Hello.protocol_version` (D-024).
+- Desde a D-024 o app/engine começa com `in_room=false`: teste de voz precisa de `set_in_room(true)`/`JoinRoom` explícito.
+- Antes do `cargo build --release`, confira se há `concord.exe` rodando ("failed to remove file"); não mate o do usuário.
+- `cat > /dev/null` no Git Bash trava esperando stdin.
 
 - sala-ui (Tauri 2 sem tauri-cli): frontend em `crates/ui/web/` usa `window.__TAURI__` (withGlobalTauri); registre o ouvinte antes de pedir `link_state`. Build frio ≈ 12 min: rode clippy e test separados ou em background.
 - Pacotes: UI = `-p sala-ui` (bin `concord-ui`), núcleo = `-p sala-core` (bin `concord`). O `web/` é embutido no build: mudou o frontend, recompile. Arquivos do `web/` são LF (`.gitattributes`).

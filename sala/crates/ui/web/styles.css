@@ -249,6 +249,10 @@ select.input { padding: 0 10px; }
 .call { flex: 999 1 520px; min-width: 0; padding: 24px 28px; display: flex; flex-direction: column; gap: 18px; }
 #banners { display: flex; flex-direction: column; gap: 12px; }
 #banners:empty, #share-banner:empty { display: none; }
+#ring-banners { display: flex; flex-direction: column; gap: 12px; padding: 12px 24px 0; }
+#ring-banners:empty { display: none; }
+.msg.system { color: var(--text-muted); font-style: italic; }
+.empty .pill { margin-top: 4px; }
 .call-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
 .call-title { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }

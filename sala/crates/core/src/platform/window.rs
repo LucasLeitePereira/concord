@@ -67,6 +67,8 @@ struct State {
     registered: Vec<(i32, HotkeyAction)>,
     polled: Vec<Polled>,
     timer_on: bool,
+    /// The balloon on screen announces a ring from this friend (its click means "join").
+    balloon_call: Option<String>,
 }
 
 thread_local! {
@@ -147,15 +149,26 @@ impl State {
         }
     }
 
-    fn notify(&self, sender: &str) {
+    fn notify(&mut self, sender: &str) {
+        self.balloon_call = None;
+        let title = if sender.trim().is_empty() { "Concord" } else { sender };
+        self.show_balloon(title, NOTIFICATION_BODY);
+    }
+
+    /// Ring balloon (D-024): only "X está te chamando", nothing else; a click joins.
+    fn notify_call(&mut self, sender: &str) {
+        self.balloon_call = Some(sender.to_string());
+        self.show_balloon("Concord", &call_balloon_text(sender));
+    }
+
+    fn show_balloon(&self, title: &str, body: &str) {
         if !self.icon_added {
             return;
         }
         let mut n = nid(self.hwnd);
         n.uFlags = NIF_INFO;
-        let title = if sender.trim().is_empty() { "Concord" } else { sender };
         copy_wide(&mut n.szInfoTitle, title);
-        copy_wide(&mut n.szInfo, NOTIFICATION_BODY);
+        copy_wide(&mut n.szInfo, body);
         n.dwInfoFlags = NIIF_INFO;
         // SAFETY: as in `update_tray`.
         if unsafe { Shell_NotifyIconW(NIM_MODIFY, &n) } == 0 {
@@ -259,6 +272,7 @@ impl State {
                 self.update_tray();
             }
             Command::Notify { sender } => self.notify(&sender),
+            Command::NotifyCall { sender } => self.notify_call(&sender),
             Command::Hotkeys(l) => self.apply_hotkeys(l),
             Command::Ptt(h) => self.set_ptt(h),
             Command::Shutdown => {}
@@ -308,6 +322,24 @@ fn escape_amp(s: &str) -> String {
     s.replace('&', "&&")
 }
 
+/// Text of the ring balloon: just who is calling (D-024).
+fn call_balloon_text(sender: &str) -> String {
+    format!("{sender} está te chamando")
+}
+
+/// "Entrar na chamada de X" / "Recusar" for each friend ringing us (D-024). With several
+/// callers the refusal names the friend, otherwise it is just "Recusar".
+fn ring_lines(incoming: &[String]) -> Vec<MenuLine> {
+    let mut out = Vec::new();
+    for f in incoming {
+        let name = escape_amp(f);
+        out.push(MenuLine::Item(MenuItem::AcceptCall(f.clone()), format!("Entrar na chamada de {name}")));
+        let decline = if incoming.len() > 1 { format!("Recusar {name}") } else { "Recusar".to_string() };
+        out.push(MenuLine::Item(MenuItem::DeclineCall(f.clone()), decline));
+    }
+    out
+}
+
 /// Menu content in the order of `ModoJogo.dc.html`.
 pub(super) fn menu_lines(tray: &TrayState, shortcuts: &[(HotkeyAction, Hotkey)]) -> Vec<MenuLine> {
     let header = if tray.game_mode { "Concord · Modo jogo" } else { "Concord" };
@@ -318,9 +350,13 @@ pub(super) fn menu_lines(tray: &TrayState, shortcuts: &[(HotkeyAction, Hotkey)])
     let mute = if tray.muted { "Desmutar-se" } else { "Mutar-se" };
     let deafen = if tray.deafened { "Voltar a ouvir" } else { "Silenciar" };
     let game = if tray.game_mode { "Sair do modo jogo" } else { "Entrar no modo jogo" };
-    vec![
-        MenuLine::Info(header.to_string()),
-        MenuLine::Info(call),
+    let mut lines = vec![MenuLine::Info(header.to_string()), MenuLine::Info(call)];
+    let rings = ring_lines(&tray.incoming_calls);
+    if !rings.is_empty() {
+        lines.push(MenuLine::Separator);
+        lines.extend(rings);
+    }
+    lines.extend([
         MenuLine::Separator,
         MenuLine::Item(MenuItem::ToggleMute, label(mute, HotkeyAction::ToggleMute, shortcuts)),
         MenuLine::Item(MenuItem::ToggleDeafen, label(deafen, HotkeyAction::ToggleDeafen, shortcuts)),
@@ -328,21 +364,22 @@ pub(super) fn menu_lines(tray: &TrayState, shortcuts: &[(HotkeyAction, Hotkey)])
         MenuLine::Item(MenuItem::OpenSala, "Abrir o Concord".to_string()),
         MenuLine::Separator,
         MenuLine::Item(MenuItem::QuitSala, "Fechar o Concord".to_string()),
-    ]
+    ]);
+    lines
 }
-
-const MENU_IDS: [MenuItem; 5] = [
-    MenuItem::ToggleMute,
-    MenuItem::ToggleDeafen,
-    MenuItem::ToggleGameMode,
-    MenuItem::OpenSala,
-    MenuItem::QuitSala,
-];
 
 fn show_menu(hwnd: HWND) {
     let Some(lines) = with_state(|s| menu_lines(&s.tray, &s.shortcuts)) else {
         return;
     };
+    // Command ids are 1-based positions among the items, in order.
+    let items: Vec<MenuItem> = lines
+        .iter()
+        .filter_map(|l| match l {
+            MenuLine::Item(i, _) => Some(i.clone()),
+            _ => None,
+        })
+        .collect();
     // The popup menu runs a nested message loop: no state borrow may be held.
     // SAFETY: standard popup-menu sequence on our own window.
     let chosen = unsafe {
@@ -359,7 +396,7 @@ fn show_menu(hwnd: HWND) {
                     AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
                 }
                 MenuLine::Item(item, t) => {
-                    let id = MENU_IDS.iter().position(|i| i == item).unwrap_or(0) + 1;
+                    let id = items.iter().position(|i| i == item).unwrap_or(0) + 1;
                     AppendMenuW(menu, MF_STRING, id, wide(t).as_ptr());
                 }
             }
@@ -382,9 +419,9 @@ fn show_menu(hwnd: HWND) {
         cmd
     };
     if chosen > 0
-        && let Some(item) = MENU_IDS.get(chosen as usize - 1)
+        && let Some(item) = items.get(chosen as usize - 1)
     {
-        with_state(|s| s.emit(PlatformEvent::Menu(*item)));
+        with_state(|s| s.emit(PlatformEvent::Menu(item.clone())));
     }
 }
 
@@ -428,7 +465,13 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
                     with_state(|s| s.emit(PlatformEvent::Menu(MenuItem::OpenSala)));
                 }
                 NIN_BALLOONUSERCLICK => {
-                    with_state(|s| s.emit(PlatformEvent::NotificationClicked));
+                    with_state(|s| {
+                        let ev = match s.balloon_call.take() {
+                            Some(friend) => PlatformEvent::CallNotificationClicked { friend },
+                            None => PlatformEvent::NotificationClicked,
+                        };
+                        s.emit(ev);
+                    });
                 }
                 _ => {}
             }
@@ -528,6 +571,7 @@ pub(super) fn run(
             registered: Vec::new(),
             polled: Vec::new(),
             timer_on: false,
+            balloon_call: None,
         });
     });
     with_state(|s| s.update_tray());
@@ -589,6 +633,30 @@ mod tests {
         assert_eq!(lines[3], MenuLine::Item(MenuItem::ToggleMute, "Desmutar-se".into()));
         assert_eq!(lines[4], MenuLine::Item(MenuItem::ToggleDeafen, "Voltar a ouvir".into()));
         assert_eq!(lines[5], MenuLine::Item(MenuItem::ToggleGameMode, "Entrar no modo jogo".into()));
+    }
+
+    #[test]
+    fn ringing_friends_add_join_and_decline_items_only_while_they_ring() {
+        let none = TrayState::default();
+        assert!(!menu_lines(&none, &[]).iter().any(|l| matches!(l, MenuLine::Item(MenuItem::AcceptCall(_), _))));
+        let one = TrayState { incoming_calls: vec!["Ana".into()], ..Default::default() };
+        let lines = menu_lines(&one, &[]);
+        assert_eq!(lines[2], MenuLine::Separator);
+        assert_eq!(lines[3], MenuLine::Item(MenuItem::AcceptCall("Ana".into()), "Entrar na chamada de Ana".into()));
+        assert_eq!(lines[4], MenuLine::Item(MenuItem::DeclineCall("Ana".into()), "Recusar".into()));
+        // The static items are still there, after the ring items.
+        assert!(lines.contains(&MenuLine::Item(MenuItem::ToggleMute, "Mutar-se".into())));
+        // Several callers: the refusal says whom; `&` is escaped.
+        let two = TrayState { incoming_calls: vec!["A&B".into(), "Cai".into()], ..Default::default() };
+        let l = menu_lines(&two, &[]);
+        assert_eq!(l[3], MenuLine::Item(MenuItem::AcceptCall("A&B".into()), "Entrar na chamada de A&&B".into()));
+        assert_eq!(l[4], MenuLine::Item(MenuItem::DeclineCall("A&B".into()), "Recusar A&&B".into()));
+        assert_eq!(l[6], MenuLine::Item(MenuItem::DeclineCall("Cai".into()), "Recusar Cai".into()));
+    }
+
+    #[test]
+    fn call_balloon_says_only_who_is_calling() {
+        assert_eq!(call_balloon_text("Ana"), "Ana está te chamando");
     }
 
     #[test]

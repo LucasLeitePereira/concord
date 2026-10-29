@@ -937,30 +937,90 @@ async fn read_loop(
     let mut buf = vec![0u8; 4096];
     loop {
         // Drain first: setup may have left complete frames in the decoder.
-        loop {
-            match decoder.next_message() {
-                Ok(Some(ControlMessage::Heartbeat)) => {}
-                Ok(Some(msg)) => {
-                    let bye = matches!(msg, ControlMessage::Bye);
-                    inner.emit(NetEvent::Control {
-                        friend: friend.to_string(),
-                        msg,
-                    });
-                    if bye {
-                        return;
-                    }
-                }
-                Ok(None) => break,
-                Err(e) => {
-                    tracing::warn!(%friend, "invalid control frame: {e}");
-                    return;
-                }
+        let msgs = drain_frames(&mut decoder, friend);
+        let mut done = msgs.end;
+        for msg in msgs.messages {
+            let bye = matches!(msg, ControlMessage::Bye);
+            inner.emit(NetEvent::Control {
+                friend: friend.to_string(),
+                msg,
+            });
+            done |= bye;
+            if bye {
+                break;
             }
+        }
+        if done {
+            return;
         }
         match recv.read(&mut buf).await {
             Ok(Some(n)) => decoder.push(&buf[..n]),
             Ok(None) | Err(_) => return,
         }
+    }
+}
+
+/// Complete control messages found in the decoder, in order.
+struct Drained {
+    messages: Vec<ControlMessage>,
+    /// The stream is unusable (a frame over the size limit): stop reading.
+    end: bool,
+}
+
+/// Takes every complete frame out of `decoder`. Heartbeats are dropped. A frame whose
+/// content does not decode (a variant a newer peer added, D-024) is skipped: the decoder
+/// already consumed it, so the stream stays in sync. Only an oversized frame ends it.
+fn drain_frames(decoder: &mut FrameDecoder, friend: &str) -> Drained {
+    let mut messages = Vec::new();
+    loop {
+        match decoder.next_message() {
+            Ok(Some(ControlMessage::Heartbeat)) => {}
+            Ok(Some(msg)) => messages.push(msg),
+            Ok(None) => return Drained { messages, end: false },
+            Err(ProtocolError::Decode(e)) => {
+                tracing::warn!(%friend, "ignoring an unknown or malformed control frame: {e}");
+            }
+            Err(e) => {
+                tracing::warn!(%friend, "invalid control frame: {e}");
+                return Drained { messages, end: true };
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+
+    fn frame_with_variant(index: u32) -> Vec<u8> {
+        let mut payload = index.to_le_bytes().to_vec();
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        let mut f = (payload.len() as u32).to_be_bytes().to_vec();
+        f.extend_from_slice(&payload);
+        f
+    }
+
+    #[test]
+    fn an_unknown_variant_is_skipped_and_the_messages_around_it_arrive() {
+        let mut d = FrameDecoder::new(MAX_CONTROL_FRAME);
+        d.push(&ControlMessage::Bye.encode_frame().unwrap());
+        d.push(&frame_with_variant(99)); // what a future version might send
+        d.push(&ControlMessage::ShareStop.encode_frame().unwrap());
+        let got = drain_frames(&mut d, "x");
+        assert_eq!(got.messages, vec![ControlMessage::Bye, ControlMessage::ShareStop]);
+        assert!(!got.end, "the stream must survive an unknown variant");
+        // A ring from this version decodes (control for the test above).
+        let mut d = FrameDecoder::new(MAX_CONTROL_FRAME);
+        d.push(&frame_with_variant(8));
+        assert_eq!(drain_frames(&mut d, "x").messages, vec![ControlMessage::Ring { call_id: 1 }]);
+    }
+
+    #[test]
+    fn an_oversized_frame_still_ends_the_stream() {
+        let mut d = FrameDecoder::new(100);
+        d.push(&1000u32.to_be_bytes());
+        let got = drain_frames(&mut d, "x");
+        assert!(got.end && got.messages.is_empty());
     }
 }
 

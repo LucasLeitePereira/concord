@@ -440,7 +440,8 @@ where
     .map_err(|e| e.to_string())
 }
 
-/// Where decoded voice goes. `Null` swallows frames (no device, `--synthetic-audio`).
+/// Where decoded voice goes. `Null` swallows frames (no output device yet, or the test-only
+/// `AudioSource::Synthetic`).
 pub enum Sink {
     Null,
     Device(AudioOutput),

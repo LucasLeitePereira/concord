@@ -61,6 +61,8 @@
 
   <main class="main">
 
+    <div id="ring-banners" aria-live="assertive"></div>
+
     <section class="call" id="view-call" aria-labelledby="title">
       <div id="banners"></div>
 
@@ -175,6 +177,14 @@
                 <output id="mic-volume-value" for="mic-volume">100%</output>
               </div>
               <input class="range" type="range" id="mic-volume" min="0" max="200" step="5" value="100" disabled>
+            </div>
+
+            <div class="field">
+              <div class="field-head">
+                <label for="cue-volume">Volume dos sons de aviso</label>
+                <output id="cue-volume-value" for="cue-volume">60%</output>
+              </div>
+              <input class="range" type="range" id="cue-volume" min="0" max="100" step="5" value="60" disabled>
             </div>
 
             <div class="field">

@@ -15,6 +15,8 @@ export function initialState() {
     outsideTailnet: {}, // nome -> true (PeerNotInTailnet; some ao conectar)
     tailnet: null, // null (nunca pediu) | { loading: true } | { running, peers } (TailnetPeers)
     chat: [],
+    calls: { incoming: [], outgoing: [] }, // CoreToUi::Calls (D-024)
+    systemSeq: 0,
     volumes: {}, // nome -> 0..200 (só da sessão da interface)
     view: 'call',
   };
@@ -34,6 +36,18 @@ export function setLink(state, link) {
     // O núcleo reenvia tudo em GetState; não confiar no que havia antes da queda.
     state.peers = {};
     state.mismatch = {};
+    state.calls = { incoming: [], outgoing: [] };
+  }
+}
+
+// Texto do resultado de uma chamada que tocou (CallResult), ou null se não se mostra.
+export function callResultText(friend, result) {
+  switch (result) {
+    case 'declined': return `${friend} recusou a chamada`;
+    case 'timeout': return `${friend} não atendeu`;
+    case 'cancelled': return `${friend} desistiu da chamada`;
+    case 'unsupported': return `${friend} usa uma versão antiga do Concord e não recebe chamadas`;
+    default: return null;
   }
 }
 
@@ -111,8 +125,23 @@ export function reduce(state, msg) {
     case 'FingerprintMismatch':
       state.mismatch[msg.friend] = true;
       return 'full';
+    case 'Calls':
+      state.calls = {
+        incoming: Array.isArray(msg.incoming) ? msg.incoming.slice() : [],
+        outgoing: Array.isArray(msg.outgoing) ? msg.outgoing.slice() : [],
+      };
+      return 'full';
+    case 'CallResult': {
+      const text = callResultText(msg.friend, msg.result);
+      if (!text) return 'none';
+      // Mensagem de sistema no chat (só em memória, como o resto do chat).
+      state.systemSeq += 1;
+      state.chat.push({ id: `sys-${state.systemSeq}`, system: true, from_self: false, text, sent_at: Date.now() });
+      return 'chat';
+    }
     case 'ChatHistory':
-      state.chat = Array.isArray(msg.entries) ? msg.entries.slice() : [];
+      state.chat = (Array.isArray(msg.entries) ? msg.entries.slice() : [])
+        .concat(state.chat.filter((e) => e.system));
       return 'chat';
     case 'ChatReceived':
       if (msg.entry && !state.chat.some((e) => e.id === msg.entry.id && e.from_self === msg.entry.from_self)) {
@@ -152,9 +181,20 @@ export function chatPeer(state) {
     .find((n) => state.peers[n] && state.peers[n].connected) || null;
 }
 
-// Quem receberá o `Call` do botão "Entrar".
-export function callTarget(state) {
-  return chatPeer(state) || (friends(state)[0] && friends(state)[0].name) || null;
+// Botão principal fora da sala: se algum amigo já está na sala, só entra; senão chama
+// todos os amigos online (sem ninguém online, entra sozinho). { kind: 'join'|'call', friends }.
+export function roomAction(state) {
+  const online = friends(state)
+    .map((f) => f.name)
+    .filter((n) => state.peers[n] && state.peers[n].connected && !state.mismatch[n]);
+  if (online.some((n) => state.peers[n].status && state.peers[n].status.in_room)) {
+    return { kind: 'join', friends: [] };
+  }
+  return online.length ? { kind: 'call', friends: online } : { kind: 'join', friends: [] };
+}
+
+export function isRinging(state, name) {
+  return state.calls.outgoing.includes(name);
 }
 
 // { text, tone: 'accent'|'game'|'danger'|'muted', dot: 'on'|'game'|'danger'|'off', online }
@@ -216,6 +256,7 @@ export function friendPresence(state, name) {
   if (state.mismatch[name]) return { key: 'off', text: 'Identidade diferente', danger: true, canCall: false };
   if (p && p.reconnecting != null) return { key: 'off', text: 'Reconectando…', danger: false, canCall: false };
   if (!p || !p.connected) return { key: 'off', text: 'Offline', danger: false, canCall: false };
+  if (isRinging(state, name)) return { key: 'online', text: 'Chamando…', danger: false, canCall: false, ringing: true };
   if (p.status && p.status.in_room) return { key: 'sala', text: 'Na sala', danger: false, canCall: false };
   return { key: 'online', text: 'Online', danger: false, canCall: true };
 }

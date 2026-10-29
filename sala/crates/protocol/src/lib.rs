@@ -12,8 +12,13 @@ pub use pipe::{current_user_pipe_name, pipe_name};
 #[cfg(all(windows, feature = "ipc-client"))]
 pub mod ipc_client;
 
-/// Version of the wire protocol announced in `Hello`.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// Version of the wire protocol announced in `Hello`. 2 = understands `Ring*` (D-024):
+/// an older peer drops the control stream on an unknown variant, so `Ring` is only sent
+/// to peers that announced at least [`RING_PROTOCOL_VERSION`].
+pub const PROTOCOL_VERSION: u16 = 2;
+
+/// First protocol version that understands `ControlMessage::Ring*` (D-024).
+pub const RING_PROTOCOL_VERSION: u16 = 2;
 
 /// Datagram size limit to assume when the connection does not report one.
 pub const DEFAULT_MAX_DATAGRAM: usize = 1200;
@@ -95,6 +100,12 @@ pub enum ControlMessage {
     /// Periodic liveness signal.
     Heartbeat,
     Bye,
+    /// The sender rings the receiver (D-024). Added after `Bye`: new variants only go last.
+    Ring { call_id: u64 },
+    /// The caller gave up (hang-up or the 30 s deadline).
+    RingCancel { call_id: u64 },
+    /// The receiver refused the call.
+    RingDecline { call_id: u64 },
 }
 
 impl ControlMessage {
@@ -274,6 +285,16 @@ pub struct AudioSettings {
     /// Microphone gain in percent, 0..=200.
     pub input_volume: u32,
     pub noise_suppression: bool,
+    /// Volume of the notification sounds in percent, 0..=100 (0 = off, D-024).
+    #[serde(default = "default_cue_volume")]
+    pub cue_volume: u32,
+}
+
+/// Default of `audio.cue_volume` (percent).
+pub const DEFAULT_CUE_VOLUME: u32 = 60;
+
+fn default_cue_volume() -> u32 {
+    DEFAULT_CUE_VOLUME
 }
 
 /// The `[game_mode]` section as exposed to the UI.
@@ -314,10 +335,19 @@ pub enum UiToCore {
     SendChat { text: String },
     SetMuted { muted: bool },
     SetDeafened { deafened: bool },
-    /// Back into the room (D-015); `friend` must be a configured friend.
+    /// Enters the room and rings `friend` (D-024); `friend` must be a configured friend.
     Call { friend: String },
-    /// Leaves the room (D-015): no voice either way; chat and status go on.
+    /// Leaves the room (D-015) and cancels the pending rings: no voice either way; chat and
+    /// status go on.
     HangUp,
+    /// Enters the room without ringing anybody (D-024).
+    JoinRoom,
+    /// Answers a ring by entering the room (D-024).
+    AcceptCall { friend: String },
+    /// Refuses a ring (D-024); the caller is told.
+    DeclineCall { friend: String },
+    /// The UI window gained/lost focus (chat sound only plays while it is unfocused).
+    SetUiFocus { focused: bool },
     EnterGameMode,
     OpenViewer,
     /// Show the UI (a second `sala-core` instance sends it; leaves game mode if needed).
@@ -431,6 +461,12 @@ pub enum CoreToUi {
     PeerNotInTailnet { friend: String },
     /// Reply to `ListTailnetPeers`; `running` false = Tailscale off or not found (empty list).
     TailnetPeers { running: bool, peers: Vec<TailnetPeer> },
+    /// Rings in progress (D-024): `incoming` = friends ringing us, `outgoing` = friends we
+    /// are ringing. A snapshot, sent at every change and on `GetState`.
+    Calls { incoming: Vec<String>, outgoing: Vec<String> },
+    /// How a ring ended without a join: `"declined"`, `"timeout"`, `"cancelled"` (the caller
+    /// gave up) or `"unsupported"` (the friend's Concord is too old to ring).
+    CallResult { friend: String, result: String },
 }
 
 /// Encodes an IPC message as exactly one JSON line terminated by `\n`.
@@ -483,7 +519,46 @@ mod tests {
             ControlMessage::KeyframeRequest,
             ControlMessage::Heartbeat,
             ControlMessage::Bye,
+            ControlMessage::Ring { call_id: u64::MAX },
+            ControlMessage::RingCancel { call_id: 7 },
+            ControlMessage::RingDecline { call_id: 0 },
         ]
+    }
+
+    /// Bincode index of the variant: the first 4 bytes (LE) of the payload.
+    fn variant_index(m: &ControlMessage) -> u32 {
+        let f = m.encode_frame().unwrap();
+        u32::from_le_bytes([f[4], f[5], f[6], f[7]])
+    }
+
+    #[test]
+    fn ring_variants_were_added_at_the_end() {
+        // Old peers know indices 0..=7 (up to `Bye`); anything else breaks their stream, so
+        // the existing indices must never move and the new ones come after (D-024).
+        assert_eq!(variant_index(&ControlMessage::Bye), 7);
+        assert_eq!(variant_index(&ControlMessage::Heartbeat), 6);
+        assert_eq!(variant_index(&ControlMessage::Ring { call_id: 1 }), 8);
+        assert_eq!(variant_index(&ControlMessage::RingCancel { call_id: 1 }), 9);
+        assert_eq!(variant_index(&ControlMessage::RingDecline { call_id: 1 }), 10);
+    }
+
+    #[test]
+    fn unknown_variant_is_a_decode_error_and_the_decoder_resyncs() {
+        // What an old peer sees of a `Ring`: a variant index it does not know.
+        let mut payload = 99u32.to_le_bytes().to_vec();
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        let mut d = FrameDecoder::new(MAX_CONTROL_FRAME);
+        d.push(&(payload.len() as u32).to_be_bytes());
+        d.push(&payload);
+        d.push(&ControlMessage::Heartbeat.encode_frame().unwrap());
+        assert!(matches!(d.next_message(), Err(ProtocolError::Decode(_))));
+        assert_eq!(d.next_message().unwrap(), Some(ControlMessage::Heartbeat));
+    }
+
+    #[test]
+    fn ring_needs_protocol_version_2() {
+        const { assert!(PROTOCOL_VERSION >= RING_PROTOCOL_VERSION) };
+        assert_eq!(RING_PROTOCOL_VERSION, 2);
     }
 
     #[test]
@@ -649,6 +724,10 @@ mod tests {
             UiToCore::SetDeafened { deafened: false },
             UiToCore::Call { friend: "bia".into() },
             UiToCore::HangUp,
+            UiToCore::JoinRoom,
+            UiToCore::AcceptCall { friend: "bia".into() },
+            UiToCore::DeclineCall { friend: "bia".into() },
+            UiToCore::SetUiFocus { focused: true },
             UiToCore::EnterGameMode,
             UiToCore::OpenViewer,
             UiToCore::OpenUi,
@@ -720,6 +799,8 @@ mod tests {
             CoreToUi::AudioDevices { inputs: vec!["default".into(), "Mic".into()], outputs: vec!["default".into()] },
             CoreToUi::MicLevel { db: -42.5 },
             CoreToUi::CallStats { friend: "bia".into(), rtt_ms: 23, since_secs: 61 },
+            CoreToUi::Calls { incoming: vec!["bia".into()], outgoing: vec![] },
+            CoreToUi::CallResult { friend: "bia".into(), result: "declined".into() },
         ];
         for ev in evs {
             let l = encode_ipc_line(&ev).unwrap();
@@ -742,7 +823,32 @@ mod tests {
             vad_threshold: -50,
             input_volume: 100,
             noise_suppression: false,
+            cue_volume: 40,
         }
+    }
+
+    #[test]
+    fn audio_settings_without_cue_volume_use_the_default() {
+        // An older UI/config message has no `cue_volume`: 60, not an error.
+        let json = "{\"input_device\":\"default\",\"output_device\":\"default\",\"bitrate_kbps\":96,\"mode\":\"voice_activity\",\"vad_threshold\":-50,\"input_volume\":100,\"noise_suppression\":false}";
+        let a: AudioSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(a.cue_volume, DEFAULT_CUE_VOLUME);
+        // Control: an explicit value is kept.
+        let b: AudioSettings = serde_json::from_str(&json.replace("}", ",\"cue_volume\":0}")).unwrap();
+        assert_eq!(b.cue_volume, 0);
+    }
+
+    #[test]
+    fn ring_ipc_json_shapes() {
+        assert_eq!(
+            encode_ipc_line(&UiToCore::AcceptCall { friend: "bia".into() }).unwrap(),
+            "{\"type\":\"AcceptCall\",\"friend\":\"bia\"}\n"
+        );
+        assert_eq!(encode_ipc_line(&UiToCore::JoinRoom).unwrap(), "{\"type\":\"JoinRoom\"}\n");
+        assert_eq!(
+            encode_ipc_line(&CoreToUi::Calls { incoming: vec!["a".into()], outgoing: vec![] }).unwrap(),
+            "{\"type\":\"Calls\",\"incoming\":[\"a\"],\"outgoing\":[]}\n"
+        );
     }
 
     #[test]

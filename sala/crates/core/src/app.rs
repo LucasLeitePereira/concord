@@ -20,6 +20,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorking
 
 use crate::audio_device::list_devices;
 use crate::config::{AudioMode, Config, GameModeConfig, Profile};
+use crate::cues::Cue;
 use crate::game_detector::{ForegroundSample, GameDetector, POLL_INTERVAL, Transition};
 use crate::identity::LocalIdentity;
 use crate::ipc::{ClientId, IpcClient, IpcError, IpcServer, current_user_pipe_name};
@@ -37,6 +38,8 @@ pub trait PlatformApi {
     fn set_tray(&self, state: TrayState);
     /// Sender name only, never the text (D-011).
     fn notify_message(&self, sender: &str);
+    /// "X está te chamando" balloon (game mode, D-024).
+    fn notify_call(&self, sender: &str);
     /// Replaces the global shortcuts.
     fn set_hotkeys(&self, hotkeys: Vec<(HotkeyAction, Hotkey)>);
     /// Replaces the push-to-talk key (`None` = none).
@@ -49,6 +52,9 @@ impl PlatformApi for Platform {
     }
     fn notify_message(&self, sender: &str) {
         Platform::notify_message(self, sender);
+    }
+    fn notify_call(&self, sender: &str) {
+        Platform::notify_call(self, sender);
     }
     fn set_hotkeys(&self, hotkeys: Vec<(HotkeyAction, Hotkey)>) {
         Platform::set_hotkeys(self, hotkeys);
@@ -189,6 +195,10 @@ pub struct Controller<P: PlatformApi> {
     capture: Option<ClientId>,
     /// The UI client that enabled the microphone level meter.
     mic_meter_client: Option<ClientId>,
+    /// The UI client whose window is focused (`SetUiFocus`); chat sounds play when none is.
+    focused_client: Option<ClientId>,
+    /// Friends that were ringing at the last `Calls`, to notice the new ones.
+    ringing: Vec<String>,
     steps: Vec<Step>,
 }
 
@@ -205,6 +215,8 @@ impl<P: PlatformApi> Controller<P> {
             ptt_mode,
             capture: None,
             mic_meter_client: None,
+            focused_client: None,
+            ringing: Vec::new(),
             steps: Vec::new(),
         }
     }
@@ -332,6 +344,18 @@ impl<P: PlatformApi> Controller<P> {
         self.after_local_change();
     }
 
+    /// Enters the room and rings `friend` (D-024).
+    pub fn call(&mut self, friend: &str) {
+        let start = self.session.call(friend);
+        info!(%friend, ?start, "call");
+        self.after_local_change();
+    }
+
+    /// Whether the UI window is in front of the user (so a chat sound would be redundant).
+    pub fn ui_focused(&self) -> bool {
+        !self.detector.in_game() && self.focused_client.is_some_and(|c| self.host.ipc.has_client(c))
+    }
+
     fn reply_error(&self, client: ClientId, message: String) {
         self.host.ipc.send_to(client, &CoreToUi::Error { message });
     }
@@ -401,6 +425,11 @@ impl<P: PlatformApi> Controller<P> {
             info!("metering client disconnected; stopping microphone meter");
             self.stop_mic_meter();
         }
+        if let Some(c) = self.focused_client
+            && !self.host.ipc.has_client(c)
+        {
+            self.focused_client = None;
+        }
     }
 
     fn stop_mic_meter(&mut self) {
@@ -429,7 +458,13 @@ impl<P: PlatformApi> Controller<P> {
         } else {
             None
         };
-        TrayState { game_mode: s.game_mode, muted: s.muted, deafened: s.deafened, call }
+        TrayState {
+            game_mode: s.game_mode,
+            muted: s.muted,
+            deafened: s.deafened,
+            call,
+            incoming_calls: self.session.calls().0,
+        }
     }
 
     // ------------------------------------------------------------ inputs
@@ -459,6 +494,10 @@ impl<P: PlatformApi> Controller<P> {
             }
             PlatformEvent::Menu(MenuItem::OpenSala) => self.open_ui(Trigger::TrayClick).await,
             PlatformEvent::Menu(MenuItem::QuitSala) => return Flow::Quit,
+            // D-024: answer a ring from the tray menu or the balloon, staying in game mode.
+            PlatformEvent::Menu(MenuItem::AcceptCall(friend))
+            | PlatformEvent::CallNotificationClicked { friend } => self.accept_call(&friend),
+            PlatformEvent::Menu(MenuItem::DeclineCall(friend)) => self.session.decline_call(&friend),
             PlatformEvent::NotificationClicked => {
                 // D-008: clicking the notification is a manual exit.
                 if self.detector.in_game() {
@@ -472,6 +511,12 @@ impl<P: PlatformApi> Controller<P> {
             }
         }
         Flow::Continue
+    }
+
+    /// Joins the room, answering the rings (a stale friend name is harmless).
+    fn accept_call(&mut self, friend: &str) {
+        self.session.accept_call(friend);
+        self.after_local_change();
     }
 
     fn toggle_mute(&mut self) {
@@ -509,15 +554,25 @@ impl<P: PlatformApi> Controller<P> {
             UiToCore::EnterGameMode => self.set_game_mode_manual(true, Trigger::Ipc).await,
             UiToCore::ExitGameMode => self.set_game_mode_manual(false, Trigger::Ipc).await,
             UiToCore::OpenUi => self.open_ui(Trigger::SecondInstance).await,
-            // D-015: the room is always open; "calling" is entering it, "hanging up" leaving it.
+            // D-024: the app opens outside the room; "Call" enters it and rings the friend.
             UiToCore::Call { friend } => {
                 if self.session.config().friends.iter().any(|f| f.name == friend) {
-                    self.set_in_room(true);
+                    self.call(&friend);
                 } else {
                     self.reply_error(client, format!("unknown friend {friend:?}"));
                 }
             }
             UiToCore::HangUp => self.set_in_room(false),
+            UiToCore::JoinRoom => self.set_in_room(true),
+            UiToCore::AcceptCall { friend } => self.accept_call(&friend),
+            UiToCore::DeclineCall { friend } => self.session.decline_call(&friend),
+            UiToCore::SetUiFocus { focused } => {
+                if focused {
+                    self.focused_client = Some(client);
+                } else if self.focused_client == Some(client) {
+                    self.focused_client = None;
+                }
+            }
             UiToCore::GetConfig => {
                 self.host.ipc.send_to(client, &settings::config_message_with_address(&self.session.config()));
             }
@@ -593,6 +648,8 @@ impl<P: PlatformApi> Controller<P> {
     fn send_state(&self, client: ClientId) {
         let ipc = &self.host.ipc;
         ipc.send_to(client, &status_msg(self.session.local_status()));
+        let (incoming, outgoing) = self.session.calls();
+        ipc.send_to(client, &CoreToUi::Calls { incoming, outgoing });
         for friend in self.session.connected_friends() {
             ipc.send_to(client, &CoreToUi::PeerConnected { friend: friend.clone() });
             if let Some(p) = self.session.peer_status(&friend) {
@@ -626,6 +683,24 @@ impl<P: PlatformApi> Controller<P> {
                 } else {
                     ipc.broadcast(&CoreToUi::ChatReceived { entry });
                 }
+                // A sound when the window is not in front of the user (D-024).
+                if !self.ui_focused() {
+                    self.session.play_cue(Cue::Message);
+                }
+            }
+            SessionEvent::Calls { incoming, outgoing } => {
+                // In game mode nobody looks at a window: a balloon says who is calling.
+                if self.session.local_status().game_mode {
+                    for f in incoming.iter().filter(|f| !self.ringing.contains(f)) {
+                        self.platform.notify_call(f);
+                    }
+                }
+                self.ringing = incoming.clone();
+                ipc.broadcast(&CoreToUi::Calls { incoming, outgoing });
+                self.platform.set_tray(self.tray_state());
+            }
+            SessionEvent::CallResult { friend, end } => {
+                ipc.broadcast(&CoreToUi::CallResult { friend, result: end.as_str().to_string() });
             }
             SessionEvent::FingerprintMismatch { friend } => {
                 ipc.broadcast(&CoreToUi::FingerprintMismatch { friend });

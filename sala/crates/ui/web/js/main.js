@@ -2,7 +2,7 @@
 // Chat nunca é persistido: fica só em `state.chat`, na memória (inv-chat-never-on-disk).
 
 import {
-  initialState, setLink, reduce, friends, inRoom, callPeers, chatPeer, callTarget,
+  initialState, setLink, reduce, friends, inRoom, callPeers, chatPeer, roomAction,
   friendStatus, friendPresence, avatarIndex, micText, formatDuration, callSeconds, formatClock, initial,
 } from './state.js';
 import { initSettings } from './settings.js';
@@ -115,6 +115,10 @@ function renderFriends() {
       h('div', { class: 'friend-text' },
         h('span', { class: 'friend-name' }, f.name),
         h('span', { class: `friend-status ${cls}` }, pres.text)),
+      pres.ringing && h('button', {
+        type: 'button', class: 'btn-text', 'data-key': `cancel:${f.name}`,
+        disabled: !linked(), onclick: () => send({ type: 'HangUp' }),
+      }, 'Cancelar'),
       pres.canCall && h('button', {
         type: 'button', class: 'btn-icon', 'data-key': `call:${f.name}`,
         'aria-label': `Chamar ${f.name} para a sala`, title: `Chamar ${f.name} para a sala`,
@@ -180,7 +184,20 @@ function renderBanners() {
     out.push(noticeBox(`${name} está fora da sua rede Tailscale.`,
       'Contas diferentes do Tailscale não se enxergam. Convide a pessoa para a sua rede ou compartilhem as máquinas um com o outro no painel do Tailscale.'));
   }
+  // Chamadas recebidas: fixas no topo, em qualquer aba (D-024).
+  const rings = state.calls.incoming.map((name) => h('div', { class: 'banner', role: 'alert' },
+    h('div', { class: 'banner-icon' }, icon('i-call', 20)),
+    h('div', { class: 'banner-text' }, h('strong', {}, `${name} está te chamando`)),
+    h('button', {
+      type: 'button', class: 'btn primary', 'data-key': `ring-accept:${name}`, disabled: !linked(),
+      onclick: () => send({ type: 'AcceptCall', friend: name }),
+    }, 'Entrar'),
+    h('button', {
+      type: 'button', class: 'btn', 'data-key': `ring-decline:${name}`, disabled: !linked(),
+      onclick: () => send({ type: 'DeclineCall', friend: name }),
+    }, 'Recusar')));
   $('banners').replaceChildren(...out);
+  $('ring-banners').replaceChildren(...rings);
 }
 
 function micIcon(off) {
@@ -232,12 +249,26 @@ function selfCard() {
     h('div', { class: 'tile-self' }, detail));
 }
 
-function emptyState(title, text, action) {
+function emptyState(title, text, ...actions) {
   return h('div', { class: 'empty' },
     h('div', { class: 'state-icon', 'aria-hidden': 'true' }, icon('i-users', 22)),
     h('h2', { class: 'empty-title' }, title),
     h('p', { class: 'empty-text' }, text),
-    action);
+    ...actions);
+}
+
+function roomActionLabel(act) {
+  return act.kind === 'call' ? 'Chamar' : 'Entrar na sala';
+}
+
+// Fora da sala: entra direto se alguém já está lá; senão chama os amigos online.
+function enterOrCall() {
+  const act = roomAction(state);
+  if (act.kind === 'call') {
+    for (const friend of act.friends) send({ type: 'Call', friend });
+  } else {
+    send({ type: 'JoinRoom' });
+  }
 }
 
 function renderStage() {
@@ -251,10 +282,24 @@ function renderStage() {
   } else if (!state.status) {
     // ainda sem Status do núcleo: nada a mostrar
   } else if (!inRoom(state)) {
-    cards.push(emptyState('Você está fora da sala',
-      'Ninguém ouve você e você não ouve ninguém. Toque em Entrar, ou em um amigo, para voltar.'));
+    const act = roomAction(state);
+    cards.push(emptyState('Você não está na sala',
+      act.kind === 'call'
+        ? 'Ninguém está na sala. Chame seus amigos: o toque dura 1 minuto e você fica na sala esperando.'
+        : 'Ninguém ouve você e você não ouve ninguém. Entre na sala para conversar.',
+      h('button', {
+        type: 'button', class: 'btn primary', 'data-key': 'join-room', disabled: !linked(),
+        onclick: enterOrCall,
+      }, roomActionLabel(act))));
   } else if (peers.length === 0) {
-    cards.push(emptyState('Sala aberta', 'Aguardando amigos entrarem na sala.'));
+    const ringing = state.calls.outgoing;
+    cards.push(emptyState(ringing.length ? `Chamando ${joinNames(ringing)}` : 'Sala aberta',
+      ringing.length ? 'Aguardando a resposta.' : 'Aguardando amigos entrarem na sala.',
+      ringing.length ? h('span', { class: 'pill live' }, 'Chamando…') : null,
+      ringing.length ? h('button', {
+        type: 'button', class: 'btn-text', 'data-key': 'cancel-call', disabled: !linked(),
+        onclick: () => send({ type: 'HangUp' }),
+      }, 'Cancelar') : null));
     cards.push(selfCard());
   } else {
     for (const n of peers) cards.push(statusCard(n, state.peers[n]));
@@ -332,9 +377,9 @@ function renderControls() {
   const inside = inRoom(state);
   room.classList.toggle('danger', inside);
   room.classList.toggle('enter', !inside);
-  $('lbl-room').textContent = inside ? 'Desligar' : 'Entrar';
+  $('lbl-room').textContent = inside ? 'Desligar' : roomActionLabel(roomAction(state));
   $('use-room').setAttribute('href', inside ? '#i-hangup' : '#i-call');
-  room.disabled = off || (!inside && !callTarget(state));
+  room.disabled = off;
 }
 
 function chatLabel() {
@@ -358,7 +403,8 @@ function renderChat() {
     return;
   }
   const name = chatPeer(state) || 'Amigo';
-  log.replaceChildren(...state.chat.map((e) => h('div', { class: 'msg' },
+  log.replaceChildren(...state.chat.map((e) => e.system ? h('div', { class: 'msg system' },
+    h('span', { class: 'msg-text' }, e.text)) : h('div', { class: 'msg' },
     h('div', { class: 'msg-head' },
       h('b', { class: `fg-${e.from_self ? 2 : avatarIndex(name)}` }, e.from_self ? 'Você' : name),
       h('time', {}, formatClock(e.sent_at))),
@@ -434,7 +480,10 @@ function onLink(link) {
   const was = state.link;
   setLink(state, link === 'connected' ? 'connected' : 'disconnected');
   syncMicMeter();
-  if (state.link === 'connected' && was !== 'connected') requestAll();
+  if (state.link === 'connected' && was !== 'connected') {
+    requestAll();
+    sendFocus();
+  }
   if (state.link === 'connected' && state.view === 'settings') requestAudioDevices();
   render();
 }
@@ -480,8 +529,7 @@ $('btn-room').addEventListener('click', () => {
   if (inRoom(state)) {
     send({ type: 'HangUp' });
   } else {
-    const friend = callTarget(state);
-    if (friend) send({ type: 'Call', friend });
+    enterOrCall();
   }
 });
 $('chat-form').addEventListener('submit', (e) => {
@@ -497,9 +545,16 @@ for (const el of document.querySelectorAll('.nav-item[data-view]')) {
 }
 $('add-friend').addEventListener('click', () => setView('friends'));
 
+// O núcleo toca o som de mensagem só quando a janela não está em foco (D-024).
+function sendFocus() {
+  if (linked()) send({ type: 'SetUiFocus', focused: document.hasFocus() });
+}
+
 window.addEventListener('focus', () => {
+  sendFocus();
   if (state.view === 'settings') requestAudioDevices();
 });
+window.addEventListener('blur', sendFocus);
 
 setInterval(() => { if (!document.hidden) tickTimer(); }, 1000);
 

@@ -47,7 +47,7 @@ pub enum HotkeyAction {
 }
 
 /// Tray menu entries (order in `ModoJogo.dc.html`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuItem {
     ToggleMute,
     ToggleDeafen,
@@ -55,6 +55,10 @@ pub enum MenuItem {
     /// Also sent by a left click on the tray icon.
     OpenSala,
     QuitSala,
+    /// "Entrar na chamada de X": join the room, answering the ring of that friend (D-024).
+    AcceptCall(String),
+    /// "Recusar": refuse the ring of that friend (D-024).
+    DeclineCall(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +69,8 @@ pub enum PlatformEvent {
     Menu(MenuItem),
     /// The user clicked the chat notification ("Abrir o chat").
     NotificationClicked,
+    /// The user clicked the "X está te chamando" balloon: join the room (D-024).
+    CallNotificationClicked { friend: String },
     /// `RegisterHotKey` refused the combination (usually taken by another app).
     HotkeyRegistrationFailed {
         action: HotkeyAction,
@@ -81,11 +87,14 @@ pub struct TrayState {
     pub deafened: bool,
     /// Call line of the menu, e.g. `"Em chamada com Pedro · 18 ms"`; `None` = no call.
     pub call: Option<String>,
+    /// Friends ringing us now: the menu offers "Entrar na chamada de X" and "Recusar" (D-024).
+    pub incoming_calls: Vec<String>,
 }
 
 pub(crate) enum Command {
     Tray(TrayState),
     Notify { sender: String },
+    NotifyCall { sender: String },
     Hotkeys(Vec<(HotkeyAction, Hotkey)>),
     Ptt(Option<Hotkey>),
     Shutdown,
@@ -143,6 +152,12 @@ impl Platform {
     /// text (D-011). Clicking it yields [`PlatformEvent::NotificationClicked`].
     pub fn notify_message(&self, sender: &str) {
         self.send(Command::Notify { sender: sender.to_string() });
+    }
+
+    /// "X está te chamando" balloon for game mode (D-024). Clicking it yields
+    /// [`PlatformEvent::CallNotificationClicked`] (not `NotificationClicked`).
+    pub fn notify_call(&self, sender: &str) {
+        self.send(Command::NotifyCall { sender: sender.to_string() });
     }
 
     /// Replaces the whole list of global shortcuts. Combinations that cannot

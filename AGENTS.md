@@ -66,12 +66,14 @@ powershell -File scripts/build-installer.ps1           # gera target/installer/C
 ## 6. Estado atual (2026-10-23)
 Feito: F1 (rede, voz, identidade), F2 (núcleo residente, modo jogo, bandeja, IPC), F3 parcial (UI no design revisado no Claude Design em 2026-10-28: lateral única, Chamada, aba Amigos, Ajustes em 2 colunas — T-031), F6 parcial (instalador Inno Setup, release no GitHub).
 Design atual: `ideia/sala-handoff/design/DESIGN.md` + `telas/` (inclui Compartilhar e Visualizador para o F4). Exceção pedida pelo usuário: o medidor de sensibilidade segue o visual antigo (linha branca + marcador redondo + valor em dB).
-`--synthetic-audio` hoje troca o microfone por um tom **e não abre a saída** (sink nulo): para ouvir num teste com 2 perfis, rode um deles sem a flag.
+`--synthetic-audio` troca **só o microfone** por um tom e abre a saída real (D-024): dá para ouvir os sons e a voz do outro perfil. Os testes de integração usam `AudioSource::Synthetic` (sem nenhum dispositivo).
 
 **Próximos passos, por prioridade (decididos pelo usuário):**
 1. **Ajustes de áudio**: dispositivos de entrada e saída (`ListAudioDevices`), sensibilidade com linha arrastável sobre o medidor (`SetMicMeter`/`MicLevel`, `UpdateConfig{audio}`) e botão **"Ouvir minha voz"** (loopback local que passa pelo mesmo ganho e VAD do envio; IPC novo `SetMicTest{on}`). Hoje o limiar fica em `config.toml` (`vad_threshold`; −49 ficou bom no microfone do usuário).
 2. F4: compartilhamento de tela (WGC + encoder de hardware via FFmpeg LGPL + visualizador wgpu). F5: mesa de sons. README e CI (GitHub Actions) também ficaram para depois.
 Aviso do Windows (SmartScreen, "fornecedor desconhecido"): o instalador não é assinado. Para tirar o aviso é preciso um certificado de assinatura de código (por exemplo, Certum Open Source, para projeto público) e `signtool`/`SignTool=` no Inno Setup; a reputação no SmartScreen ainda leva algum tempo de downloads para se formar. A decisão e o custo são do usuário.
+
+**Aviso (2026-10-28):** a T-032 (chamada com toque, sons de aviso, D-024) está no working tree **sem commit**, aguardando `cargo build --release` (feche o `concord.exe` antes) e o teste manual do usuário. Commit só depois da aprovação.
 
 Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo e o instalador baixando o Tailscale (nunca executado de fato).
 

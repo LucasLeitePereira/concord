@@ -12,13 +12,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sala_core::app::{Controller, PlatformApi, Trigger, UiHost};
+use sala_core::calls::CallEnd;
 use sala_core::config::{AudioMode, Config, Friend, Profile};
 use sala_core::game_detector::ForegroundSample;
-use sala_core::identity::LocalIdentity;
+use sala_core::identity::{FriendEntry, LocalIdentity, TrustStore};
 use sala_core::ipc::{ClientId, IpcClient, IpcServer};
-use sala_core::platform::{Hotkey, HotkeyAction, TrayState};
-use sala_core::session::{AudioSource, Session, SessionEvent};
-use sala_protocol::{AudioSettings, CoreToUi, GameModeSettings, HotkeySettings, UiToCore, VoiceMode};
+use sala_core::net::{Net, NetEvent};
+use sala_core::platform::{Hotkey, HotkeyAction, MenuItem, PlatformEvent, TrayState};
+use sala_core::session::{AudioSource, CallStart, Session, SessionEvent};
+use sala_protocol::{
+    AudioSettings, Capabilities, ControlMessage, CoreToUi, GameModeSettings, HotkeySettings, UiToCore, VoiceMode,
+};
 use tokio::sync::mpsc;
 
 fn unique(tag: &str) -> String {
@@ -37,8 +41,18 @@ fn temp_root(tag: &str) -> PathBuf {
     dir
 }
 
+/// A free port never handed out before in this process (tests run in parallel and a
+/// released port can otherwise be picked twice).
 fn free_udp_port() -> u16 {
-    UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port()
+    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    loop {
+        let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port();
+        let mut given = GIVEN.lock().unwrap();
+        if !given.contains(&port) {
+            given.push(port);
+            return port;
+        }
+    }
 }
 
 async fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
@@ -108,7 +122,13 @@ async fn session_run() {
     assert!(a.add_friend("x", "not-an-ip").is_err());
     wait_until("connected", || a.is_connected("b") && b.is_connected("a")).await;
     wait_until("statuses", || a.peer_status("b").is_some() && b.peer_status("a").is_some()).await;
-    assert!(a.peer_status("b").unwrap().in_room, "everybody starts in the room");
+    // D-024: connected but outside the room, so no voice until each side joins.
+    assert!(!a.peer_status("b").unwrap().in_room, "everybody starts outside the room");
+    assert!(!a.local_status().in_room && !b.local_status().in_room);
+    assert_voice_stopped(&a, &b, "nobody joined yet").await;
+    a.set_in_room(true);
+    assert_voice_stopped(&a, &b, "only one side joined").await;
+    b.set_in_room(true);
     assert_voice_flows(&a, &b, "initial voice").await;
 
     // CallStats arrives every 2 s for connected friends.
@@ -176,6 +196,8 @@ struct FakePlatform {
     hotkeys: Arc<Mutex<Vec<Vec<String>>>>,
     ptt: Arc<Mutex<Vec<Option<String>>>>,
     trays: Arc<Mutex<Vec<TrayState>>>,
+    /// Senders of the "está te chamando" balloons.
+    call_balloons: Arc<Mutex<Vec<String>>>,
 }
 
 impl PlatformApi for FakePlatform {
@@ -183,6 +205,9 @@ impl PlatformApi for FakePlatform {
         self.trays.lock().unwrap().push(state);
     }
     fn notify_message(&self, _sender: &str) {}
+    fn notify_call(&self, sender: &str) {
+        self.call_balloons.lock().unwrap().push(sender.to_string());
+    }
     fn set_hotkeys(&self, hotkeys: Vec<(HotkeyAction, Hotkey)>) {
         self.hotkeys.lock().unwrap().push(hotkeys.iter().map(|(a, h)| format!("{a}={h}")).collect());
     }
@@ -203,8 +228,13 @@ struct Rig {
 
 impl Rig {
     async fn new(friends: Vec<Friend>) -> Rig {
+        Rig::on_port(free_udp_port(), friends).await
+    }
+
+    /// Like `new`, with the session listening on `port` (so a peer can be pointed at it).
+    async fn on_port(port: u16, friends: Vec<Friend>) -> Rig {
         let root = temp_root("ctl");
-        let (session, profile) = start(&root, "a", free_udp_port(), friends);
+        let (session, profile) = start(&root, "a", port, friends);
         let game_cfg = session.config().game_mode;
         let events = session.take_events().unwrap();
         let pipe = format!(r"\\.\pipe\{}", unique("pipe"));
@@ -409,9 +439,14 @@ async fn friend_management_and_reset_fingerprint_persist() {
 async fn room_commands_status_devices_volume_and_meter() {
     let mut rig = Rig::new(vec![friend("b", free_udp_port())]).await;
 
-    // GetState carries in_room; HangUp / Call flip it and tell the UI.
+    // GetState carries in_room (false at start, D-024); JoinRoom / HangUp / Call flip it and
+    // tell the UI.
     let got = rig.ask(UiToCore::GetState).await;
+    assert!(got.contains(&CoreToUi::Status { muted: false, deafened: false, game_mode: false, in_room: false }), "{got:?}");
+    assert!(got.contains(&CoreToUi::Calls { incoming: vec![], outgoing: vec![] }), "{got:?}");
+    let got = rig.ask(UiToCore::JoinRoom).await;
     assert!(got.contains(&CoreToUi::Status { muted: false, deafened: false, game_mode: false, in_room: true }), "{got:?}");
+    assert!(rig.ctl.session().local_status().in_room);
     let got = rig.ask(UiToCore::HangUp).await;
     assert!(got.contains(&CoreToUi::Status { muted: false, deafened: false, game_mode: false, in_room: false }), "{got:?}");
     assert!(!rig.ctl.session().local_status().in_room);
@@ -420,6 +455,8 @@ async fn room_commands_status_devices_volume_and_meter() {
     let got = rig.ask(UiToCore::Call { friend: "nobody".into() }).await;
     assert!(error_of(&got).is_some());
     assert!(rig.ctl.session().local_status().in_room, "a failed Call changes nothing");
+    // Control: an unknown friend is not rung either.
+    assert!(rig.ctl.session().calls().1.is_empty());
 
     // Devices: "default" first in both lists.
     let got = rig.ask(UiToCore::ListAudioDevices).await;
@@ -467,4 +504,337 @@ async fn mic_meter_stops_when_the_ui_client_disconnects() {
     rig.pump(Duration::from_millis(150)).await; // discard in-flight level events
     let after = rig.pump(Duration::from_millis(300)).await;
     assert!(!after.iter().any(|m| matches!(m, CoreToUi::MicLevel { .. })), "disconnect must stop the mic meter");
+}
+
+// ---------------------------------------------------------------- calls (T-032, D-024)
+
+/// Collects the events of a session in the background.
+#[derive(Clone)]
+struct EventLog(Arc<Mutex<Vec<SessionEvent>>>);
+
+impl EventLog {
+    fn watch(s: &Session) -> EventLog {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut rx = s.take_events().unwrap();
+        let sink = log.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = rx.recv().await {
+                sink.lock().unwrap().push(ev);
+            }
+        });
+        EventLog(log)
+    }
+
+    /// `(friend, how it ended)` of every `CallResult` so far.
+    fn results(&self) -> Vec<(String, CallEnd)> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::CallResult { friend, end } => Some((friend.clone(), *end)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn has(&self, friend: &str, end: CallEnd) -> bool {
+        self.results().contains(&(friend.to_string(), end))
+    }
+}
+
+/// Both sides dial at start; the net layer replaces the duplicate connection about 1 s
+/// later, and that reconnect forgets pending rings (as it should). Let it happen first.
+async fn settle_connection() {
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+}
+
+/// Two connected sessions, both outside the room, with their event logs.
+async fn connected_pair() -> (Session, Session, EventLog, EventLog) {
+    let root = temp_root("calls");
+    let (pa, pb) = (free_udp_port(), free_udp_port());
+    let (a, _) = start(&root, "a", pa, vec![friend("b", pb)]);
+    let (b, _) = start(&root, "b", pb, vec![friend("a", pa)]);
+    let (la, lb) = (EventLog::watch(&a), EventLog::watch(&b));
+    wait_until("connected", || a.peer_status("b").is_some() && b.peer_status("a").is_some()).await;
+    settle_connection().await;
+    (a, b, la, lb)
+}
+
+async fn close(a: Session, b: Session) {
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ring_then_accept_puts_both_in_the_room_with_voice() {
+    let (a, b, la, lb) = connected_pair().await;
+    assert!(!a.local_status().in_room && !b.local_status().in_room);
+
+    assert_eq!(a.call("b"), CallStart::Ringing);
+    assert!(a.local_status().in_room, "calling enters the room");
+    assert_eq!(a.calls(), (vec![], vec!["b".to_string()]));
+    wait_until("b is rung", || b.calls().0 == ["a"]).await;
+    assert!(!b.local_status().in_room, "ringing does not pull b into the room");
+    assert_voice_stopped(&a, &b, "b has not answered yet").await;
+
+    b.accept_call("a");
+    assert!(b.local_status().in_room && b.calls().0.is_empty());
+    wait_until("a's ring is answered", || a.calls().1.is_empty()).await;
+    assert_voice_flows(&a, &b, "voice after accepting").await;
+    assert!(la.results().is_empty() && lb.results().is_empty(), "an answered ring is not a failure");
+    close(a, b).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn declined_ring_tells_the_caller_who_stays_in_the_room() {
+    let (a, b, la, lb) = connected_pair().await;
+    assert_eq!(a.call("b"), CallStart::Ringing);
+    wait_until("b is rung", || b.calls().0 == ["a"]).await;
+
+    b.decline_call("a");
+    wait_until("a hears the decline", || la.has("b", CallEnd::Declined)).await;
+    assert!(a.calls().1.is_empty() && b.calls().0.is_empty());
+    assert!(a.local_status().in_room && !b.local_status().in_room);
+    assert!(lb.results().is_empty(), "the one who declined gets no result");
+    // Declining twice (or a ring that is gone) is harmless.
+    b.decline_call("a");
+    close(a, b).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unanswered_ring_times_out_for_both_sides() {
+    let (a, b, la, lb) = connected_pair().await;
+    a.set_ring_timeout(Duration::from_millis(900));
+    assert_eq!(a.call("b"), CallStart::Ringing);
+    wait_until("b is rung", || b.calls().0 == ["a"]).await;
+    // Control: it is still ringing before the deadline.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(a.calls().1, ["b"]);
+    assert!(la.results().is_empty());
+
+    wait_until("a times out", || la.has("b", CallEnd::Timeout)).await;
+    wait_until("b sees the cancel", || lb.has("a", CallEnd::Cancelled)).await;
+    assert!(a.calls().1.is_empty() && b.calls().0.is_empty());
+    assert!(a.local_status().in_room, "the caller stays in the room");
+    close(a, b).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hanging_up_while_ringing_cancels_it() {
+    let (a, b, la, lb) = connected_pair().await;
+    assert_eq!(a.call("b"), CallStart::Ringing);
+    wait_until("b is rung", || b.calls().0 == ["a"]).await;
+
+    a.set_in_room(false);
+    wait_until("b sees the cancel", || lb.has("a", CallEnd::Cancelled)).await;
+    assert!(a.calls().1.is_empty() && b.calls().0.is_empty());
+    assert!(la.results().is_empty(), "giving up is silent for the caller");
+    // The timer of the cancelled ring must not fire later.
+    a.set_ring_timeout(Duration::from_millis(50));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!la.has("b", CallEnd::Timeout));
+    close(a, b).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn joining_the_room_rings_nobody_and_calling_a_friend_already_there_does_not_ring() {
+    let (a, b, la, _lb) = connected_pair().await;
+    a.set_in_room(true);
+    wait_until("b sees a in", || b.peer_status("a").is_some_and(|s| s.in_room)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(b.calls().0.is_empty() && a.calls().1.is_empty(), "JoinRoom rings nobody");
+
+    // b joins by itself; a "call" now has nobody to ring.
+    b.set_in_room(true);
+    wait_until("a sees b in", || a.peer_status("b").is_some_and(|s| s.in_room)).await;
+    assert_eq!(a.call("b"), CallStart::AlreadyInRoom);
+    assert!(a.calls().1.is_empty() && la.results().is_empty());
+    assert_voice_flows(&a, &b, "both joined without a ring").await;
+    close(a, b).await;
+}
+
+/// A bare network peer that announces `protocol_version` in its `Hello`; returns what
+/// `Session::call` did and whether the `Ring` frame reached the peer.
+async fn call_a_bare_peer(protocol_version: u16) -> (CallStart, bool) {
+    let root = temp_root("proto");
+    let (pa, pb) = (free_udp_port(), free_udp_port());
+    let identity = LocalIdentity::load_or_create(&root.join("bare")).unwrap();
+    let trust = TrustStore::new(vec![FriendEntry { name: "a".into(), address: Ipv4Addr::LOCALHOST.into(), fingerprint: None }]);
+    // Bind the bare peer first, so a's first dial finds it.
+    let (net, mut rx) = Net::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, pb)), &identity, trust).unwrap();
+    let (a, _) = start(&root, "a", pa, vec![friend("b", pb)]);
+    // Wait for a's dial to land, then speak like a peer of that version.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while !matches!(rx.recv().await, Some(NetEvent::Connected { .. })) {}
+    })
+    .await
+    .expect("a connects to the bare peer");
+    let hello = ControlMessage::Hello {
+        name: "b".into(),
+        app_version: "test".into(),
+        protocol_version,
+        capabilities: Capabilities::default(),
+    };
+    let status = ControlMessage::Status { muted: false, deafened: false, game_mode: false, sharing: false, in_room: false };
+    net.send_control("a", hello).unwrap();
+    net.send_control("a", status).unwrap();
+    wait_until("a knows the peer", || a.peer_status("b").is_some()).await;
+
+    let started = a.call("b");
+    let mut ring_seen = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+    while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+        ring_seen |= matches!(ev, NetEvent::Control { msg: ControlMessage::Ring { .. }, .. });
+    }
+    net.shutdown().await;
+    a.shutdown().await;
+    (started, ring_seen)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rings_are_only_sent_to_peers_that_understand_them() {
+    // An old peer drops its control stream on an unknown variant: never send it a Ring.
+    let (started, ring_seen) = call_a_bare_peer(1).await;
+    assert_eq!(started, CallStart::Unsupported);
+    assert!(!ring_seen, "a protocol-1 peer must not receive a Ring");
+    // Control: a peer that announces version 2 is rung.
+    let (started, ring_seen) = call_a_bare_peer(2).await;
+    assert_eq!(started, CallStart::Ringing);
+    assert!(ring_seen, "a protocol-2 peer receives the Ring");
+}
+
+fn calls_of(msgs: &[CoreToUi]) -> Vec<(Vec<String>, Vec<String>)> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            CoreToUi::Calls { incoming, outgoing } => Some((incoming.clone(), outgoing.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn results_of(msgs: &[CoreToUi]) -> Vec<(String, String)> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            CoreToUi::CallResult { friend, result } => Some((friend.clone(), result.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A controller rig for `a` plus a plain session `b` that knows it.
+async fn rig_with_peer() -> (Rig, Session, EventLog) {
+    let (pa, pb) = (free_udp_port(), free_udp_port());
+    let rig = Rig::on_port(pa, vec![friend("b", pb)]).await;
+    let (b, _) = start(&temp_root("peer"), "b", pb, vec![friend("a", pa)]);
+    let log = EventLog::watch(&b);
+    wait_until("connected", || rig.ctl.session().peer_status("b").is_some() && b.peer_status("a").is_some()).await;
+    settle_connection().await;
+    (rig, b, log)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rings_reach_the_ui_and_its_answers_go_back() {
+    let (mut rig, b, b_log) = rig_with_peer().await;
+
+    // b rings: the UI gets the snapshot, the tray lists the caller, no balloon (not in game mode).
+    assert_eq!(b.call("a"), CallStart::Ringing);
+    let got = rig.pump(Duration::from_millis(800)).await;
+    assert_eq!(calls_of(&got).last(), Some(&(vec!["b".to_string()], vec![])), "{got:?}");
+    assert_eq!(rig.platform.trays.lock().unwrap().last().unwrap().incoming_calls, ["b"]);
+    assert!(rig.platform.call_balloons.lock().unwrap().is_empty());
+    // A UI that connects later learns it from GetState.
+    let got = rig.ask(UiToCore::GetState).await;
+    assert!(calls_of(&got).contains(&(vec!["b".to_string()], vec![])), "{got:?}");
+
+    // Decline: b is told, the snapshot empties, a stays outside.
+    rig.ask(UiToCore::DeclineCall { friend: "b".into() }).await;
+    let got = rig.pump(Duration::from_millis(500)).await;
+    assert_eq!(calls_of(&got).last(), Some(&(vec![], vec![])), "{got:?}");
+    wait_until("b hears the decline", || b_log.has("a", CallEnd::Declined)).await;
+    assert!(!rig.ctl.session().local_status().in_room);
+
+    // Accept: a joins, the status goes out, the ring is over on both sides.
+    b.call("a");
+    rig.pump(Duration::from_millis(500)).await;
+    let got = rig.ask(UiToCore::AcceptCall { friend: "b".into() }).await;
+    assert!(got.contains(&CoreToUi::Status { muted: false, deafened: false, game_mode: false, in_room: true }), "{got:?}");
+    let got = rig.pump(Duration::from_millis(500)).await;
+    assert_eq!(calls_of(&got).last(), Some(&(vec![], vec![])), "{got:?}");
+    wait_until("b's ring is answered", || b.calls().1.is_empty()).await;
+
+    // The caller gives up while ringing: the UI gets `cancelled`.
+    rig.ask(UiToCore::HangUp).await;
+    b.set_in_room(false);
+    wait_until("both out", || rig.ctl.session().peer_status("b").is_some_and(|s| !s.in_room)).await;
+    b.call("a");
+    rig.pump(Duration::from_millis(500)).await;
+    b.set_in_room(false);
+    let got = rig.pump(Duration::from_millis(800)).await;
+    assert_eq!(results_of(&got), [("b".to_string(), "cancelled".to_string())], "{got:?}");
+
+    // `Call` over IPC enters the room and rings b.
+    let got = rig.ask(UiToCore::Call { friend: "b".into() }).await;
+    assert!(got.contains(&CoreToUi::Status { muted: false, deafened: false, game_mode: false, in_room: true }), "{got:?}");
+    wait_until("b is rung by the UI", || b.calls().0 == ["a"]).await;
+    let got = rig.pump(Duration::from_millis(400)).await;
+    assert_eq!(calls_of(&got).last(), Some(&(vec![], vec!["b".to_string()])), "{got:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn game_mode_shows_a_balloon_and_the_tray_answers_the_ring() {
+    let (mut rig, b, b_log) = rig_with_peer().await;
+    rig.ctl.set_game_mode_manual(true, Trigger::Ipc).await;
+    assert!(rig.ctl.in_game());
+
+    b.call("a");
+    rig.pump(Duration::from_millis(800)).await;
+    assert_eq!(*rig.platform.call_balloons.lock().unwrap(), ["b"]);
+    assert_eq!(rig.platform.trays.lock().unwrap().last().unwrap().incoming_calls, ["b"]);
+
+    // Clicking the balloon joins the room and stays in game mode.
+    rig.ctl.on_platform_event(PlatformEvent::CallNotificationClicked { friend: "b".into() }).await;
+    assert!(rig.ctl.session().local_status().in_room);
+    assert!(rig.ctl.in_game(), "answering does not leave game mode");
+    rig.pump(Duration::from_millis(500)).await;
+    assert!(rig.platform.trays.lock().unwrap().last().unwrap().incoming_calls.is_empty());
+
+    // The tray's "Recusar" refuses the next ring.
+    rig.ctl.set_in_room(false);
+    b.set_in_room(false);
+    wait_until("both out", || b.peer_status("a").is_some_and(|s| !s.in_room) && b.calls().1.is_empty()).await;
+    b.call("a");
+    rig.pump(Duration::from_millis(800)).await;
+    assert_eq!(rig.platform.call_balloons.lock().unwrap().len(), 2, "a new ring, a new balloon");
+    rig.ctl.on_platform_event(PlatformEvent::Menu(MenuItem::DeclineCall("b".into()))).await;
+    wait_until("b hears the decline", || b_log.has("a", CallEnd::Declined)).await;
+    assert!(!rig.ctl.session().local_status().in_room);
+    assert!(rig.ctl.in_game());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ui_focus_follows_the_client_and_is_off_in_game_mode() {
+    let mut rig = Rig::new(vec![]).await;
+    assert!(!rig.ctl.ui_focused(), "no focus report yet: sounds may play");
+    rig.ask(UiToCore::SetUiFocus { focused: true }).await;
+    assert!(rig.ctl.ui_focused());
+    rig.ask(UiToCore::SetUiFocus { focused: false }).await;
+    assert!(!rig.ctl.ui_focused());
+
+    // A UI that dies while focused must not mute the chat sound for good.
+    let mut ui = IpcClient::connect(&rig.pipe).await.unwrap();
+    ui.send(&UiToCore::SetUiFocus { focused: true }).await.unwrap();
+    let (client, command) = tokio::time::timeout(Duration::from_secs(5), rig.ipc_rx.recv()).await.unwrap().unwrap();
+    rig.ctl.on_command(client, command).await;
+    assert!(rig.ctl.ui_focused());
+    drop(ui);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    rig.ctl.check_capture_client();
+    assert!(!rig.ctl.ui_focused());
+
+    // Game mode: the UI is closed, so it is never "in focus", whatever it said before.
+    rig.ask(UiToCore::SetUiFocus { focused: true }).await;
+    assert!(rig.ctl.ui_focused());
+    rig.ctl.set_game_mode_manual(true, Trigger::Ipc).await;
+    assert!(!rig.ctl.ui_focused());
 }

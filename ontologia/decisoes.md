@@ -134,7 +134,7 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 **Alternativa descartada:** `IAudioEndpointVolume` (volume do dispositivo; global, muda para todos os apps); AGC automático (bombeia ruído de fundo e briga com o limiar).
 **Data:** 2026-10-22
 
-## D-015 Sala sempre aberta
+## D-015 Sala sempre aberta (substituída em parte pela D-024: conectar não entra mais na sala; toque e aceitar existem)
 **Conceitos:** call, peer-connection, ipc-message
 **Decisão:** conectado = na sala, com voz automática (escolha do usuário, 2026-10-23). `HangUp` sai da sala: a voz para nos dois sentidos (só se envia e toca se os dois estão na sala), mas chat e status continuam. `Call{friend}` volta. O `Status` de rede ganha `in_room` (`serde(default = true)`); `PeerStatus` repassa. Sem toque/aceitar.
 **Data:** 2026-10-23
@@ -184,3 +184,11 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Adicionar pede só um apelido, já sugerido (primeiro nome do dono, ou nome do PC). O nome do amigo continua sendo só um rótulo local: a conexão é casada pelo IP e o TOFU, pela identidade. O formulário manual por IP continua.
 - O core passa a depender de `serde_json` (já no workspace) para ler o status.
 - **Data:** 2026-10-26
+
+## D-024 — T-032: chamada com toque e sons de aviso (substitui a D-015 no ponto "conectado = na sala")
+- O app abre conectado e **fora da sala** (`in_room=false`, nada persistido). `JoinRoom` entra sem tocar; `Call{friend}` entra e toca no PC do amigo; ele escolhe `AcceptCall` (entra) ou `DeclineCall`. Prazo de 60 s contado por quem chama (`calls.rs`, `CallBook`); sem resposta, quem chamou continua na sala sozinho. Sair da sala cancela os toques de saida. Botão principal fora da sala (pedido do usuário em 2026-10-29): se algum amigo já está na sala, "Entrar na sala" (sem toque); senão "Chamar", que toca para todos os amigos online (`roomAction` em `state.js`).
+- Protocolo so cresce por adicao: `ControlMessage::Ring/RingCancel/RingDecline` no fim do enum e `PROTOCOL_VERSION=2`. Um peer antigo derruba o stream de controle ao ver variante desconhecida, entao o `Ring` so vai a quem anunciou `protocol_version >= RING_PROTOCOL_VERSION` no Hello (senao `CallResult unsupported`). O decoder novo pula a variante desconhecida e segue.
+- Sons sintetizados no codigo (`cues.rs`, `CuePlayer` no `VoiceEngine`), misturados depois do silenciamento do "Silenciar": tocam mesmo ensurdecido. Volume proprio `audio.cue_volume` (0 a 100, padrao 60, 0 desliga). Notificacao de chat segue so com o remetente (D-011).
+- Modo jogo: toque, balao "X esta te chamando" (clique = entrar, sem sair do modo jogo) e itens da bandeja "Entrar na chamada de X"/"Recusar".
+- `--synthetic-audio` troca so o microfone pelo tom e abre a saida real (`AudioSource::SyntheticMic`); os testes de integracao seguem sem dispositivo (`AudioSource::Synthetic`).
+- **Data:** 2026-10-28

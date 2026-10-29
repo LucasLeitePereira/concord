@@ -13,6 +13,7 @@ use opus::{Application, Bitrate, Channels, Decoder, Encoder};
 use nnnoiseless::DenoiseState;
 
 use crate::config::{AudioConfig, AudioMode};
+use crate::cues::{Cue, CuePlayer};
 use crate::jitter::{JitterBuffer, JitterStats, Pop};
 
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -472,8 +473,10 @@ pub struct VoiceEngine {
     /// Separate accumulator for the UI meter (does not disturb the 2 s log), only fed while on.
     ui_meter: LevelMeter,
     ui_meter_on: bool,
-    /// The local user is in the room (D-015).
+    /// The local user is in the room (D-015); starts outside (D-024).
     in_room: bool,
+    /// Notification sounds, mixed after the "deafened" silencing (D-024).
+    cues: CuePlayer,
 }
 
 impl VoiceEngine {
@@ -489,8 +492,23 @@ impl VoiceEngine {
             meter: LevelMeter::default(),
             ui_meter: LevelMeter::default(),
             ui_meter_on: false,
-            in_room: true,
+            in_room: false,
+            cues: CuePlayer::new(cfg.cue_volume),
         })
+    }
+
+    /// Plays a one-shot notification sound (D-024).
+    pub fn play_cue(&mut self, cue: Cue) {
+        self.cues.play(cue);
+    }
+
+    /// Sets the looping ring sound; `None` stops it.
+    pub fn set_cue_loop(&mut self, cue: Option<Cue>) {
+        self.cues.set_loop(cue);
+    }
+
+    pub fn cues(&self) -> &CuePlayer {
+        &self.cues
     }
 
     /// Applies a changed `[audio]` section live (devices are the caller's business).
@@ -498,6 +516,7 @@ impl VoiceEngine {
         self.activation.set_mode(cfg.mode);
         self.activation.set_threshold_db(cfg.vad_threshold);
         self.input_gain = input_gain(cfg.input_volume);
+        self.cues.set_volume(cfg.cue_volume);
         if cfg.noise_suppression {
             if self.denoiser.is_none() {
                 self.denoiser = Some(Box::new(RnnDenoiser::new()));
@@ -684,6 +703,9 @@ impl VoiceEngine {
         if self.activation.deafened() {
             mix.fill(0.0);
         }
+        // After the silencing on purpose: the notification sounds (and the "Silenciar" click
+        // itself) are heard even while deafened (D-024).
+        self.cues.mix_into(&mut mix);
         // Sum of several friends can exceed full scale: final clamp.
         apply_volume(&mut mix, 1.0);
         mix
@@ -698,8 +720,67 @@ mod tests {
         (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt()
     }
 
+    /// An engine already in the room (a new one starts outside, D-024).
     fn engine() -> VoiceEngine {
-        VoiceEngine::new(&AudioConfig::default()).unwrap()
+        let mut e = VoiceEngine::new(&AudioConfig::default()).unwrap();
+        e.set_in_room(true);
+        e
+    }
+
+    #[test]
+    fn engine_starts_outside_the_room() {
+        let mut e = VoiceEngine::new(&AudioConfig::default()).unwrap();
+        e.add_peer("a").unwrap();
+        assert!(e.send_targets().is_empty());
+        e.set_in_room(true);
+        assert_eq!(e.send_targets(), ["a"]);
+    }
+
+    /// Own voice through the loopback plus one cue: energy of (voice-only, cue-only) outputs.
+    fn deafened_output(deaf: bool, cue: Option<Cue>) -> f32 {
+        let mut e = engine();
+        e.set_loopback(true).unwrap();
+        e.activation_mut().set_deafened(deaf);
+        if let Some(c) = cue {
+            e.play_cue(c);
+        }
+        let mut src = SineSource::standard();
+        let mut total = 0.0;
+        for i in 0..10u64 {
+            let mut f = src.next_frame();
+            // Deafened mutes the mic: feed the loopback through the unmuted path instead.
+            e.activation_mut().set_deafened(false);
+            e.process_capture(&mut f).unwrap();
+            e.activation_mut().set_deafened(deaf);
+            total += rms(&e.playout_tick(i * 20));
+        }
+        total
+    }
+
+    #[test]
+    fn cues_are_heard_while_deafened_but_voice_is_not() {
+        // Control: with voice and no deafen it is audible.
+        assert!(deafened_output(false, None) > 1.0);
+        // Deafened without a cue: nothing. With a cue: the cue is heard.
+        assert_eq!(deafened_output(true, None), 0.0);
+        assert!(deafened_output(true, Some(Cue::Deafen)) > 0.3);
+    }
+
+    #[test]
+    fn cue_volume_zero_silences_the_cues_and_settings_apply_live() {
+        let mut e = engine();
+        let mut cfg = AudioConfig { cue_volume: 0, ..Default::default() };
+        e.apply_audio(&cfg).unwrap();
+        e.play_cue(Cue::SelfJoin);
+        e.set_cue_loop(Some(Cue::RingIncoming));
+        let silent: f32 = (0..20u64).map(|i| rms(&e.playout_tick(i * 20))).sum();
+        assert_eq!(silent, 0.0);
+        cfg.cue_volume = 100;
+        e.apply_audio(&cfg).unwrap();
+        let loud: f32 = (0..20u64).map(|i| rms(&e.playout_tick(i * 20))).sum();
+        assert!(loud > 0.5, "the running ring sounds once the volume is back ({loud})");
+        e.set_cue_loop(None);
+        assert!(e.cues().is_idle());
     }
 
     #[test]

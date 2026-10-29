@@ -79,7 +79,7 @@ async fn run() -> Result<(), String> {
         config.friends.len(),
         identity.fingerprint().to_hex()
     );
-    let source = if args.synthetic_audio { AudioSource::Synthetic } else { AudioSource::Device };
+    let source = if args.synthetic_audio { AudioSource::SyntheticMic } else { AudioSource::Device };
     match sala_core::app::run(args.profile.as_deref(), profile, config, &identity, source).await {
         Ok(()) => Ok(()),
         Err(sala_core::app::AppError::AlreadyRunning) => {

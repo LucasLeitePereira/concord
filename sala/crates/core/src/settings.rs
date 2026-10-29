@@ -3,7 +3,7 @@
 
 use sala_protocol::{AudioSettings, CoreToUi, FriendInfo, GameModeSettings, HotkeySettings, VoiceMode};
 
-use crate::config::{AudioConfig, AudioMode, Config, GameModeConfig, HotkeyConfig, MAX_INPUT_VOLUME_PERCENT};
+use crate::config::{AudioConfig, AudioMode, Config, GameModeConfig, HotkeyConfig, MAX_CUE_VOLUME_PERCENT, MAX_INPUT_VOLUME_PERCENT};
 use crate::voice::{MAX_BITRATE_KBPS, MIN_BITRATE_KBPS};
 
 const MAX_NAME_CHARS: usize = 64;
@@ -33,6 +33,7 @@ pub fn audio_settings(a: &AudioConfig) -> AudioSettings {
         vad_threshold: a.vad_threshold,
         input_volume: a.input_volume,
         noise_suppression: a.noise_suppression,
+        cue_volume: a.cue_volume,
     }
 }
 
@@ -107,6 +108,9 @@ pub fn audio_from_ipc(s: &AudioSettings) -> Result<AudioConfig, String> {
     if s.input_volume > MAX_INPUT_VOLUME_PERCENT {
         return Err(format!("input_volume must be 0..={MAX_INPUT_VOLUME_PERCENT}"));
     }
+    if s.cue_volume > MAX_CUE_VOLUME_PERCENT {
+        return Err(format!("cue_volume must be 0..={MAX_CUE_VOLUME_PERCENT}"));
+    }
     if !(MIN_VAD_THRESHOLD..=0).contains(&s.vad_threshold) {
         return Err(format!("vad_threshold must be {MIN_VAD_THRESHOLD}..=0"));
     }
@@ -119,6 +123,7 @@ pub fn audio_from_ipc(s: &AudioSettings) -> Result<AudioConfig, String> {
         vad_threshold: s.vad_threshold,
         input_volume: s.input_volume,
         noise_suppression: s.noise_suppression,
+        cue_volume: s.cue_volume,
     })
 }
 
@@ -271,6 +276,7 @@ mod tests {
         assert!(with(&|a| a.bitrate_kbps = 31).is_err());
         assert!(with(&|a| a.bitrate_kbps = 129).is_err());
         assert!(with(&|a| a.input_volume = 201).is_err());
+        assert!(with(&|a| a.cue_volume = 101).is_err());
         assert!(with(&|a| a.vad_threshold = 1).is_err());
         assert!(with(&|a| a.vad_threshold = -101).is_err());
         assert!(merged(&cur, Some("   "), None, None, None).is_err());
@@ -286,6 +292,8 @@ mod tests {
         assert!(with(&|a| a.bitrate_kbps = 32).is_ok());
         assert!(with(&|a| a.bitrate_kbps = 128).is_ok());
         assert!(with(&|a| a.input_volume = 200).is_ok());
+        assert!(with(&|a| a.cue_volume = 100).is_ok());
+        assert!(with(&|a| a.cue_volume = 0).is_ok());
         assert!(with(&|a| a.vad_threshold = -100).is_ok());
         assert!(with(&|a| a.vad_threshold = 0).is_ok());
         assert_eq!(with(&|a| a.output_device = "  ".into()).unwrap().audio.output_device, "default");

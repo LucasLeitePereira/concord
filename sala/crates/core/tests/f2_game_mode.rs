@@ -116,6 +116,9 @@ impl PlatformApi for FakePlatform {
         self.all_args.lock().unwrap().push(sender.to_string());
         self.notifications.lock().unwrap().push(sender.to_string());
     }
+    fn notify_call(&self, sender: &str) {
+        self.all_args.lock().unwrap().push(sender.to_string());
+    }
     fn set_hotkeys(&self, _hotkeys: Vec<(sala_core::platform::HotkeyAction, sala_core::platform::Hotkey)>) {}
     fn set_ptt(&self, _hotkey: Option<sala_core::platform::Hotkey>) {}
 }
@@ -165,6 +168,9 @@ async fn one_run(round: usize) {
     }
     assert_eq!(connected, 1, "exactly one SessionEvent::Connected");
     assert!(!b.peer_status("a").unwrap().game_mode);
+    // D-024: the app opens outside the room; join so there is a call to keep in game mode.
+    a.set_in_room(true);
+    b.set_in_room(true);
 
     // ---- enter game mode (manual, as the hotkey would)
     let received_before = b.voice_counters("a").received;

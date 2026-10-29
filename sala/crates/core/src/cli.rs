@@ -5,7 +5,7 @@
 pub struct CliArgs {
     /// `--profile <name>`: isolated instance (see `Profile`).
     pub profile: Option<String>,
-    /// `--synthetic-audio`: use a synthetic audio source instead of a device.
+    /// `--synthetic-audio`: a tone instead of the microphone (the output device still opens).
     pub synthetic_audio: bool,
     /// `--synthetic-video`: use a synthetic video source instead of screen capture.
     pub synthetic_video: bool,

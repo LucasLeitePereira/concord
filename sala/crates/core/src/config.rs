@@ -12,6 +12,8 @@ const MIN_BITRATE_KBPS: u32 = 32;
 const MAX_BITRATE_KBPS: u32 = 128;
 /// `audio.input_volume` ceiling, in percent (D-014).
 pub const MAX_INPUT_VOLUME_PERCENT: u32 = 200;
+/// `audio.cue_volume` ceiling, in percent (D-024).
+pub const MAX_CUE_VOLUME_PERCENT: u32 = 100;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -200,6 +202,8 @@ pub struct AudioConfig {
     /// Software gain on the captured PCM, percent 0..=200 (D-014).
     pub input_volume: u32,
     pub noise_suppression: bool,
+    /// Volume of the notification sounds, percent 0..=100; 0 turns them off (D-024).
+    pub cue_volume: u32,
 }
 
 impl Default for AudioConfig {
@@ -212,6 +216,7 @@ impl Default for AudioConfig {
             vad_threshold: -50,
             input_volume: 100,
             noise_suppression: false,
+            cue_volume: 60,
         }
     }
 }
@@ -369,6 +374,11 @@ impl Config {
             tracing::warn!("audio.input_volume = {v} is above {MAX_INPUT_VOLUME_PERCENT}; using {MAX_INPUT_VOLUME_PERCENT}");
             self.audio.input_volume = MAX_INPUT_VOLUME_PERCENT;
         }
+        let c = self.audio.cue_volume;
+        if c > MAX_CUE_VOLUME_PERCENT {
+            tracing::warn!("audio.cue_volume = {c} is above {MAX_CUE_VOLUME_PERCENT}; using {MAX_CUE_VOLUME_PERCENT}");
+            self.audio.cue_volume = MAX_CUE_VOLUME_PERCENT;
+        }
         for f in &self.friends {
             if f.address.parse::<IpAddr>().is_err() {
                 return Err(ConfigError::InvalidAddress {
@@ -451,7 +461,8 @@ impl Config {
         s.push_str(&format!("mode = {}   # ou \"push_to_talk\"\n", q(mode)));
         s.push_str(&format!("vad_threshold = {}   # dB; ative a voz acima deste nível\n", a.vad_threshold));
         s.push_str(&format!("input_volume = {}   # % de ganho do microfone, de 0 a 200\n", a.input_volume));
-        s.push_str(&format!("noise_suppression = {}\n\n", a.noise_suppression));
+        s.push_str(&format!("noise_suppression = {}\n", a.noise_suppression));
+        s.push_str(&format!("cue_volume = {}   # % dos sons de aviso, de 0 a 100 (0 desliga)\n\n", a.cue_volume));
 
         let h = &self.hotkeys;
         s.push_str("[hotkeys]\n");
@@ -744,6 +755,22 @@ mod tests {
         c.audio.input_volume = 130;
         let text = c.to_commented_toml();
         assert!(text.contains("input_volume = 130"));
+        assert_eq!(Config::from_toml_str(&text, Path::new("x")).unwrap(), c);
+    }
+
+    #[test]
+    fn cue_volume_defaults_to_60_loads_old_configs_and_is_clamped() {
+        assert_eq!(AudioConfig::default().cue_volume, 60);
+        let old = Config::from_toml_str("[audio]\nbitrate_kbps = 64\n", Path::new("x")).unwrap();
+        assert_eq!(old.audio.cue_volume, 60);
+        let load = |v: u32| {
+            Config::from_toml_str(&format!("[audio]\ncue_volume = {v}\n"), Path::new("x")).unwrap().audio.cue_volume
+        };
+        assert_eq!((load(0), load(100), load(250)), (0, 100, 100));
+        let mut c = Config::default();
+        c.audio.cue_volume = 35;
+        let text = c.to_commented_toml();
+        assert!(text.contains("cue_volume = 35"));
         assert_eq!(Config::from_toml_str(&text, Path::new("x")).unwrap(), c);
     }
 

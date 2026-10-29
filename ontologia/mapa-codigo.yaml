@@ -26,7 +26,8 @@ mapa:
     codigo: ["sala/crates/core/src/voice.rs (Activation; input_gain/apply_input_gain e LevelMeter/MicLevels, D-014)", "sala/crates/core/src/config.rs (AudioConfig.vad_threshold, input_volume)"]
     testes: ["sala/crates/core/src/voice.rs (mod tests)"]
   call:
-    codigo: ["sala/crates/core/src/voice.rs (VoiceEngine: peers, volume, loopback)", "sala/crates/core/src/session.rs (sessão de voz por amigo em Connected/Disconnected)"]
+    codigo: ["sala/crates/core/src/voice.rs (VoiceEngine: peers, volume, loopback, cues)", "sala/crates/core/src/session.rs (sessão de voz por amigo em Connected/Disconnected; call/accept_call/decline_call, D-024)", "sala/crates/core/src/calls.rs (CallBook, CallEnd, RING_TIMEOUT)", "sala/crates/core/src/cues.rs (Cue, CuePlayer: sons de aviso sintetizados)"]
+    testes: [sala/crates/core/tests/f3_settings.rs, "sala/crates/core/src/cues.rs (mod tests)", "sala/crates/core/src/calls.rs (mod tests)"]
   identity-fingerprint:
     codigo: ["sala/crates/core/src/identity.rs (Fingerprint, LocalIdentity)"]
     testes: [sala/crates/core/tests/acceptance_identity.rs]

@@ -3,8 +3,10 @@
 #[cfg(windows)]
 pub mod app;
 pub mod audio_device;
+pub mod calls;
 pub mod cli;
 pub mod config;
+pub mod cues;
 pub mod game_detector;
 pub mod identity;
 #[cfg(windows)]

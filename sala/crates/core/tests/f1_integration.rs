@@ -172,6 +172,12 @@ async fn f1_call_voice_chat_and_chat_never_on_disk() {
 
         wait_until("a and b connected", || a.is_connected("b") && b.is_connected("a")).await;
 
+        // D-024: connected is not in the room; no voice until both join.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(a.voice_counters("b").sent, 0, "control: nothing is sent before joining");
+        a.set_in_room(true);
+        b.set_in_room(true);
+
         // (i) ~5 s of call.
         tokio::time::sleep(CALL_TIME).await;
 

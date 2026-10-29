@@ -65,6 +65,7 @@ export function initSettings({ state, send, h, icon }) {
   let pendingName = null; // nome enviado, aguardando o Config novo
   let nameSaved = false;
   let volumeDragging = false;
+  let cueDragging = false;
   let thresholdDragging = false;
 
   const linked = () => state.link === 'connected' && !!state.config;
@@ -333,6 +334,12 @@ export function initSettings({ state, send, h, icon }) {
       $('vad-threshold').value = String(Math.max(DB_MIN, Math.min(DB_MAX, threshold)));
     }
     $('mic-volume').disabled = !connected;
+    if (!cueDragging) {
+      const cue = a && Number.isFinite(a.cue_volume) ? a.cue_volume : 60;
+      $('cue-volume').value = String(cue);
+      $('cue-volume-value').value = `${cue}%`;
+    }
+    $('cue-volume').disabled = !connected;
     $('vad-threshold').disabled = !connected;
     for (const [id, m] of [['mode-vad', 'voice_activity'], ['mode-ptt', 'push_to_talk']]) {
       const b = $(id);
@@ -393,6 +400,18 @@ export function initSettings({ state, send, h, icon }) {
     const input_volume = Number($('mic-volume').value);
     if (!cfg || cfg.audio.input_volume === input_volume) return;
     updateAudio({ input_volume });
+  });
+
+  $('cue-volume').addEventListener('input', () => {
+    cueDragging = true;
+    $('cue-volume-value').value = `${$('cue-volume').value}%`;
+  });
+  $('cue-volume').addEventListener('change', () => {
+    cueDragging = false;
+    const cfg = state.config;
+    const cue_volume = Number($('cue-volume').value);
+    if (!cfg || cfg.audio.cue_volume === cue_volume) return;
+    updateAudio({ cue_volume });
   });
 
   $('vad-threshold').addEventListener('input', () => {
