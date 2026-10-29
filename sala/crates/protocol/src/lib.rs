@@ -12,13 +12,18 @@ pub use pipe::{current_user_pipe_name, pipe_name};
 #[cfg(all(windows, feature = "ipc-client"))]
 pub mod ipc_client;
 
-/// Version of the wire protocol announced in `Hello`. 2 = understands `Ring*` (D-024):
-/// an older peer drops the control stream on an unknown variant, so `Ring` is only sent
-/// to peers that announced at least [`RING_PROTOCOL_VERSION`].
-pub const PROTOCOL_VERSION: u16 = 2;
+/// Version of the wire protocol announced in `Hello`. 2 = understands `Ring*` (D-024),
+/// 3 = understands `ReceiverReport` and takes part in screen sharing: an older peer drops
+/// the control stream on an unknown variant, so those messages are only sent to peers that
+/// announced at least [`RING_PROTOCOL_VERSION`] / [`VIDEO_PROTOCOL_VERSION`].
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// First protocol version that understands `ControlMessage::Ring*` (D-024).
 pub const RING_PROTOCOL_VERSION: u16 = 2;
+
+/// First protocol version that understands `ControlMessage::ReceiverReport` and the video
+/// datagrams of a screen share (same gate as D-024).
+pub const VIDEO_PROTOCOL_VERSION: u16 = 3;
 
 /// Datagram size limit to assume when the connection does not report one.
 pub const DEFAULT_MAX_DATAGRAM: usize = 1200;
@@ -106,6 +111,18 @@ pub enum ControlMessage {
     RingCancel { call_id: u64 },
     /// The receiver refused the call.
     RingDecline { call_id: u64 },
+    /// Viewer feedback about the video it receives, about once per second. Needs
+    /// [`VIDEO_PROTOCOL_VERSION`]. `expected - received` fragments were lost in the window.
+    ReceiverReport {
+        /// Video fragments that arrived in the window.
+        received: u32,
+        /// Video fragments the sender produced in the window (counted from frame ids).
+        expected: u32,
+        /// Frames discarded as incomplete or undecodable in the window.
+        dropped_frames: u32,
+        /// Length of the measurement window in milliseconds.
+        window_ms: u32,
+    },
 }
 
 impl ControlMessage {
@@ -526,6 +543,7 @@ mod tests {
             ControlMessage::Ring { call_id: u64::MAX },
             ControlMessage::RingCancel { call_id: 7 },
             ControlMessage::RingDecline { call_id: 0 },
+            ControlMessage::ReceiverReport { received: 970, expected: 1000, dropped_frames: 2, window_ms: 1000 },
         ]
     }
 
@@ -544,6 +562,14 @@ mod tests {
         assert_eq!(variant_index(&ControlMessage::Ring { call_id: 1 }), 8);
         assert_eq!(variant_index(&ControlMessage::RingCancel { call_id: 1 }), 9);
         assert_eq!(variant_index(&ControlMessage::RingDecline { call_id: 1 }), 10);
+        let report = ControlMessage::ReceiverReport { received: 1, expected: 1, dropped_frames: 0, window_ms: 1 };
+        assert_eq!(variant_index(&report), 11);
+    }
+
+    #[test]
+    fn receiver_report_needs_protocol_version_3() {
+        const { assert!(PROTOCOL_VERSION >= VIDEO_PROTOCOL_VERSION) };
+        assert_eq!(VIDEO_PROTOCOL_VERSION, 3);
     }
 
     #[test]

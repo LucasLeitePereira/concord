@@ -29,8 +29,8 @@ mapa:
     codigo: ["sala/crates/video/src/abr.rs (Abr, ReceiverReport; tempo injetado em ms)", "sala/crates/video/src/encoder.rs (set_bitrate: QSV reabre se mudar >15% e força keyframe)"]
     testes: ["sala/crates/video/src/abr.rs (mod tests)"]
   screen-share:
-    codigo: ["sala/crates/video/src/sender.rs (FrameSlot último-quadro, Sender: thread de encode, reenvio em tela parada, canal descarta delta cheio; ainda não ligado ao core)"]
-    testes: ["sala/crates/video/src/sender.rs (mod tests; passam em silêncio sem encoder)"]
+    codigo: ["sala/crates/video/src/sender.rs (FrameSlot último-quadro, Sender: thread de encode, reenvio em tela parada, canal descarta delta cheio; idle_resend 500 ms)", "sala/crates/core/src/share.rs (VideoPipe/PipeFactory, ShareOut thread share-send, ShareIn Reassembler+LossMeter+ReceiverReport 1 s, screen_pipe real)", "sala/crates/core/src/session.rs (start_share, start_screen_share, stop_share, share_stats, take_video_frames; ReceiverReport→abr)", "sala/crates/protocol/src/lib.rs (ControlMessage::ReceiverReport, PROTOCOL_VERSION 3, VIDEO_PROTOCOL_VERSION)"]
+    testes: ["sala/crates/video/src/sender.rs (mod tests; passam em silêncio sem encoder)", "sala/crates/core/tests/screen_share.rs (fonte sintética, perda injetada)", "sala/crates/core/src/share.rs (mod tests)"]
   ffmpeg-setup:
     codigo: ["scripts/fetch-ffmpeg.ps1 (FFmpeg n7.1.5 LGPL shared da BtbN + libclang 18.1.1 em sala/third_party/, ignorado pelo git)", "sala/.cargo/config.toml (FFMPEG_DIR, LIBCLANG_PATH relativos)", "sala/crates/video/build.rs (copia as DLLs para target/<perfil>/ e deps/)"]
   ipc-message:

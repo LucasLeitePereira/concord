@@ -17,6 +17,7 @@ pub mod net;
 pub mod platform;
 pub mod session;
 pub mod settings;
+pub mod share;
 #[cfg(windows)]
 pub mod tailscale;
 #[cfg(windows)]

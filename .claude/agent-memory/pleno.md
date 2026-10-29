@@ -66,3 +66,5 @@
 - `windows-capture` 2.x: API difere da memória (`start_free_threaded`, `Settings::new` com 8 args, `as_nopadding_buffer`); leia os fontes no registry após `cargo fetch`. WGC só emite quadro quando a tela muda: reenviar o último quadro.
 - `ffmpeg-next`: swscale exige feature `software-scaling`; `rc_buffer_size` sem setter (escreva via `as_mut_ptr()` antes do `open`). Erro opaco de encoder: rode `third_party/ffmpeg/bin/ffmpeg.exe` com o mesmo encoder para ver o log real (a MX110 desta máquina não tem NVENC).
 - `VideoEncoder` tem `unsafe impl Send` (swscale `*mut`): só mover para a thread, nunca compartilhar. QSV não troca bitrate com contexto aberto (reabrir + keyframe). Dimensão/bitrate em inteiros (float dá 1919.99).
+- Protocolo bincode: variante nova de `ControlMessage` só no fim do enum (índice). Flag local marcado antes do `change_local` não transmite `Status` (before == after).
+- Rodada completa: `cargo test --workspace --no-fail-fast` (sem isso para no 1º binário). `f2_game_mode` oscila 119–260 s sob carga.

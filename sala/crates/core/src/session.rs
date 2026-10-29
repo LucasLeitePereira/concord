@@ -7,14 +7,16 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sala_protocol::{
-    AudioStream, ChatEntry, ControlMessage, MediaDatagram, PROTOCOL_VERSION,
-    RING_PROTOCOL_VERSION, max_audio_payload,
+    AudioStream, ChatEntry, ControlMessage, DEFAULT_MAX_DATAGRAM, MediaDatagram, PROTOCOL_VERSION,
+    RING_PROTOCOL_VERSION, VideoCodec, max_audio_payload,
 };
+use sala_video::capture::Source;
+use sala_video::preset::SharePreset;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
@@ -25,6 +27,10 @@ use crate::config::{AudioConfig, AudioMode, Config, Friend, Profile};
 use crate::cues::Cue;
 use crate::identity::LocalIdentity;
 use crate::net::{Net, NetError, NetEvent, trust_store_from_config};
+use crate::share::{
+    Pipe, PipeFactory, ShareIn, ShareOut, ShareParams, ShareShared, ShareStats, VideoFrame, abr_report,
+    handle_output, peer_supports_video, screen_pipe,
+};
 use crate::voice::{Activation, SineSource, VoiceEngine};
 
 /// Where captured audio comes from.
@@ -169,6 +175,9 @@ enum EngineCmd {
     Audio(Box<AudioConfig>),
     MicMeter(bool),
     PeerVolume(String, f32),
+    /// A screen share whose pipe is already running (the factory ran on the caller's thread).
+    ShareStart(Box<Pipe>),
+    ShareStop,
 }
 
 struct State {
@@ -185,6 +194,8 @@ struct State {
     calls: CallBook,
     /// `protocol_version` of each connected friend's `Hello` (rings need `RING_PROTOCOL_VERSION`).
     proto: HashMap<String, u16>,
+    /// We are sharing the screen (announced in `Status`).
+    sharing: bool,
 }
 
 impl State {
@@ -193,7 +204,7 @@ impl State {
             muted: self.local.muted(),
             deafened: self.local.deafened(),
             game_mode: self.game_mode,
-            sharing: false,
+            sharing: self.sharing,
             in_room: self.in_room,
         }
     }
@@ -211,6 +222,12 @@ struct Shared {
     next_call_id: AtomicU64,
     /// How long we ring a friend (`RING_TIMEOUT`; shortened by tests).
     ring_timeout: Mutex<Duration>,
+    /// The running screen share (set by the loop; read by `Session::share_stats`).
+    share: Mutex<Option<Arc<ShareShared>>>,
+    /// A share is being started or running (one at a time).
+    share_claim: AtomicBool,
+    /// Frames of friends' shares, for the viewer. Bounded: live video never queues.
+    video: mpsc::Sender<VideoFrame>,
 }
 
 impl Shared {
@@ -254,6 +271,7 @@ pub struct Session {
     task: Mutex<Option<JoinHandle<()>>>,
     commands: mpsc::UnboundedSender<EngineCmd>,
     events: Mutex<Option<mpsc::UnboundedReceiver<SessionEvent>>>,
+    video: Mutex<Option<mpsc::Receiver<VideoFrame>>>,
 }
 
 impl Session {
@@ -276,6 +294,7 @@ impl Session {
         let engine = VoiceEngine::new(&config.audio).map_err(|e| format!("opus: {e}"))?;
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (video_tx, video_rx) = mpsc::channel(VIDEO_QUEUE);
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 history: HashMap::new(),
@@ -286,6 +305,7 @@ impl Session {
                 in_room: false,
                 calls: CallBook::default(),
                 proto: HashMap::new(),
+                sharing: false,
             }),
             next_chat_id: AtomicU64::new(unix_ms().saturating_mul(1000)),
             events: events_tx,
@@ -294,6 +314,9 @@ impl Session {
             commands: cmd_tx.clone(),
             next_call_id: AtomicU64::new(unix_ms().saturating_mul(1000)),
             ring_timeout: Mutex::new(RING_TIMEOUT),
+            share: Mutex::new(None),
+            share_claim: AtomicBool::new(false),
+            video: video_tx,
         });
         let (stop, stop_rx) = watch::channel(false);
         let task = tokio::spawn(run_loop(
@@ -312,7 +335,57 @@ impl Session {
             task: Mutex::new(Some(task)),
             commands: cmd_tx,
             events: Mutex::new(Some(events_rx)),
+            video: Mutex::new(Some(video_rx)),
         })
+    }
+
+    /// The frames reassembled from friends' screen shares; the first call gets the stream.
+    pub fn take_video_frames(&self) -> Option<mpsc::Receiver<VideoFrame>> {
+        lock(&self.video).take()
+    }
+
+    /// Starts sharing the screen with every connected friend that understands it
+    /// (`VIDEO_PROTOCOL_VERSION`); friends that connect later join automatically. `factory`
+    /// opens the capture and encoder on the caller's thread (it can take a while).
+    pub fn start_share(&self, preset: SharePreset, factory: PipeFactory) -> Result<(), String> {
+        // Claim it now so that a second call cannot start another encoder meanwhile.
+        if self.shared.share_claim.swap(true, Ordering::AcqRel) {
+            return Err("already sharing".into());
+        }
+        let max_datagram = self
+            .connected_friends()
+            .iter()
+            .filter(|f| lock(&self.shared.state).proto.get(*f).is_some_and(|v| peer_supports_video(*v)))
+            .filter_map(|f| self.net.max_datagram_size(f))
+            .min()
+            .unwrap_or(DEFAULT_MAX_DATAGRAM);
+        match factory(&ShareParams { preset, max_datagram }) {
+            Ok(pipe) => {
+                // Announce `sharing = true` to everybody, then hand the pipe to the loop.
+                self.change_local(Some(EngineCmd::ShareStart(Box::new(pipe))), |s| s.sharing = true);
+                Ok(())
+            }
+            Err(e) => {
+                self.shared.share_claim.store(false, Ordering::Release);
+                Err(e)
+            }
+        }
+    }
+
+    /// Shares `source` (a monitor or window from `sala_video::capture`) with the given codec.
+    pub fn start_screen_share(&self, preset: SharePreset, codec: VideoCodec, source: Source) -> Result<(), String> {
+        self.start_share(preset, Box::new(move |params| screen_pipe(params, codec, &source)))
+    }
+
+    /// Stops the screen share (harmless when not sharing).
+    pub fn stop_share(&self) {
+        self.shared.share_claim.store(false, Ordering::Release);
+        self.change_local(Some(EngineCmd::ShareStop), |s| s.sharing = false);
+    }
+
+    /// Counters of the running share; `None` when not sharing.
+    pub fn share_stats(&self) -> Option<ShareStats> {
+        lock(&self.shared.share).as_ref().map(|s| s.stats())
     }
 
     /// The stream of [`SessionEvent`]s; the first call gets it, later calls `None`.
@@ -700,6 +773,9 @@ type OpenedAudio = (Option<Option<AudioInput>>, Option<Sink>);
 /// How long the session waits before trying a missing device again.
 const AUDIO_RETRY: Duration = Duration::from_secs(5);
 
+/// Reassembled frames the viewer channel holds before the oldest news is refused.
+const VIDEO_QUEUE: usize = 32;
+
 /// Opens the requested sides of `audio` on a blocking thread: WASAPI can take long or hang,
 /// and the session loop must keep running meanwhile (T-029). `quiet` logs failures at debug
 /// (periodic retries of a device that is still missing).
@@ -779,6 +855,11 @@ async fn run_loop(
     meter_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut meter_on = false;
     let mut send_errors: u64 = 0;
+    // Screen share: ours (sender side) and the friends' (one receiver each).
+    let mut share_out: Option<ShareOut> = None;
+    let mut shares_in: HashMap<String, ShareIn> = HashMap::new();
+    let mut share_tick = interval(Duration::from_millis(250));
+    share_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
         let event = tokio::select! {
@@ -899,6 +980,21 @@ async fn run_loop(
                 shared.emit(SessionEvent::MicLevel { db: engine.take_ui_level() });
                 continue;
             }
+            _ = share_tick.tick(), if !shares_in.is_empty() => {
+                let now_ms = started.elapsed().as_millis() as u64;
+                for (friend, rx) in shares_in.iter_mut() {
+                    let (out, report) = rx.tick(now_ms);
+                    handle_output(out, friend, &net, &shared.video);
+                    let Some(report) = report else { continue };
+                    // The sender announced the share, so it is new enough; check anyway (D-024).
+                    if lock(&shared.state).proto.get(friend).is_some_and(|v| peer_supports_video(*v))
+                        && let Err(e) = net.send_control(friend, report)
+                    {
+                        tracing::debug!(%friend, "cannot send the receiver report: {e}");
+                    }
+                }
+                continue;
+            }
             Some(cmd) = commands.recv() => {
                 match cmd {
                     EngineCmd::Muted(m) => engine.activation_mut().set_muted(m),
@@ -948,6 +1044,31 @@ async fn run_loop(
                         meter_on = on;
                     }
                     EngineCmd::PeerVolume(friend, v) => engine.set_peer_volume(&friend, v),
+                    EngineCmd::ShareStart(pipe) => {
+                        if let Some(old) = share_out.take() {
+                            *lock(&shared.share) = None;
+                            old.stop(&net);
+                        }
+                        let peers: Vec<String> = {
+                            let st = lock(&shared.state);
+                            st.proto
+                                .iter()
+                                .filter(|(f, v)| peer_supports_video(**v) && net.is_connected(f))
+                                .map(|(f, _)| f.clone())
+                                .collect()
+                        };
+                        tracing::info!(viewers = peers.len(), "share started");
+                        let out = ShareOut::start(&net, *pipe, &peers);
+                        *lock(&shared.share) = Some(out.shared());
+                        share_out = Some(out);
+                    }
+                    EngineCmd::ShareStop => {
+                        if let Some(old) = share_out.take() {
+                            *lock(&shared.share) = None;
+                            old.stop(&net);
+                            tracing::info!("share stopped");
+                        }
+                    }
                 }
                 continue;
             }
@@ -1006,7 +1127,35 @@ async fn run_loop(
             NetEvent::Control { friend, msg } => match msg {
                 ControlMessage::Hello { name, app_version, protocol_version, .. } => {
                     tracing::info!(%friend, %name, %app_version, protocol_version, "event: Hello");
-                    lock(&shared.state).proto.insert(friend, protocol_version);
+                    lock(&shared.state).proto.insert(friend.clone(), protocol_version);
+                    // A friend who connects while we share joins the stream.
+                    if let Some(out) = &share_out
+                        && peer_supports_video(protocol_version)
+                    {
+                        out.add_peer(&net, &friend);
+                    }
+                }
+                ControlMessage::ShareStart { codec, width, height, fps } => {
+                    tracing::info!(%friend, ?codec, width, height, fps, "event: ShareStart");
+                    let now_ms = started.elapsed().as_millis() as u64;
+                    shares_in.insert(friend, ShareIn::new(now_ms));
+                }
+                ControlMessage::ShareStop => {
+                    tracing::info!(%friend, "event: ShareStop");
+                    shares_in.remove(&friend);
+                }
+                ControlMessage::KeyframeRequest => {
+                    if let Some(out) = &share_out {
+                        tracing::debug!(%friend, "event: KeyframeRequest");
+                        out.request_keyframe();
+                    }
+                }
+                ControlMessage::ReceiverReport { received, expected, dropped_frames, window_ms } => {
+                    if let Some(out) = &share_out {
+                        let rtt = net.rtt(&friend).map(|d| d.as_millis().min(u128::from(u32::MAX)) as u32);
+                        let target = out.on_report(abr_report(received, expected, dropped_frames, rtt));
+                        tracing::debug!(%friend, received, expected, dropped_frames, window_ms, target, "event: ReceiverReport");
+                    }
                 }
                 ControlMessage::Status { muted, deafened, game_mode, sharing, in_room } => {
                     tracing::info!(%friend, muted, deafened, game_mode, sharing, in_room, "event: Status");
@@ -1069,9 +1218,20 @@ async fn run_loop(
                     let now_ms = started.elapsed().as_millis() as u64;
                     engine.push_datagram(&friend, seq, timestamp, payload, now_ms);
                 }
+                MediaDatagram::Video { .. } => {
+                    if let Some(rx) = shares_in.get_mut(&friend) {
+                        let now_ms = started.elapsed().as_millis() as u64;
+                        let out = rx.on_datagram(now_ms, &dg);
+                        handle_output(out, &friend, &net, &shared.video);
+                    }
+                }
                 _ => tracing::trace!(%friend, "event: datagram"),
             },
             NetEvent::Disconnected { friend } => {
+                shares_in.remove(&friend);
+                if let Some(out) = &share_out {
+                    out.remove_peer(&friend);
+                }
                 publish_voice_counters(&engine, &shared);
                 engine.remove_peer(&friend);
                 // End of call: the chat history is discarded (inv-chat-never-on-disk).
@@ -1104,6 +1264,10 @@ async fn run_loop(
                 shared.emit(SessionEvent::FingerprintMismatch { friend });
             }
         }
+    }
+    if let Some(out) = share_out.take() {
+        *lock(&shared.share) = None;
+        out.stop(&net);
     }
     net.shutdown().await;
     lock(&shared.state).history.clear();

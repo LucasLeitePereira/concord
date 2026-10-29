@@ -113,7 +113,10 @@ impl SenderConfig {
             src_height,
             max_datagram: 1200,
             fec_group: DEFAULT_FEC_GROUP,
-            idle_resend: Duration::from_secs(1),
+            // 500 ms: a lost last frame of a static screen is only noticed when the next frame
+            // arrives, and the 1 s report window then always holds at least two samples. The cost
+            // is a near-empty delta frame twice a second.
+            idle_resend: Duration::from_millis(500),
             channel_frames: 16,
         }
     }
