@@ -63,3 +63,5 @@
 - FFmpeg (`sala-video`): `ffmpeg-sys-next` precisa do libclang 18 (LLVM 23 gera asserts de layout quebrados); `scripts/fetch-ffmpeg.ps1` baixa os dois em `sala/third_party/`. Crate `ffmpeg-next` com o mesmo major do FFmpeg (7.1.x), features `codec`+`format` juntas.
 - `decoder::find(Id::AV1)` devolve libdav1d (software): use `find_by_name("av1")` para hwaccel D3D11VA.
 - Nunca chamar `sala_video::capabilities()` (probe bloqueante, 2–4 s) de código async ou testes: use `capabilities_if_ready()`; só o `main` aquece o cache.
+- `windows-capture` 2.x: API difere da memória (`start_free_threaded`, `Settings::new` com 8 args, `as_nopadding_buffer`); leia os fontes no registry após `cargo fetch`. WGC só emite quadro quando a tela muda: reenviar o último quadro.
+- `ffmpeg-next`: swscale exige feature `software-scaling`; `rc_buffer_size` sem setter (escreva via `as_mut_ptr()` antes do `open`). Erro opaco de encoder: rode `third_party/ffmpeg/bin/ffmpeg.exe` com o mesmo encoder para ver o log real (a MX110 desta máquina não tem NVENC).

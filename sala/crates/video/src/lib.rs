@@ -3,6 +3,10 @@
 //!
 //! FFmpeg is the LGPL shared build from `scripts/fetch-ffmpeg.ps1` (no libx264/GPL).
 
+pub mod capture;
+pub mod encoder;
+pub mod fragment;
+
 use std::sync::OnceLock;
 
 use sala_protocol::{Capabilities, VideoCodec};

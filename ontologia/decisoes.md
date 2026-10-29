@@ -198,3 +198,9 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - **Sem fallback `libx264`** (GPL): sem encoder de hardware não há transmissão, e a UI mostra `Compartilhar-sem-encoder`.
 - Invariante: codec escolhido ∈ encode local ∩ decode remoto, prioridade AV1 > HEVC > H.264 (`sala_video::choose_codec`). O probe abre de verdade cada encoder de hardware e decoder D3D11VA; só o `main` o aquece, e o `Hello` usa `capabilities_if_ready()` (nunca bloqueia o runtime; vazio se o probe ainda não terminou).
 - **Data:** 2026-10-29
+
+## D-026 — T-033b: captura WGC, encoder e fragmentação (F4)
+- Captura com `windows-capture =2.0.1` (PLANO §5.5). Cópia GPU→CPU (BGRA) aceita no MVP; `TODO(zero-copy D3D11)` em `capture.rs`.
+- Encoder: nvenc > amf > qsv, sem B-frames, GOP 20 s, CBR com VBV ~125 ms; BGRA→NV12 via swscale (feature `software-scaling`).
+- O receptor descarta deltas após perda até um keyframe (`inv-drop-deltas-until-keyframe`). Problema aberto para a T-033c: com 2% de perda quase todo keyframe de 1080p se perde (FEC, retransmissão ou keyframe menor), e o encode síncrono fica em 16–18 fps.
+- **Data:** 2026-10-29

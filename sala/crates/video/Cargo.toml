@@ -9,4 +9,5 @@ build = "build.rs"
 sala-protocol = { path = "../protocol" }
 tracing.workspace = true
 # Must match the FFmpeg major fetched by scripts/fetch-ffmpeg.ps1 (n7.1.x). Dynamic link only (LGPL).
-ffmpeg-next = { version = "=7.1.0", default-features = false, features = ["codec", "format"] }
+ffmpeg-next = { version = "=7.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+windows-capture = "=2.0.1"

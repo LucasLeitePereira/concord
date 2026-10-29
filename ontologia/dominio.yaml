@@ -207,6 +207,19 @@ conceitos:
     definicao: "Controle de bitrate da transmissão por perda e RTT do QUIC."
     secao: "§5.5"
 
+  - id: video-fragmentation
+    nome: VideoFragmentation
+    definicao: "Corte de um quadro codificado em VideoFragments e remontagem no receptor (fora de ordem, duplicatas ignoradas, timeout 250 ms)."
+    secao: "§5.5"
+  - id: screen-capture
+    nome: ScreenCapture
+    definicao: "Captura de monitor ou janela via Windows Graphics Capture (windows-capture), quadros BGRA; só emite quadro quando a tela muda."
+    secao: "§5.5"
+  - id: hw-video-encoder
+    nome: HwVideoEncoder
+    definicao: "Encoder FFmpeg por hardware (nvenc > amf > qsv), baixa latência, keyframe sob demanda; nunca libx264."
+    secao: "§5.5"
+
 relacoes:
   - {de: friend, rel: identificado_por, para: identity-fingerprint, card: "1:0..1"}
   - {de: config, rel: contem, para: friend, card: "1:N"}
@@ -270,7 +283,11 @@ invariantes:
   - id: inv-keyframe-request-500ms
     conceitos: [video-frame, control-message]
     regra: "Quadro de vídeo incompleto é descartado e gera KeyframeRequest, no máximo um a cada 500 ms."
-    testado_em: ""
+    testado_em: "sala/crates/video/src/fragment.rs (mod tests)"
+  - id: inv-drop-deltas-until-keyframe
+    conceitos: [video-frame]
+    regra: "Depois de uma perda (ou ao entrar no meio do fluxo), o receptor descarta quadros delta até chegar um keyframe."
+    testado_em: "sala/crates/video/src/fragment.rs (mod tests)"
   - id: inv-adaptive-bitrate-rule
     conceitos: [adaptive-bitrate, share-preset]
     regra: "Perda > 2% ⇒ bitrate × 0,8. Rede estável por 10 s ⇒ bitrate × 1,05, nunca acima do alvo do preset."
