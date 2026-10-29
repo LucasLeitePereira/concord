@@ -1,7 +1,7 @@
-//! Notification sounds synthesized in code (D-024): no audio files. Each [`Cue`] is a few
-//! sine tones with a raised-cosine envelope (no clicks), rendered at 48 kHz mono, the same
-//! rate and frame size as the voice pipeline. [`CuePlayer`] mixes them into the playout
-//! frame after the "deafened" silencing, so they are heard even while the app is silenced.
+//! Notification sounds (D-024). Each [`Cue`] is a WAV embedded in the binary
+//! (`assets/cues/`, Kenney "Interface Sounds", CC0), already at 48 kHz mono 16-bit with
+//! faded edges, the same rate as the voice pipeline. [`CuePlayer`] mixes them into the
+//! playout frame after the "deafened" silencing, so they are heard even while silenced.
 
 use crate::voice::SAMPLE_RATE;
 
@@ -30,19 +30,6 @@ pub enum Cue {
     CallFailed,
 }
 
-/// `(frequency 1, frequency 2, milliseconds)`; frequency 0 = silence / no second tone.
-type Seg = (f32, f32, u32);
-
-const fn tone(hz: f32, ms: u32) -> Seg {
-    (hz, 0.0, ms)
-}
-
-const fn rest(ms: u32) -> Seg {
-    (0.0, 0.0, ms)
-}
-
-/// Length of the fade in/out of each tone, in milliseconds.
-const FADE_MS: u32 = 6;
 /// Longest queue of one-shot cues (older ones are dropped).
 const MAX_SHOTS: usize = 8;
 
@@ -69,39 +56,45 @@ impl Cue {
 
     /// Length in milliseconds of one play (one period for the loops).
     pub fn duration_ms(self) -> u32 {
-        let (segs, _, pad) = self.recipe();
-        let sum: u32 = segs.iter().map(|s| s.2).sum();
-        sum.max(pad)
+        let (wav, _, pad) = self.recipe();
+        let n = pcm16(wav).len() as u32;
+        ((n * 1000).div_ceil(SAMPLE_RATE)).max(pad)
     }
 
-    /// Segments, amplitude and the minimum total length (silence is appended up to it).
-    fn recipe(self) -> (Vec<Seg>, f32, u32) {
+    /// Embedded WAV, amplitude and the minimum total length (silence is appended up to it;
+    /// for the loops it is the period).
+    fn recipe(self) -> (&'static [u8], f32, u32) {
+        macro_rules! wav {
+            ($name:literal) => {
+                include_bytes!(concat!("../assets/cues/", $name, ".wav")).as_slice()
+            };
+        }
         match self {
-            Cue::SelfJoin => (vec![tone(523.25, 90), tone(783.99, 140)], 0.55, 0),
-            Cue::SelfLeave => (vec![tone(783.99, 90), tone(523.25, 140)], 0.55, 0),
-            Cue::PeerJoin => (vec![tone(659.25, 70), tone(880.0, 110)], 0.32, 0),
-            Cue::PeerLeave => (vec![tone(880.0, 70), tone(659.25, 110)], 0.32, 0),
-            Cue::Mute => (vec![tone(520.0, 40), tone(340.0, 60)], 0.4, 0),
-            Cue::Unmute => (vec![tone(340.0, 40), tone(520.0, 60)], 0.4, 0),
-            Cue::Deafen => (vec![tone(420.0, 45), tone(240.0, 80)], 0.4, 0),
-            Cue::Undeafen => (vec![tone(240.0, 45), tone(420.0, 80)], 0.4, 0),
-            Cue::Message => (vec![tone(880.0, 60), tone(1174.66, 100)], 0.38, 0),
-            // Ring, ring, then a pause: 2 s period.
-            Cue::RingIncoming => (
-                vec![tone(659.25, 140), tone(783.99, 140), rest(60), tone(659.25, 140), tone(783.99, 140)],
-                0.5,
-                2000,
-            ),
-            // Classic ringback: 1 s of two tones, 2 s of silence.
-            Cue::RingOutgoing => (vec![(440.0, 480.0, 1000)], 0.3, 3000),
-            Cue::CallFailed => (vec![tone(440.0, 110), tone(349.23, 110), tone(261.63, 220)], 0.45, 0),
+            Cue::SelfJoin => (wav!("self_join"), 0.6, 0),
+            Cue::SelfLeave => (wav!("self_leave"), 0.6, 0),
+            Cue::PeerJoin => (wav!("peer_join"), 0.4, 0),
+            Cue::PeerLeave => (wav!("peer_leave"), 0.4, 0),
+            Cue::Mute => (wav!("mute"), 0.5, 0),
+            Cue::Unmute => (wav!("unmute"), 0.5, 0),
+            Cue::Deafen => (wav!("deafen"), 0.5, 0),
+            Cue::Undeafen => (wav!("undeafen"), 0.5, 0),
+            Cue::Message => (wav!("message"), 0.45, 0),
+            // The sound, then a pause: 2 s period.
+            Cue::RingIncoming => (wav!("ring_incoming"), 0.6, 2000),
+            Cue::RingOutgoing => (wav!("ring_outgoing"), 0.4, 3000),
+            Cue::CallFailed => (wav!("call_failed"), 0.5, 0),
         }
     }
 
     /// The whole sound at 48 kHz mono, samples in [-1, 1].
     pub fn synth(self) -> Vec<f32> {
-        let (segs, amp, min_ms) = self.recipe();
-        render(&segs, amp, min_ms)
+        let (wav, amp, min_ms) = self.recipe();
+        let mut out: Vec<f32> = pcm16(wav).iter().map(|&s| f32::from(s) / 32768.0 * amp).collect();
+        let min = ms_to_samples(min_ms);
+        if out.len() < min {
+            out.resize(min, 0.0);
+        }
+        out
     }
 }
 
@@ -109,37 +102,20 @@ fn ms_to_samples(ms: u32) -> usize {
     (SAMPLE_RATE as usize * ms as usize) / 1000
 }
 
-fn render(segs: &[Seg], amp: f32, min_ms: u32) -> Vec<f32> {
-    let mut out: Vec<f32> = Vec::new();
-    for &(f1, f2, ms) in segs {
-        let n = ms_to_samples(ms);
-        if f1 <= 0.0 {
-            out.resize(out.len() + n, 0.0);
-            continue;
+/// Samples of the `data` chunk of a 16-bit PCM mono WAV (the format of `assets/cues/`;
+/// anything else yields no samples, which the tests catch).
+fn pcm16(wav: &[u8]) -> Vec<i16> {
+    let mut i = 12;
+    while i + 8 <= wav.len() {
+        let id = &wav[i..i + 4];
+        let len = u32::from_le_bytes([wav[i + 4], wav[i + 5], wav[i + 6], wav[i + 7]]) as usize;
+        let body = &wav[i + 8..(i + 8 + len).min(wav.len())];
+        if id == b"data" {
+            return body.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect();
         }
-        let fade = ms_to_samples(FADE_MS).min(n / 2).max(1);
-        let tones = if f2 > 0.0 { 2.0 } else { 1.0 };
-        for i in 0..n {
-            let t = i as f64 / f64::from(SAMPLE_RATE);
-            let mut v = (t * f64::from(f1) * std::f64::consts::TAU).sin();
-            if f2 > 0.0 {
-                v += (t * f64::from(f2) * std::f64::consts::TAU).sin();
-            }
-            // Raised-cosine edges: the segment starts and ends at exactly 0.
-            let edge = i.min(n - 1 - i);
-            let env = if edge >= fade {
-                1.0
-            } else {
-                0.5 - 0.5 * (std::f64::consts::PI * edge as f64 / fade as f64).cos()
-            };
-            out.push((v / tones * env) as f32 * amp);
-        }
+        i += 8 + len + (len & 1);
     }
-    let min = ms_to_samples(min_ms);
-    if out.len() < min {
-        out.resize(min, 0.0);
-    }
-    out
+    Vec::new()
 }
 
 struct Shot {
@@ -256,7 +232,13 @@ mod tests {
     fn every_cue_has_its_duration_sound_and_stays_in_range() {
         for cue in Cue::ALL {
             let s = cue.synth();
-            assert_eq!(s.len(), ms_to_samples(cue.duration_ms()), "{cue:?} length");
+            assert!(s.len().abs_diff(ms_to_samples(cue.duration_ms())) < 48, "{cue:?} length");
+            // The embedded file is 48 kHz mono 16-bit (fmt chunk right after the header).
+            let (wav, _, _) = cue.recipe();
+            assert_eq!(&wav[12..16], b"fmt ", "{cue:?} fmt");
+            assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 1, "{cue:?} mono");
+            assert_eq!(u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]), SAMPLE_RATE, "{cue:?} rate");
+            assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16, "{cue:?} bits");
             assert!(s.len() >= ms_to_samples(80), "{cue:?} too short");
             assert!(rms(&s) > 0.01, "{cue:?} is silent");
             assert!(peak(&s) <= 1.0, "{cue:?} exceeds full scale");
@@ -264,6 +246,16 @@ mod tests {
             // No click at the edges: it starts and ends at zero.
             assert!(s[0].abs() < 1e-3 && s[s.len() - 1].abs() < 1e-3, "{cue:?} edge");
         }
+    }
+
+    #[test]
+    fn pcm16_reads_only_the_data_chunk() {
+        let mut w = b"RIFF\0\0\0\0WAVE".to_vec();
+        w.extend_from_slice(b"LIST\x03\0\0\0abc\0"); // odd chunk + pad byte
+        w.extend_from_slice(b"data\x04\0\0\0\x01\0\xff\xff");
+        assert_eq!(pcm16(&w), [1, -1]);
+        // Control: no data chunk, no samples.
+        assert!(pcm16(&w[..w.len() - 12]).is_empty());
     }
 
     #[test]
@@ -312,7 +304,7 @@ mod tests {
         let level = |vol: u32| {
             let mut p = CuePlayer::new(vol);
             p.play(Cue::SelfJoin);
-            let mut f = vec![0.0f32; FRAME * 5];
+            let mut f = vec![0.0f32; FRAME * 25];
             p.mix_into(&mut f);
             peak(&f)
         };
