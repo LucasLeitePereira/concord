@@ -25,13 +25,27 @@ pub enum SharePreset {
     P1080p60,
     /// Native resolution (up to 4K), at most 15 fps: documents and code stay sharp.
     SharpText,
+    /// Picked by the user in the UI: 16:9 box of `height` lines (480, 720, 1080 or 1440) at
+    /// 30 or 60 fps. Build it with [`SharePreset::custom`].
+    Custom { height: u16, fps: u8 },
 }
 
 /// Largest size the "sharp text" preset hands to the encoder.
 const SHARP_TEXT_MAX: (u32, u32) = (3840, 2160);
 
 impl SharePreset {
+    /// The fixed presets (`Custom` is open-ended).
     pub const ALL: [SharePreset; 4] = [Self::P720p30, Self::P1080p30, Self::P1080p60, Self::SharpText];
+    /// Heights the UI offers.
+    pub const CUSTOM_HEIGHTS: [u32; 4] = [480, 720, 1080, 1440];
+
+    /// A user-picked preset; `None` unless `height` is 480/720/1080/1440 and `fps` 30 or 60.
+    pub fn custom(height: u32, fps: u32) -> Option<Self> {
+        if !Self::CUSTOM_HEIGHTS.contains(&height) || !matches!(fps, 30 | 60) {
+            return None;
+        }
+        Some(Self::Custom { height: height as u16, fps: fps as u8 })
+    }
 
     /// Frame rate the encoder is paced at.
     pub fn fps(self) -> u32 {
@@ -39,6 +53,7 @@ impl SharePreset {
             Self::P720p30 | Self::P1080p30 => 30,
             Self::P1080p60 => 60,
             Self::SharpText => 15,
+            Self::Custom { fps, .. } => u32::from(fps),
         }
     }
 
@@ -48,6 +63,7 @@ impl SharePreset {
             Self::P720p30 => (1280, 720),
             Self::P1080p30 | Self::P1080p60 => (1920, 1080),
             Self::SharpText => SHARP_TEXT_MAX,
+            Self::Custom { height, .. } => ((u32::from(height) * 16).div_ceil(9), u32::from(height)),
         }
     }
 
@@ -58,6 +74,19 @@ impl SharePreset {
             Self::P1080p30 => (6_000, 1_500, 10_000),
             Self::P1080p60 => (9_000, 2_500, 15_000),
             Self::SharpText => (5_000, 1_000, 10_000),
+            Self::Custom { height, fps } => {
+                let (i, lo, hi) = if height <= 480 {
+                    (1_500, 500, 2_500)
+                } else if height <= 720 {
+                    (3_000, 800, 5_000)
+                } else if height <= 1080 {
+                    (6_000, 1_500, 10_000)
+                } else {
+                    (10_000, 2_500, 16_000)
+                };
+                // 60 fps needs half as many bits again.
+                if fps > 30 { (i * 3 / 2, lo * 3 / 2, hi * 3 / 2) } else { (i, lo, hi) }
+            }
         };
         let (num, den) = match codec {
             VideoCodec::H264 => (10, 10),
@@ -118,6 +147,29 @@ mod tests {
         assert_eq!((c.width, c.height, c.fps), (2560, 1440, 15));
         let c = SharePreset::SharpText.encoder_config(VideoCodec::H264, 7680, 4320);
         assert_eq!((c.width, c.height), (3840, 2160));
+    }
+
+    #[test]
+    fn custom_presets_follow_the_ui_choice_and_never_upscale() {
+        assert_eq!(SharePreset::custom(480, 30).unwrap().output_size(1920, 1080), (852, 480));
+        assert_eq!(SharePreset::custom(1440, 60).unwrap().output_size(3840, 2160), (2560, 1440));
+        // Above the source: limited to the source, not enlarged.
+        assert_eq!(SharePreset::custom(1440, 30).unwrap().output_size(1366, 768), (1366, 768));
+        assert_eq!(SharePreset::custom(720, 60).unwrap().fps(), 60);
+        // Values the UI does not offer are refused.
+        assert!(SharePreset::custom(900, 30).is_none());
+        assert!(SharePreset::custom(720, 45).is_none());
+        for h in SharePreset::CUSTOM_HEIGHTS {
+            for fps in [30, 60] {
+                for codec in [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1] {
+                    let p = SharePreset::custom(h, fps).unwrap();
+                    let b = p.bitrate(codec);
+                    assert!(b.min < b.initial && b.initial < b.max, "{p:?} {codec:?} {b:?}");
+                }
+            }
+        }
+        let (a, b) = (SharePreset::custom(720, 30).unwrap(), SharePreset::custom(720, 60).unwrap());
+        assert!(b.bitrate(VideoCodec::H264).initial > a.bitrate(VideoCodec::H264).initial);
     }
 
     #[test]

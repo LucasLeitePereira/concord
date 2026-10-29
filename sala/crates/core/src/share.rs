@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use sala_protocol::{ControlMessage, MediaDatagram, VIDEO_PROTOCOL_VERSION, VideoCodec};
 use sala_video::abr::ReceiverReport as AbrReport;
-use sala_video::capture::{CaptureSession, Source};
+use sala_video::capture::{CaptureSession, Source, Target};
 use sala_video::fragment::{Frame, Output, Reassembler};
 use sala_video::preset::SharePreset;
 use sala_video::sender::{FrameSlot, RawFrame, Sender, SenderConfig};
@@ -404,9 +404,131 @@ pub fn screen_pipe(params: &ShareParams, codec: VideoCodec, source: &Source) -> 
     Ok(Pipe { control, datagrams, codec, width, height, fps })
 }
 
+// ---------------------------------------------------------------- UI-facing planning
+
+/// Id of a source in the IPC (`ShareSource.id`).
+pub fn source_id(target: Target) -> String {
+    match target {
+        Target::Monitor(h) => format!("monitor:{h}"),
+        Target::Window(h) => format!("window:{h}"),
+    }
+}
+
+/// Inverse of [`source_id`].
+pub fn parse_source_id(id: &str) -> Option<Target> {
+    let (kind, handle) = id.split_once(':')?;
+    let handle: usize = handle.parse().ok()?;
+    match kind {
+        "monitor" => Some(Target::Monitor(handle)),
+        "window" => Some(Target::Window(handle)),
+        _ => None,
+    }
+}
+
+/// Codec to share with. The friends' decoders are not known here, so H.264 (decodable
+/// everywhere, in hardware or software) wins when this PC can encode it.
+pub fn pick_codec(caps: &sala_protocol::Capabilities) -> Option<VideoCodec> {
+    if caps.hw_encode.contains(&VideoCodec::H264) { Some(VideoCodec::H264) } else { caps.hw_encode.first().copied() }
+}
+
+/// `"nvenc"` / `"amf"` / `"qsv"`: the first backend that opened for `codec`.
+pub fn encoder_backend(report: &sala_video::ProbeReport, codec: VideoCodec) -> Option<String> {
+    let a = report.encoders.iter().find(|a| a.ok && a.codec == codec)?;
+    a.name.split_once('_').map(|(_, backend)| backend.to_string())
+}
+
+/// What the "choose what to share" dialog shows. Blocking (probe cache and window enumeration).
+pub fn list_share_sources() -> (Option<String>, Vec<sala_protocol::ShareSource>, Vec<sala_protocol::ShareSource>) {
+    let report = sala_video::report();
+    let encoder = pick_codec(&report.capabilities).and_then(|c| encoder_backend(report, c));
+    let convert = |list: Result<Vec<Source>, sala_video::capture::CaptureError>| -> Vec<sala_protocol::ShareSource> {
+        list.unwrap_or_else(|e| {
+            tracing::warn!("cannot list the capture sources: {e}");
+            Vec::new()
+        })
+        .into_iter()
+        .map(|s| sala_protocol::ShareSource {
+            id: source_id(s.target),
+            name: s.name,
+            width: s.width,
+            height: s.height,
+            primary: s.primary,
+        })
+        .collect()
+    };
+    (encoder, convert(sala_video::capture::list_monitors()), convert(sala_video::capture::list_windows()))
+}
+
+/// A share ready to start: the preset, the factory that opens capture and encoder, and the
+/// height the viewers will really get (the requested one capped at the source's).
+pub struct ShareLaunch {
+    pub preset: SharePreset,
+    pub factory: PipeFactory,
+    pub resolution: u32,
+}
+
+/// Turns a UI request into a [`ShareLaunch`]; injectable in the `Controller` (tests use a
+/// synthetic source).
+pub type SharePlanner = Box<dyn Fn(&str, u32, u32) -> Result<ShareLaunch, String> + Send>;
+
+/// The real planner: finds the source again (handles are stable, the list is not), picks the
+/// codec and builds the screen pipe.
+pub fn real_share_planner() -> SharePlanner {
+    Box::new(|source_id_str, resolution, fps| {
+        let preset = SharePreset::custom(resolution, fps).ok_or_else(|| format!("invalid quality: {resolution}p{fps}"))?;
+        let target = parse_source_id(source_id_str).ok_or_else(|| format!("invalid source {source_id_str:?}"))?;
+        let list = match target {
+            Target::Monitor(_) => sala_video::capture::list_monitors(),
+            Target::Window(_) => sala_video::capture::list_windows(),
+        }
+        .map_err(|e| format!("cannot list the sources: {e}"))?;
+        let source = list.into_iter().find(|s| s.target == target).ok_or("the source is gone")?;
+        let caps = sala_video::capabilities_if_ready().ok_or("still probing the video hardware, try again")?;
+        let codec = pick_codec(&caps).ok_or("this PC has no hardware video encoder")?;
+        let height = if source.height == 0 { resolution } else { preset.output_size(source.width, source.height).1 };
+        Ok(ShareLaunch {
+            preset,
+            factory: Box::new(move |params| screen_pipe(params, codec, &source)),
+            resolution: height,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_ids_round_trip_and_reject_garbage() {
+        for t in [Target::Monitor(65537), Target::Window(394), Target::Window(0)] {
+            assert_eq!(parse_source_id(&source_id(t)), Some(t));
+        }
+        assert_eq!(source_id(Target::Monitor(7)), "monitor:7");
+        for bad in ["", "monitor", "monitor:", "monitor:x", "screen:1", ":1", "window:-1"] {
+            assert_eq!(parse_source_id(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn codec_and_backend_choice() {
+        use sala_protocol::Capabilities;
+        let caps = |hw_encode: Vec<VideoCodec>| Capabilities { hw_encode, hw_decode: vec![] };
+        assert_eq!(pick_codec(&caps(vec![])), None);
+        assert_eq!(pick_codec(&caps(vec![VideoCodec::Av1, VideoCodec::H264])), Some(VideoCodec::H264));
+        assert_eq!(pick_codec(&caps(vec![VideoCodec::Hevc])), Some(VideoCodec::Hevc));
+
+        let attempt = |codec, name: &str, ok| sala_video::Attempt { codec, name: name.into(), ok, detail: String::new() };
+        let report = sala_video::ProbeReport {
+            encoders: vec![
+                attempt(VideoCodec::H264, "h264_nvenc", false),
+                attempt(VideoCodec::H264, "h264_amf", false),
+                attempt(VideoCodec::H264, "h264_qsv", true),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(encoder_backend(&report, VideoCodec::H264).as_deref(), Some("qsv"));
+        assert_eq!(encoder_backend(&report, VideoCodec::Av1), None);
+    }
 
     #[test]
     fn loss_meter_counts_fragments_and_gaps() {

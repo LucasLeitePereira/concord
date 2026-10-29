@@ -27,7 +27,7 @@ use crate::identity::LocalIdentity;
 use crate::ipc::{ClientId, IpcClient, IpcError, IpcServer, current_user_pipe_name};
 use crate::platform::{self, Hotkey, HotkeyAction, MenuItem, Platform, PlatformEvent, TrayState};
 use crate::session::{AudioSource, Session, SessionEvent, StatusFlags};
-use crate::share::VideoFrame;
+use crate::share::{SharePlanner, VideoFrame, list_share_sources, real_share_planner};
 use crate::settings;
 use crate::ui_process::{SHUTDOWN_TIMEOUT, ShutdownOutcome, UiProcess, resolve_ui_exe};
 use crate::voice::clamp_volume;
@@ -120,7 +120,7 @@ pub enum Step {
     UiShutdown(ShutdownOutcome),
     /// Step 2 (extension point, F4).
     CloseViewer,
-    /// Step 3 (extension point, F4); not recorded with `keep_sharing_in_game_mode`.
+    /// Step 3: the screen share was stopped; not run with `keep_sharing_in_game_mode`.
     StopSharing,
     /// Step 4: working set handed back to the OS.
     ReleaseMemory,
@@ -245,6 +245,10 @@ pub struct Controller<P: PlatformApi> {
     viewer_sink: ViewerSink,
     /// `take_video_frames` was already handed to the forwarder thread.
     video_forwarded: bool,
+    /// Turns a `StartShare` into a pipe factory (tests use a synthetic source).
+    share_planner: SharePlanner,
+    /// Height and fps of the running share (what `ShareState` reports); `None` = not sharing.
+    share: Option<(u32, u32)>,
     session: Arc<Session>,
     host: UiHost,
     platform: P,
@@ -271,6 +275,8 @@ impl<P: PlatformApi> Controller<P> {
             viewer_opener: real_viewer_opener(),
             viewer_sink: Arc::new(Mutex::new(None)),
             video_forwarded: false,
+            share_planner: real_share_planner(),
+            share: None,
             session,
             host,
             platform,
@@ -289,6 +295,53 @@ impl<P: PlatformApi> Controller<P> {
     /// Replaces how the viewer window is created (tests use a fake).
     pub fn set_viewer_opener(&mut self, opener: ViewerOpener) {
         self.viewer_opener = opener;
+    }
+
+    /// Replaces how a `StartShare` is turned into a video pipe (tests use a synthetic source).
+    pub fn set_share_planner(&mut self, planner: SharePlanner) {
+        self.share_planner = planner;
+    }
+
+    /// Whether this PC is sharing its screen.
+    pub fn sharing(&self) -> bool {
+        self.share.is_some()
+    }
+
+    /// Starts sharing `source_id` at `resolution` (height) and `fps` (`screen-share`). Opening
+    /// capture and encoder can take a while, so it runs off the async threads.
+    pub async fn start_share(&mut self, source_id: &str, resolution: u32, fps: u32) -> Result<(), String> {
+        if self.share.is_some() {
+            return Err("já está transmitindo a tela".into());
+        }
+        let launch = (self.share_planner)(source_id, resolution, fps)?;
+        let session = self.session.clone();
+        let (preset, factory) = (launch.preset, launch.factory);
+        tokio::task::spawn_blocking(move || session.start_share(preset, factory))
+            .await
+            .map_err(|e| format!("falha ao iniciar a transmissão: {e}"))??;
+        self.share = Some((launch.resolution, preset.fps()));
+        info!(resolution = launch.resolution, fps = preset.fps(), "screen share started");
+        self.publish_share();
+        Ok(())
+    }
+
+    /// Stops the screen share (D-012 step 3 and `StopShare`); harmless when not sharing.
+    pub fn stop_share(&mut self) {
+        let was = self.share.take().is_some();
+        self.session.stop_share();
+        if was {
+            info!("screen share stopped");
+            self.publish_share();
+        }
+    }
+
+    fn share_state_msg(&self) -> CoreToUi {
+        let (resolution, fps) = self.share.unwrap_or((0, 0));
+        CoreToUi::ShareState { sharing: self.share.is_some(), resolution, fps }
+    }
+
+    fn publish_share(&self) {
+        self.host.ipc.broadcast(&self.share_state_msg());
     }
 
     /// The viewer window is on screen.
@@ -396,7 +449,7 @@ impl<P: PlatformApi> Controller<P> {
         self.close_viewer();
         self.steps.push(Step::CloseViewer);
         if !self.keep_sharing {
-            // TODO(F4): stop the screen share.
+            self.stop_share();
             self.steps.push(Step::StopSharing);
         }
         release_working_set();
@@ -747,6 +800,18 @@ impl<P: PlatformApi> Controller<P> {
                     self.reply_error(client, format!("não foi possível abrir o visualizador: {e}"));
                 }
             }
+            UiToCore::ListShareSources => {
+                let (encoder, monitors, windows) =
+                    tokio::task::spawn_blocking(list_share_sources).await.unwrap_or_default();
+                self.host.ipc.send_to(client, &CoreToUi::ShareSources { encoder, monitors, windows });
+            }
+            UiToCore::StartShare { source_id, resolution, fps } => {
+                if let Err(e) = self.start_share(&source_id, resolution, fps).await {
+                    warn!("cannot start the screen share: {e}");
+                    self.reply_error(client, format!("não foi possível transmitir a tela: {e}"));
+                }
+            }
+            UiToCore::StopShare => self.stop_share(),
         }
     }
 
@@ -760,6 +825,7 @@ impl<P: PlatformApi> Controller<P> {
         ipc.send_to(client, &status_msg(self.session.local_status()));
         let (incoming, outgoing) = self.session.calls();
         ipc.send_to(client, &CoreToUi::Calls { incoming, outgoing });
+        ipc.send_to(client, &self.share_state_msg());
         for friend in self.session.connected_friends() {
             ipc.send_to(client, &CoreToUi::PeerConnected { friend: friend.clone() });
             if let Some(p) = self.session.peer_status(&friend) {

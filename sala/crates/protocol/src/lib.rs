@@ -406,6 +406,26 @@ pub enum UiToCore {
     SetHotkeyCapture { on: bool },
     /// Answered with `CoreToUi::TailnetPeers` (devices of this PC's Tailscale network).
     ListTailnetPeers,
+    /// Answered with `CoreToUi::ShareSources` (monitors and windows that can be shared).
+    ListShareSources,
+    /// Starts sharing the screen. `source_id` comes from `ShareSources`; `resolution` is the
+    /// height (480, 720, 1080 or 1440; capped at the source's, never upscaled), `fps` 30 or 60.
+    /// Success is told by `ShareState`; failure by `Error`.
+    StartShare { source_id: String, resolution: u32, fps: u32 },
+    /// Stops the screen share (harmless when not sharing).
+    StopShare,
+}
+
+/// One monitor or window that can be shared (`screen-capture`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareSource {
+    /// Opaque id for `StartShare`: `"monitor:<handle>"` or `"window:<handle>"`.
+    pub id: String,
+    pub name: String,
+    /// Pixels; 0 x 0 when unknown (windows).
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
 }
 
 /// One device of the Tailscale network (own tailnet or shared with us).
@@ -488,6 +508,12 @@ pub enum CoreToUi {
     /// How a ring ended without a join: `"declined"`, `"timeout"`, `"cancelled"` (the caller
     /// gave up) or `"unsupported"` (the friend's Concord is too old to ring).
     CallResult { friend: String, result: String },
+    /// Reply to `ListShareSources`. `encoder` is the hardware backend that will encode
+    /// (`"nvenc"`, `"amf"` or `"qsv"`); `None` = this PC cannot share its screen.
+    ShareSources { encoder: Option<String>, monitors: Vec<ShareSource>, windows: Vec<ShareSource> },
+    /// Whether this PC is sharing its screen, at what height and fps (0 when not). Sent at
+    /// every change and on `GetState`.
+    ShareState { sharing: bool, resolution: u32, fps: u32 },
 }
 
 /// Encodes an IPC message as exactly one JSON line terminated by `\n`.
@@ -773,6 +799,9 @@ mod tests {
             UiToCore::SetHotkeyCapture { on: true },
             UiToCore::ListTailnetPeers,
             UiToCore::SetPeerVolume { friend: "bia".into(), volume: 1.5 },
+            UiToCore::ListShareSources,
+            UiToCore::StartShare { source_id: "monitor:65537".into(), resolution: 1080, fps: 60 },
+            UiToCore::StopShare,
         ];
         for c in cmds {
             let l = encode_ipc_line(&c).unwrap();
@@ -798,6 +827,13 @@ mod tests {
             CoreToUi::PeerStatus { friend: "bia".into(), muted: true, deafened: false, game_mode: true, sharing: false, in_room: false },
             CoreToUi::FingerprintMismatch { friend: "bia".into() },
             CoreToUi::PeerNotInTailnet { friend: "bia".into() },
+            CoreToUi::ShareSources {
+                encoder: Some("nvenc".into()),
+                monitors: vec![ShareSource { id: "monitor:65537".into(), name: "DELL".into(), width: 1920, height: 1080, primary: true }],
+                windows: vec![ShareSource { id: "window:394".into(), name: "Notepad".into(), width: 0, height: 0, primary: false }],
+            },
+            CoreToUi::ShareSources { encoder: None, monitors: vec![], windows: vec![] },
+            CoreToUi::ShareState { sharing: true, resolution: 720, fps: 30 },
             CoreToUi::TailnetPeers {
                 running: true,
                 peers: vec![TailnetPeer {
@@ -876,6 +912,14 @@ mod tests {
             "{\"type\":\"AcceptCall\",\"friend\":\"bia\"}\n"
         );
         assert_eq!(encode_ipc_line(&UiToCore::JoinRoom).unwrap(), "{\"type\":\"JoinRoom\"}\n");
+        assert_eq!(
+            encode_ipc_line(&UiToCore::StartShare { source_id: "monitor:1".into(), resolution: 720, fps: 30 }).unwrap(),
+            "{\"type\":\"StartShare\",\"source_id\":\"monitor:1\",\"resolution\":720,\"fps\":30}\n"
+        );
+        assert_eq!(
+            encode_ipc_line(&CoreToUi::ShareState { sharing: false, resolution: 0, fps: 0 }).unwrap(),
+            "{\"type\":\"ShareState\",\"sharing\":false,\"resolution\":0,\"fps\":0}\n"
+        );
         assert_eq!(
             encode_ipc_line(&CoreToUi::Calls { incoming: vec!["a".into()], outgoing: vec![] }).unwrap(),
             "{\"type\":\"Calls\",\"incoming\":[\"a\"],\"outgoing\":[]}\n"
