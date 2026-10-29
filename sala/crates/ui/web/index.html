@@ -30,7 +30,8 @@
     <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 16.5h.01"></path></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"></path><path d="M8.5 12l2.5 2.5 4.5-5"></path></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4"></path></symbol>
-    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"></path></symbol>
+    <symbol id="i-copy"viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></symbol>
   </defs>
 </svg>
 
@@ -45,7 +46,7 @@
     <div class="nav-links">
       <button type="button" class="nav-item" id="nav-call" data-view="call"><svg class="ico" width="18" height="18" aria-hidden="true"><use href="#i-headphones"></use></svg>Chamada</button>
       <button type="button" class="nav-item" id="nav-friends" data-view="friends"><svg class="ico" width="18" height="18" aria-hidden="true"><use href="#i-users"></use></svg>Amigos</button>
-      <button type="button" class="nav-item" disabled title="Em breve" aria-label="Compartilhar tela (em breve)"><svg class="ico" width="18" height="18" aria-hidden="true"><use href="#i-screen"></use></svg>Compartilhar tela</button>
+      <button type="button" class="nav-item" id="nav-share"><svg class="ico" width="18" height="18" aria-hidden="true"><use href="#i-screen"></use></svg>Compartilhar tela<span class="pill live small nav-live" id="nav-share-live" hidden><span class="dot" aria-hidden="true"></span>Ao vivo</span></button>
       <button type="button" class="nav-item" disabled title="Em breve" aria-label="Mesa de sons (em breve)"><svg class="ico" width="18" height="18" aria-hidden="true"><use href="#i-wave"></use></svg>Mesa de sons</button>
       <button type="button" class="nav-item" id="nav-settings" data-view="settings"><svg class="ico" width="18" height="18" aria-hidden="true"><use href="#i-sliders"></use></svg>Ajustes</button>
     </div>
@@ -89,7 +90,7 @@
       <div class="toolbar" role="toolbar" aria-label="Controles da chamada">
         <button type="button" class="ctl" id="btn-mute"><svg class="ico" width="20" height="20" aria-hidden="true"><use id="use-mute" href="#i-mic"></use></svg><span id="lbl-mute">Mutar-se</span></button>
         <button type="button" class="ctl" id="btn-deaf"><svg class="ico" width="20" height="20" aria-hidden="true"><use id="use-deaf" href="#i-headphones"></use></svg><span id="lbl-deaf">Silenciar</span></button>
-        <button type="button" class="ctl" disabled title="Em breve" aria-label="Compartilhar tela (em breve)"><svg class="ico" width="20" height="20" aria-hidden="true"><use href="#i-screen"></use></svg>Tela</button>
+        <button type="button" class="ctl" id="btn-share" aria-label="Tela transmitindo" aria-pressed="false"><svg class="ico" width="20" height="20" aria-hidden="true"><use href="#i-screen"></use></svg>Tela</button>
         <button type="button" class="ctl" disabled title="Em breve" aria-label="Mesa de sons (em breve)"><svg class="ico" width="20" height="20" aria-hidden="true"><use href="#i-wave"></use></svg>Sons</button>
         <button type="button" class="ctl danger" id="btn-room"><svg class="ico" width="20" height="20" aria-hidden="true"><use id="use-room" href="#i-hangup"></use></svg><span id="lbl-room">Desligar</span></button>
       </div>
@@ -278,6 +279,8 @@
   <div class="brand-mark big" aria-hidden="true"><svg class="ico" width="28" height="28" style="stroke-width:2.2"><use href="#i-brand"></use></svg></div>
   <span>Conectando ao núcleo…</span>
 </div>
+
+<div class="modal" id="share-modal" hidden></div>
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 

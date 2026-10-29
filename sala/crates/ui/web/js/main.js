@@ -4,9 +4,11 @@
 import {
   initialState, setLink, reduce, friends, inRoom, callPeers, chatPeer, roomAction,
   friendStatus, friendPresence, avatarIndex, micText, formatDuration, callSeconds, formatClock, initial,
+  sharingPeers, shareConsumeError, encoderLabel,
 } from './state.js';
 import { initSettings } from './settings.js';
 import { initFriends } from './friends.js';
+import { initShare } from './share.js';
 
 const tauri = window.__TAURI__;
 const state = initialState();
@@ -48,6 +50,7 @@ const linked = () => state.link === 'connected';
 
 const { renderSettings, renderMicMeter } = initSettings({ state, send, h, icon });
 const { renderFriendsView, requestTailnet } = initFriends({ state, send, h, icon });
+const { openShare, renderShare } = initShare({ state, send, h, icon, linked });
 let micMeterOn = false;
 
 function setMicMeter(on) {
@@ -308,12 +311,57 @@ function renderStage() {
   $('stage').replaceChildren(...cards);
   updateTileMeta();
 
-  // Banner de transmissão do amigo (o núcleo só anuncia `sharing` quando existir).
-  const sharer = callPeers(state).find((n) => state.peers[n].status.sharing);
-  $('share-banner').replaceChildren(...(sharer ? [h('div', { class: 'banner' },
-    h('div', { class: 'banner-icon' }, icon('i-screen', 20)),
-    h('div', { class: 'banner-text' }, h('strong', {}, `${sharer} está transmitindo a tela`)),
-    h('button', { type: 'button', class: 'btn primary', disabled: !linked(), onclick: () => send({ type: 'OpenViewer' }) }, 'Assistir'))] : []));
+  renderShareBanners();
+}
+
+// Banners de transmissão: a nossa ("você ao vivo") e a dos amigos. Nada abre sozinho.
+function renderShareBanners() {
+  const out = [];
+  if (state.share.sharing) {
+    const s = state.share;
+    const enc = state.shareSources && encoderLabel(state.shareSources.encoder);
+    const detail = [s.source, `${s.resolution}p · ${s.fps} fps`, enc].filter(Boolean).join(' · ');
+    out.push(h('div', { class: 'banner live' },
+      h('div', { class: 'banner-icon' }, h('span', { class: 'live-dot', 'aria-hidden': 'true' })),
+      h('div', { class: 'banner-text' },
+        h('strong', {}, 'Você está transmitindo'),
+        h('span', { class: 'mono' }, detail)),
+      h('button', {
+        type: 'button', class: 'btn danger', 'data-key': 'share-stop', disabled: !linked(),
+        onclick: () => send({ type: 'StopShare' }),
+      }, 'Parar')));
+  }
+  for (const name of sharingPeers(state)) {
+    out.push(h('div', { class: 'banner' },
+      h('div', { class: 'banner-icon' }, icon('i-screen', 20)),
+      h('div', { class: 'banner-text' }, h('strong', {}, `${name} está transmitindo a tela`)),
+      h('button', {
+        type: 'button', class: 'btn primary', 'data-key': `share-watch:${name}`, disabled: !linked(),
+        onclick: () => send({ type: 'OpenViewer' }),
+      }, 'Assistir')));
+  }
+  $('share-banner').replaceChildren(...out);
+}
+
+function renderShareControls() {
+  const live = state.share.sharing;
+  $('nav-share-live').hidden = !live;
+  const btn = $('btn-share');
+  btn.classList.toggle('tint', live);
+  btn.setAttribute('aria-pressed', String(live));
+  btn.disabled = !linked() || !state.status;
+  $('nav-share').disabled = !linked();
+}
+
+// Item da lateral e botão "Tela": parados abrem o diálogo; ao vivo, o botão para a transmissão.
+function onShareNav() {
+  if (state.share.sharing) setView('call');
+  else openShare();
+}
+
+function onShareButton() {
+  if (state.share.sharing) send({ type: 'StopShare' });
+  else openShare();
 }
 
 function updateTileMeta() {
@@ -439,7 +487,9 @@ function render() {
   renderHeader();
   renderStage();
   renderControls();
+  renderShareControls();
   renderChat();
+  renderShare();
   renderFriendsView();
   renderSettings();
   if (key) {
@@ -493,7 +543,8 @@ let lastChatPeer = null;
 function onCore(msg) {
   const what = reduce(state, msg);
   if (what === 'error') {
-    toast(`Núcleo: ${msg.message}`);
+    if (shareConsumeError(state, msg.message)) renderShare();
+    else toast(`Núcleo: ${msg.message}`);
     return;
   }
   if (what === 'none') return;
@@ -525,6 +576,8 @@ function onCore(msg) {
 $('btn-mute').addEventListener('click', toggleMute);
 $('btn-deaf').addEventListener('click', toggleDeafen);
 $('game-top').addEventListener('click', () => send({ type: 'EnterGameMode' }));
+$('nav-share').addEventListener('click', onShareNav);
+$('btn-share').addEventListener('click', onShareButton);
 $('btn-room').addEventListener('click', () => {
   if (inRoom(state)) {
     send({ type: 'HangUp' });

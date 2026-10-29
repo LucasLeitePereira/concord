@@ -19,7 +19,18 @@ export function initialState() {
     systemSeq: 0,
     volumes: {}, // nome -> 0..200 (só da sessão da interface)
     view: 'call',
+    share: initialShare(), // CoreToUi::ShareState (a nossa transmissão)
+    shareSources: null, // null (nunca chegou) | { encoder, monitors, windows } (ShareSources)
+    shareDialog: initialShareDialog(), // só da interface: diálogo Compartilhar
   };
+}
+
+function initialShare() {
+  return { sharing: false, resolution: 0, fps: 0, source: null };
+}
+
+function initialShareDialog() {
+  return { open: false, tab: 'telas', sourceId: null, res: 1080, fps: 60, pending: false, pendingName: null, error: null };
 }
 
 function peer(state, name) {
@@ -37,6 +48,8 @@ export function setLink(state, link) {
     state.peers = {};
     state.mismatch = {};
     state.calls = { incoming: [], outgoing: [] };
+    state.share = initialShare();
+    state.shareDialog.pending = false;
   }
 }
 
@@ -139,8 +152,31 @@ export function reduce(state, msg) {
       state.chat.push({ id: `sys-${state.systemSeq}`, system: true, from_self: false, text, sent_at: Date.now() });
       return 'chat';
     }
+    case 'ShareSources': {
+      const list = (v) => (Array.isArray(v) ? v.filter((s) => s && typeof s.id === 'string') : []);
+      state.shareSources = {
+        encoder: typeof msg.encoder === 'string' && msg.encoder ? msg.encoder : null,
+        monitors: list(msg.monitors),
+        windows: list(msg.windows),
+      };
+      state.shareDialog.error = null;
+      return 'full';
+    }
+    case 'ShareState': {
+      const d = state.shareDialog;
+      state.share = {
+        sharing: !!msg.sharing,
+        resolution: Number(msg.resolution) || 0,
+        fps: Number(msg.fps) || 0,
+        source: msg.sharing ? (d.pendingName || state.share.source) : null,
+      };
+      d.pending = false;
+      d.pendingName = null;
+      if (msg.sharing) d.open = false; // começou: o diálogo cumpriu o papel
+      return 'full';
+    }
     case 'ChatHistory':
-      state.chat = (Array.isArray(msg.entries) ? msg.entries.slice() : [])
+      state.chat =(Array.isArray(msg.entries) ? msg.entries.slice() : [])
         .concat(state.chat.filter((e) => e.system));
       return 'chat';
     case 'ChatReceived':
@@ -268,6 +304,94 @@ export function isTailscaleIp(ip) {
   const o = m.slice(1).map(Number);
   if (o.some((n) => n > 255)) return false;
   return o[0] === 100 && o[1] >= 64 && o[1] <= 127;
+}
+
+// ---------- Compartilhar tela ----------
+
+export const SHARE_RESOLUTIONS = [480, 720, 1080, 1440];
+export const SHARE_FPS = [30, 60];
+const SHARE_DIMS = { 480: [854, 480], 720: [1280, 720], 1080: [1920, 1080], 1440: [2560, 1440] };
+// Mbps a 30 / 60 fps (DESIGN.md).
+const SHARE_MBPS = { 480: [1.5, 2.5], 720: [3, 5], 1080: [6, 8], 1440: [10, 14] };
+export const SHARE_UPLOAD_MBPS = 250;
+
+// Amigos (na chamada) que estão transmitindo a tela.
+export function sharingPeers(state) {
+  return callPeers(state).filter((n) => state.peers[n].status && state.peers[n].status.sharing);
+}
+
+export function shareBitrateMbps(res, fps) {
+  const row = SHARE_MBPS[res];
+  return row ? row[fps === 60 ? 1 : 0] : 0;
+}
+
+// Números com vírgula decimal: 1,5.
+export function formatMbps(v) {
+  return String(v).replace('.', ',');
+}
+
+// Rótulo do chip do encoder; `null` quando não há encoder em hardware.
+export function encoderLabel(encoder) {
+  if (!encoder) return null;
+  const known = { qsv: 'QuickSync · H.264', nvenc: 'NVENC', amf: 'AMF' };
+  return known[encoder] || String(encoder).toUpperCase();
+}
+
+// Resoluções que cabem na fonte (largura e altura 16:9); fonte 0x0 = desconhecida, não limita.
+// Sem encoder em hardware o teto é 720p.
+export function shareAllowedRes(source, noEncoder) {
+  const w = source ? source.width : 0;
+  const hgt = source ? source.height : 0;
+  return SHARE_RESOLUTIONS.filter((r) => {
+    if (noEncoder && r > 720) return false;
+    const [rw, rh] = SHARE_DIMS[r];
+    return !((hgt > 0 && rh > hgt) || (w > 0 && rw > w));
+  });
+}
+
+// Tudo o que o diálogo precisa, já resolvido: fonte escolhida, resolução/fps válidos,
+// notas e se dá para começar. A escolha inválida cai para a maior permitida.
+export function shareView(state) {
+  const d = state.shareDialog;
+  const src = state.shareSources;
+  const loaded = !!src;
+  const noEncoder = loaded && !src.encoder;
+  const list = loaded ? (d.tab === 'janelas' ? src.windows : src.monitors) : [];
+  const source = list.find((s) => s.id === d.sourceId) || list[0] || null;
+  const allowedRes = shareAllowedRes(source, noEncoder);
+  const res = allowedRes.includes(d.res) ? d.res : (allowedRes[allowedRes.length - 1] || 480);
+  const allowedFps = noEncoder ? [30] : SHARE_FPS;
+  const fps = allowedFps.includes(d.fps) ? d.fps : allowedFps[allowedFps.length - 1];
+  const notes = [];
+  const known = source && source.width > 0 && source.height > 0;
+  if (known && SHARE_RESOLUTIONS.some((r) => !shareAllowedRes(source, false).includes(r))) {
+    notes.push(`${d.tab === 'janelas' ? 'A janela tem' : 'Sua tela é'} ${source.width} × ${source.height}`);
+  }
+  if (noEncoder) notes.push('acima de 720p a 30 fps precisa da placa de vídeo');
+  return {
+    loaded, noEncoder, list, source, allowedRes, res, allowedFps, fps,
+    mbps: shareBitrateMbps(res, fps),
+    note: notes.join(' · ').replace(/^./, (c) => c.toUpperCase()),
+    canStart: loaded && !noEncoder && !!source && !d.pending,
+  };
+}
+
+// Mensagem de erro mostrada no diálogo (o núcleo escreve em português, salvo o transitório).
+export function shareErrorText(message) {
+  const m = String(message || '');
+  if (/still probing/i.test(m)) return 'O Concord ainda está detectando a placa de vídeo. Tente de novo em instantes.';
+  return m || 'Não foi possível transmitir a tela.';
+}
+
+// Erro do núcleo com o diálogo aberto vai para o diálogo (e destrava o botão).
+// Devolve true se consumiu; false = mostrar como aviso comum.
+export function shareConsumeError(state, message) {
+  const d = state.shareDialog;
+  if (!d.open) return false;
+  d.error = shareErrorText(message);
+  d.pending = false;
+  d.pendingName = null;
+  return true;
 }
 
 export function initial(name) {
