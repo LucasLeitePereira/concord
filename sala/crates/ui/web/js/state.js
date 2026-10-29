@@ -26,11 +26,82 @@ export function initialState() {
 }
 
 function initialShare() {
-  return { sharing: false, resolution: 0, fps: 0, source: null };
+  // audio: o núcleo abriu a captura do áudio do PC; audioAsked: o usuário pediu.
+  return { sharing: false, resolution: 0, fps: 0, source: null, audio: false, audioAsked: false };
 }
 
 function initialShareDialog() {
-  return { open: false, tab: 'telas', sourceId: null, res: 1080, fps: 60, pending: false, pendingName: null, error: null };
+  return { open: false, tab: 'telas', sourceId: null, res: 1080, fps: 60, audio: true, pending: false, pendingName: null, pendingAudio: false, error: null };
+}
+
+// Preferências locais (só conveniência): ficam em localStorage, que pode faltar ou lançar.
+export const SHARE_AUDIO_KEY = 'concord.share.audio';
+export const SHARE_VOLUME_KEY = 'concord.share.volume';
+
+export function readPref(storage, key) {
+  try {
+    const v = storage && storage.getItem(key);
+    return v === undefined ? null : v;
+  } catch {
+    return null;
+  }
+}
+
+export function writePref(storage, key, value) {
+  try {
+    if (storage) storage.setItem(key, String(value));
+  } catch { /* sem armazenamento: segue sem lembrar */ }
+}
+
+// Marcado por padrão; só "0" desmarca.
+export function loadShareAudio(storage) {
+  return readPref(storage, SHARE_AUDIO_KEY) !== '0';
+}
+
+// Volume da tela do amigo, inteiro 0–100 (padrão 100).
+export function clampVolumePct(v) {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 100;
+}
+
+export function loadShareVolume(storage) {
+  const raw = readPref(storage, SHARE_VOLUME_KEY);
+  return raw === null ? 100 : clampVolumePct(raw);
+}
+
+// Mensagem do SetShareAudioVolume (volume 0..1).
+export function shareVolumeMessage(pct) {
+  return { type: 'SetShareAudioVolume', volume: clampVolumePct(pct) / 100 };
+}
+
+// Complemento do banner "você ao vivo": '' | 'com áudio' | 'Sem áudio do PC'.
+export function shareAudioNote(share) {
+  if (share.audio) return 'com áudio';
+  return share.audioAsked ? 'Sem áudio do PC' : '';
+}
+
+// Throttle com borda final: envia já se passou `ms`; senão agenda o último valor.
+export function makeThrottle(fn, ms, now = () => Date.now(), timers = { set: setTimeout, clear: clearTimeout }) {
+  let last = -Infinity;
+  let timer = null;
+  let pendingArg;
+  return (arg) => {
+    const t = now();
+    if (t - last >= ms) {
+      if (timer !== null) { timers.clear(timer); timer = null; }
+      last = t;
+      fn(arg);
+      return;
+    }
+    pendingArg = arg;
+    if (timer === null) {
+      timer = timers.set(() => {
+        timer = null;
+        last = now();
+        fn(pendingArg);
+      }, ms - (t - last));
+    }
+  };
 }
 
 function peer(state, name) {
@@ -169,9 +240,12 @@ export function reduce(state, msg) {
         resolution: Number(msg.resolution) || 0,
         fps: Number(msg.fps) || 0,
         source: msg.sharing ? (d.pendingName || state.share.source) : null,
+        audio: !!msg.sharing && msg.audio === true,
+        audioAsked: msg.sharing ? (d.pendingName ? d.pendingAudio : state.share.audioAsked) : false,
       };
       d.pending = false;
       d.pendingName = null;
+      d.pendingAudio = false;
       if (msg.sharing) d.open = false; // começou: o diálogo cumpriu o papel
       return 'full';
     }

@@ -5,6 +5,7 @@ import {
   initialState, setLink, reduce, friends, inRoom, callPeers, chatPeer, roomAction,
   friendStatus, friendPresence, avatarIndex, micText, formatDuration, callSeconds, formatClock, initial,
   sharingPeers, shareConsumeError, encoderLabel,
+  SHARE_VOLUME_KEY, loadShareVolume, writePref, clampVolumePct, shareVolumeMessage, shareAudioNote, makeThrottle,
 } from './state.js';
 import { initSettings } from './settings.js';
 import { initFriends } from './friends.js';
@@ -314,27 +315,55 @@ function renderStage() {
   renderShareBanners();
 }
 
+// Volume da transmissão do amigo (áudio que EU recebo): lembrado e reenviado quando o banner aparece.
+function localStore() {
+  try { return window.localStorage; } catch { return null; }
+}
+let shareVolumePct = loadShareVolume(localStore());
+let shareVolumeSent = false;
+const sendShareVolume = makeThrottle((pct) => send(shareVolumeMessage(pct)), 100);
+
 // Banners de transmissão: a nossa ("você ao vivo") e a dos amigos. Nada abre sozinho.
 function renderShareBanners() {
   const out = [];
   if (state.share.sharing) {
     const s = state.share;
     const enc = state.shareSources && encoderLabel(state.shareSources.encoder);
-    const detail = [s.source, `${s.resolution}p · ${s.fps} fps`, enc].filter(Boolean).join(' · ');
+    const audioNote = shareAudioNote(s);
+    const detail = [s.source, `${s.resolution}p · ${s.fps} fps`, enc, audioNote === 'com áudio' ? audioNote : null]
+      .filter(Boolean).join(' · ');
     out.push(h('div', { class: 'banner live' },
       h('div', { class: 'banner-icon' }, h('span', { class: 'live-dot', 'aria-hidden': 'true' })),
       h('div', { class: 'banner-text' },
         h('strong', {}, 'Você está transmitindo'),
-        h('span', { class: 'mono' }, detail)),
+        h('span', { class: 'mono' }, detail),
+        audioNote === 'Sem áudio do PC' && h('span', { class: 'share-note', role: 'status' }, audioNote)),
       h('button', {
         type: 'button', class: 'btn danger', 'data-key': 'share-stop', disabled: !linked(),
         onclick: () => send({ type: 'StopShare' }),
       }, 'Parar')));
   }
-  for (const name of sharingPeers(state)) {
+  const watched = sharingPeers(state);
+  if (watched.length === 0) shareVolumeSent = false;
+  else if (!shareVolumeSent && linked()) {
+    shareVolumeSent = true;
+    send(shareVolumeMessage(shareVolumePct));
+  }
+  for (const name of watched) {
     out.push(h('div', { class: 'banner' },
       h('div', { class: 'banner-icon' }, icon('i-screen', 20)),
       h('div', { class: 'banner-text' }, h('strong', {}, `${name} está transmitindo a tela`)),
+      h('label', { class: 'share-vol' },
+        h('span', {}, 'Volume da tela'),
+        h('input', {
+          type: 'range', class: 'range', min: '0', max: '100', step: '1', value: String(shareVolumePct),
+          'data-key': `share-vol:${name}`, 'aria-label': 'Volume da tela', disabled: !linked(),
+          oninput: (e) => {
+            shareVolumePct = clampVolumePct(e.target.value);
+            writePref(localStore(), SHARE_VOLUME_KEY, shareVolumePct);
+            sendShareVolume(shareVolumePct);
+          },
+        })),
       h('button', {
         type: 'button', class: 'btn primary', 'data-key': `share-watch:${name}`, disabled: !linked(),
         onclick: () => send({ type: 'OpenViewer' }),
