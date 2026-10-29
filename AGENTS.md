@@ -73,7 +73,7 @@ Design atual: `ideia/sala-handoff/design/DESIGN.md` + `telas/` (inclui Compartil
 2. F4: compartilhamento de tela (WGC + encoder de hardware via FFmpeg LGPL + visualizador wgpu). F5: mesa de sons. README e CI (GitHub Actions) também ficaram para depois.
 Aviso do Windows (SmartScreen, "fornecedor desconhecido"): o instalador não é assinado. Para tirar o aviso é preciso um certificado de assinatura de código (por exemplo, Certum Open Source, para projeto público) e `signtool`/`SignTool=` no Inno Setup; a reputação no SmartScreen ainda leva algum tempo de downloads para se formar. A decisão e o custo são do usuário.
 
-**Aviso (2026-10-28):** a T-032 (chamada com toque, sons de aviso, D-024) está no working tree **sem commit**, aguardando `cargo build --release` (feche o `concord.exe` antes) e o teste manual do usuário. Commit só depois da aprovação.
+T-032 (chamada com toque, sons de aviso do Kenney CC0 em `crates/core/assets/cues/`, D-024) saiu na v0.1.8. Próximo: T-033 ("Ouvir minha voz", "Adicionar jogo") e depois F4. Em janela pequena o botão "Desligar" da barra de baixo some (o usuário pediu para deixar assim por ora).
 
 Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo e o instalador baixando o Tailscale (nunca executado de fato).
 
