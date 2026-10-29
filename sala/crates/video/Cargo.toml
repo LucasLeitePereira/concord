@@ -11,3 +11,9 @@ tracing.workspace = true
 # Must match the FFmpeg major fetched by scripts/fetch-ffmpeg.ps1 (n7.1.x). Dynamic link only (LGPL).
 ffmpeg-next = { version = "=7.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 windows-capture = "=2.0.1"
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+wgpu = { version = "24", default-features = false, features = ["dx12", "wgsl"] }
+pollster = "0.4"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

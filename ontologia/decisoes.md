@@ -204,3 +204,10 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Encoder: nvenc > amf > qsv, sem B-frames, GOP 20 s, CBR com VBV ~125 ms; BGRA→NV12 via swscale (feature `software-scaling`).
 - O receptor descarta deltas após perda até um keyframe (`inv-drop-deltas-until-keyframe`). Problema aberto para a T-033c: com 2% de perda quase todo keyframe de 1080p se perde (FEC, retransmissão ou keyframe menor), e o encode síncrono fica em 16–18 fps.
 - **Data:** 2026-10-29
+
+## D-027 — T-033d: visualizador winit + wgpu no núcleo (F4)
+- Visualizador em `sala-video/src/viewer.rs`: `winit 0.30` + `wgpu 24` (dx12), thread própria (`with_any_thread`), caixa de correio de 1 quadro (só o último), estatísticas no título (F3), F11 tela cheia.
+- Decoder D3D11VA com fallback silencioso para o software do FFmpeg (LGPL): o probe só prova que o decoder abre; nesta máquina o D3D11VA recusa o H.264 do QSV.
+- O viewer nunca decodifica delta antes de keyframe nem após buraco em `frame_id`; pede keyframe no máximo a cada 500 ms. `VideoFrame` carrega o codec do `ShareStart`.
+- Thread `video-forward` encaminha `take_video_frames` ao viewer aberto e descarta sem viewer; modo jogo fecha o viewer no passo 2 (D-012).
+- **Data:** 2026-10-29

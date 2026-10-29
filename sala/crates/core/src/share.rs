@@ -73,6 +73,7 @@ pub type PipeFactory = Box<dyn FnOnce(&ShareParams) -> Result<Pipe, String> + Se
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoFrame {
     pub friend: String,
+    pub codec: VideoCodec,
     pub frame: Frame,
 }
 
@@ -161,11 +162,17 @@ pub struct ShareIn {
     reasm: Reassembler,
     meter: LossMeter,
     window_start_ms: u64,
+    codec: VideoCodec,
 }
 
 impl ShareIn {
-    pub fn new(now_ms: u64) -> Self {
-        ShareIn { reasm: Reassembler::new(), meter: LossMeter::default(), window_start_ms: now_ms }
+    /// `codec` is the one announced by `ShareStart`; it travels with every frame to the viewer.
+    pub fn new(now_ms: u64, codec: VideoCodec) -> Self {
+        ShareIn { reasm: Reassembler::new(), meter: LossMeter::default(), window_start_ms: now_ms, codec }
+    }
+
+    pub fn codec(&self) -> VideoCodec {
+        self.codec
     }
 
     fn note(&mut self, out: &Output) {
@@ -200,9 +207,9 @@ impl ShareIn {
 
 /// Delivers what the reassembler produced: the frame to the viewer channel (dropped when it is
 /// full: live video never queues) and the keyframe request to the sender.
-pub fn handle_output(out: Output, friend: &str, net: &Net, frames: &mpsc::Sender<VideoFrame>) {
+pub fn handle_output(out: Output, friend: &str, codec: VideoCodec, net: &Net, frames: &mpsc::Sender<VideoFrame>) {
     if let Some(frame) = out.frame {
-        let _ = frames.try_send(VideoFrame { friend: friend.to_string(), frame });
+        let _ = frames.try_send(VideoFrame { friend: friend.to_string(), codec, frame });
     }
     if out.request_keyframe
         && let Err(e) = net.send_control(friend, ControlMessage::KeyframeRequest)
@@ -460,7 +467,7 @@ mod tests {
 
     #[test]
     fn share_in_reports_once_per_window() {
-        let mut rx = ShareIn::new(0);
+        let mut rx = ShareIn::new(0, VideoCodec::H264);
         let dgs = sala_video::fragment::fragment(1, true, 0, &[7u8; 3000], 1000);
         for dg in &dgs {
             rx.on_datagram(10, dg);

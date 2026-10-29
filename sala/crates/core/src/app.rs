@@ -11,9 +11,10 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use sala_protocol::{AudioSettings, CoreToUi, GameModeSettings, HotkeySettings, UiToCore};
+use sala_video::viewer::{self, Incoming, KeyframeRequester, ViewerHandle};
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{info, warn};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
@@ -26,6 +27,7 @@ use crate::identity::LocalIdentity;
 use crate::ipc::{ClientId, IpcClient, IpcError, IpcServer, current_user_pipe_name};
 use crate::platform::{self, Hotkey, HotkeyAction, MenuItem, Platform, PlatformEvent, TrayState};
 use crate::session::{AudioSource, Session, SessionEvent, StatusFlags};
+use crate::share::VideoFrame;
 use crate::settings;
 use crate::ui_process::{SHUTDOWN_TIMEOUT, ShutdownOutcome, UiProcess, resolve_ui_exe};
 use crate::voice::clamp_volume;
@@ -183,7 +185,66 @@ pub enum Flow {
     Quit,
 }
 
+/// The screen-share viewer window as the controller sees it (`screen-share`).
+pub trait ViewerWindow: Send {
+    /// Still on screen (turns `false` when the user closes it).
+    fn is_open(&self) -> bool;
+    /// Closes the window and frees the GPU.
+    fn close(self: Box<Self>);
+}
+
+/// Opens a viewer on the given frame channel; `request_keyframe(friend)` is for its decoder.
+pub type ViewerOpener = Box<
+    dyn FnMut(std::sync::mpsc::Receiver<Incoming>, KeyframeRequester) -> Result<Box<dyn ViewerWindow>, String> + Send,
+>;
+
+struct RealViewer(ViewerHandle);
+
+impl ViewerWindow for RealViewer {
+    fn is_open(&self) -> bool {
+        self.0.is_open()
+    }
+    fn close(self: Box<Self>) {
+        let _ = self.0.close();
+    }
+}
+
+fn real_viewer_opener() -> ViewerOpener {
+    Box::new(|rx, req| {
+        let handle = viewer::open(rx, req)?;
+        Ok(Box::new(RealViewer(handle)) as Box<dyn ViewerWindow>)
+    })
+}
+
+/// Where the forwarder thread delivers friends' frames: the open viewer, or nowhere.
+type ViewerSink = Arc<Mutex<Option<std::sync::mpsc::SyncSender<Incoming>>>>;
+
+/// Frames queued between the forwarder and the viewer's decoder; more than this are dropped
+/// (the decoder then sees a hole and asks for a keyframe).
+const VIEWER_QUEUE: usize = 16;
+
+/// Moves `Session::take_video_frames()` into whichever viewer is open; frames that arrive while
+/// none is open are dropped (live video never waits). Ends when the session stops.
+fn spawn_video_forwarder(mut rx: tokio::sync::mpsc::Receiver<VideoFrame>, sink: ViewerSink) {
+    let spawned = std::thread::Builder::new().name("video-forward".into()).spawn(move || {
+        while let Some(VideoFrame { friend, codec, frame }) = rx.blocking_recv() {
+            let guard = sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.try_send(Incoming { friend, codec, frame });
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        warn!("cannot start the video forwarder: {e}");
+    }
+}
+
 pub struct Controller<P: PlatformApi> {
+    viewer: Option<Box<dyn ViewerWindow>>,
+    viewer_opener: ViewerOpener,
+    viewer_sink: ViewerSink,
+    /// `take_video_frames` was already handed to the forwarder thread.
+    video_forwarded: bool,
     session: Arc<Session>,
     host: UiHost,
     platform: P,
@@ -206,6 +267,10 @@ impl<P: PlatformApi> Controller<P> {
     /// `ptt_mode`: `audio.mode = push_to_talk` (then PTT events reach `Session::set_ptt`).
     pub fn new(session: Arc<Session>, host: UiHost, platform: P, game_cfg: &GameModeConfig, ptt_mode: bool) -> Self {
         Controller {
+            viewer: None,
+            viewer_opener: real_viewer_opener(),
+            viewer_sink: Arc::new(Mutex::new(None)),
+            video_forwarded: false,
             session,
             host,
             platform,
@@ -218,6 +283,47 @@ impl<P: PlatformApi> Controller<P> {
             focused_client: None,
             ringing: Vec::new(),
             steps: Vec::new(),
+        }
+    }
+
+    /// Replaces how the viewer window is created (tests use a fake).
+    pub fn set_viewer_opener(&mut self, opener: ViewerOpener) {
+        self.viewer_opener = opener;
+    }
+
+    /// The viewer window is on screen.
+    pub fn viewer_open(&self) -> bool {
+        self.viewer.as_ref().is_some_and(|v| v.is_open())
+    }
+
+    /// Opens the viewer on friends' screen shares (no-op while one is already open). Its decoder
+    /// asks the sharing friend for a keyframe as soon as it needs one, which covers the start.
+    pub fn open_viewer(&mut self) -> Result<(), String> {
+        if self.viewer_open() {
+            return Ok(());
+        }
+        self.close_viewer(); // a window the user already closed
+        if !self.video_forwarded {
+            let rx = self.session.take_video_frames().ok_or("the video stream is already in use")?;
+            spawn_video_forwarder(rx, self.viewer_sink.clone());
+            self.video_forwarded = true;
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel(VIEWER_QUEUE);
+        let session = self.session.clone();
+        let request: KeyframeRequester = Arc::new(move |friend| session.request_keyframe(friend));
+        let window = (self.viewer_opener)(rx, request)?;
+        *self.viewer_sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        self.viewer = Some(window);
+        info!("viewer opened");
+        Ok(())
+    }
+
+    /// Closes the viewer (D-012 step 2, also when the user asks); harmless when none is open.
+    pub fn close_viewer(&mut self) {
+        *self.viewer_sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        if let Some(v) = self.viewer.take() {
+            v.close();
+            info!("viewer closed");
         }
     }
 
@@ -287,7 +393,7 @@ impl<P: PlatformApi> Controller<P> {
         self.stop_mic_meter();
         let outcome = self.host.shutdown_ui().await;
         self.steps.push(Step::UiShutdown(outcome));
-        // TODO(F4): close the video viewer.
+        self.close_viewer();
         self.steps.push(Step::CloseViewer);
         if !self.keep_sharing {
             // TODO(F4): stop the screen share.
@@ -633,9 +739,13 @@ impl<P: PlatformApi> Controller<P> {
                     self.reply_error(client, format!("unknown friend {friend:?}"));
                 }
             }
-            // TODO(F4): video viewer.
             UiToCore::OpenViewer => {
-                self.host.ipc.send_to(client, &CoreToUi::Error { message: "viewer not available yet".into() });
+                if self.in_game() {
+                    self.reply_error(client, "o visualizador não abre no modo jogo".into());
+                } else if let Err(e) = self.open_viewer() {
+                    warn!("cannot open the viewer: {e}");
+                    self.reply_error(client, format!("não foi possível abrir o visualizador: {e}"));
+                }
             }
         }
     }

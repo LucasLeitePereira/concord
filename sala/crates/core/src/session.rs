@@ -344,6 +344,13 @@ impl Session {
         lock(&self.video).take()
     }
 
+    /// Asks `friend`'s share for a keyframe (the viewer's decoder needs one to start or recover).
+    pub fn request_keyframe(&self, friend: &str) {
+        if let Err(e) = self.net.send_control(friend, ControlMessage::KeyframeRequest) {
+            tracing::debug!(%friend, "cannot ask for a keyframe: {e}");
+        }
+    }
+
     /// Starts sharing the screen with every connected friend that understands it
     /// (`VIDEO_PROTOCOL_VERSION`); friends that connect later join automatically. `factory`
     /// opens the capture and encoder on the caller's thread (it can take a while).
@@ -984,7 +991,7 @@ async fn run_loop(
                 let now_ms = started.elapsed().as_millis() as u64;
                 for (friend, rx) in shares_in.iter_mut() {
                     let (out, report) = rx.tick(now_ms);
-                    handle_output(out, friend, &net, &shared.video);
+                    handle_output(out, friend, rx.codec(), &net, &shared.video);
                     let Some(report) = report else { continue };
                     // The sender announced the share, so it is new enough; check anyway (D-024).
                     if lock(&shared.state).proto.get(friend).is_some_and(|v| peer_supports_video(*v))
@@ -1138,7 +1145,7 @@ async fn run_loop(
                 ControlMessage::ShareStart { codec, width, height, fps } => {
                     tracing::info!(%friend, ?codec, width, height, fps, "event: ShareStart");
                     let now_ms = started.elapsed().as_millis() as u64;
-                    shares_in.insert(friend, ShareIn::new(now_ms));
+                    shares_in.insert(friend, ShareIn::new(now_ms, codec));
                 }
                 ControlMessage::ShareStop => {
                     tracing::info!(%friend, "event: ShareStop");
@@ -1222,7 +1229,7 @@ async fn run_loop(
                     if let Some(rx) = shares_in.get_mut(&friend) {
                         let now_ms = started.elapsed().as_millis() as u64;
                         let out = rx.on_datagram(now_ms, &dg);
-                        handle_output(out, &friend, &net, &shared.video);
+                        handle_output(out, &friend, rx.codec(), &net, &shared.video);
                     }
                 }
                 _ => tracing::trace!(%friend, "event: datagram"),

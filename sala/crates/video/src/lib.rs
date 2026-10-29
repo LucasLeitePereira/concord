@@ -5,10 +5,12 @@
 
 pub mod abr;
 pub mod capture;
+pub mod decoder;
 pub mod encoder;
 pub mod fragment;
 pub mod preset;
 pub mod sender;
+pub mod viewer;
 
 use std::sync::OnceLock;
 
