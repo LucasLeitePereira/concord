@@ -1,0 +1,12 @@
+[package]
+name = "sala-video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+sala-protocol = { path = "../protocol" }
+tracing.workspace = true
+# Must match the FFmpeg major fetched by scripts/fetch-ffmpeg.ps1 (n7.1.x). Dynamic link only (LGPL).
+ffmpeg-next = { version = "=7.1.0", default-features = false, features = ["codec", "format"] }

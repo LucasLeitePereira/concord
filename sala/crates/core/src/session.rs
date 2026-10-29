@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sala_protocol::{
-    AudioStream, Capabilities, ChatEntry, ControlMessage, MediaDatagram, PROTOCOL_VERSION,
+    AudioStream, ChatEntry, ControlMessage, MediaDatagram, PROTOCOL_VERSION,
     RING_PROTOCOL_VERSION, max_audio_payload,
 };
 use tokio::sync::{mpsc, oneshot, watch};
@@ -972,7 +972,9 @@ async fn run_loop(
                     name: lock(&shared.config).name.clone(),
                     app_version: env!("CARGO_PKG_VERSION").to_string(),
                     protocol_version: PROTOCOL_VERSION,
-                    capabilities: Capabilities::default(),
+                    // Never block the runtime on the probe: use the cached result if
+                    // ready (main() warms it at startup; library users/tests send empty).
+                    capabilities: sala_video::capabilities_if_ready().unwrap_or_default(),
                 };
                 let status = local.to_message();
                 for msg in [hello, status] {

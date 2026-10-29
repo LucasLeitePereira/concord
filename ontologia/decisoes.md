@@ -192,3 +192,9 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Modo jogo: toque, balao "X esta te chamando" (clique = entrar, sem sair do modo jogo) e itens da bandeja "Entrar na chamada de X"/"Recusar".
 - `--synthetic-audio` troca so o microfone pelo tom e abre a saida real (`AudioSource::SyntheticMic`); os testes de integracao seguem sem dispositivo (`AudioSource::Synthetic`).
 - **Data:** 2026-10-28
+
+## D-025 — T-033a: FFmpeg LGPL e negociação de codec (F4)
+- `ffmpeg-next =7.1.0` sobre FFmpeg n7.1.5 **LGPL shared** (BtbN), DLLs carregadas dinamicamente; `scripts/fetch-ffmpeg.ps1` baixa também o libclang 18.1.1 (o bindgen com LLVM 23 gera layouts quebrados). Tudo em `sala/third_party/`, fora do git; o instalador precisa levar as DLLs.
+- **Sem fallback `libx264`** (GPL): sem encoder de hardware não há transmissão, e a UI mostra `Compartilhar-sem-encoder`.
+- Invariante: codec escolhido ∈ encode local ∩ decode remoto, prioridade AV1 > HEVC > H.264 (`sala_video::choose_codec`). O probe abre de verdade cada encoder de hardware e decoder D3D11VA; só o `main` o aquece, e o `Hello` usa `capabilities_if_ready()` (nunca bloqueia o runtime; vazio se o probe ainda não terminou).
+- **Data:** 2026-10-29

@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
 sala-protocol = { path = "../protocol", features = ["ipc-client"] }
+sala-video = { path = "../video" }
 sha2 = "0.11.1"
 serde.workspace = true
 serde_json.workspace = true
@@ -35,6 +36,7 @@ nnnoiseless = { version = "0.5.2", default-features = false }
 windows-sys = { version = "0.61", default-features = false, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_System_Console",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",

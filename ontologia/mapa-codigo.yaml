@@ -10,7 +10,13 @@ mapa:
     codigo: ["sala/crates/protocol/src/lib.rs (MediaDatagram, max_audio_payload, max_video_payload)"]
     testes: [sala/crates/protocol/tests/acceptance_protocol.rs]
   capabilities:
-    codigo: ["sala/crates/protocol/src/lib.rs (Capabilities, VideoCodec)"]
+    codigo: ["sala/crates/protocol/src/lib.rs (Capabilities, VideoCodec)", "sala/crates/video/src/lib.rs (probe, probe_report, report, capabilities: abre encoders nvenc/amf/qsv e decoders D3D11VA de verdade; cache por processo)", "sala/crates/core/src/session.rs (Hello com sala_video::capabilities())", "sala/crates/core/src/main.rs (--probe, log do probe na partida, print_to_console)"]
+    testes: ["sala/crates/video/src/lib.rs (mod tests)"]
+  codec-negotiation:
+    codigo: ["sala/crates/video/src/lib.rs (choose_codec: AV1 > HEVC > H.264, exige encode local E decode remoto)"]
+    testes: ["sala/crates/video/src/lib.rs (mod tests)"]
+  ffmpeg-setup:
+    codigo: ["scripts/fetch-ffmpeg.ps1 (FFmpeg n7.1.5 LGPL shared da BtbN + libclang 18.1.1 em sala/third_party/, ignorado pelo git)", "sala/.cargo/config.toml (FFMPEG_DIR, LIBCLANG_PATH relativos)", "sala/crates/video/build.rs (copia as DLLs para target/<perfil>/ e deps/)"]
   ipc-message:
     codigo: ["sala/crates/protocol/src/lib.rs (UiToCore, CoreToUi, encode_ipc_line, decode_ipc_line)", "sala/crates/core/src/ipc.rs (IpcServer, IpcClient, pipe_name, IpcError::AlreadyRunning)"]
     testes: [sala/crates/protocol/tests/acceptance_protocol.rs, sala/crates/core/tests/ipc.rs]

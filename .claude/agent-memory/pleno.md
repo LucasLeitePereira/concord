@@ -60,3 +60,6 @@
 - Pronto = `cargo test --workspace` + `cargo clippy --workspace --all-targets -- -D warnings` passando.
 - Dependências mínimas; crate pesada nova = justificar no relatório (o sênior registra em `ontologia/decisoes.md`).
 - Nunca logar conteúdo de chat (`inv-chat-never-on-disk`).
+- FFmpeg (`sala-video`): `ffmpeg-sys-next` precisa do libclang 18 (LLVM 23 gera asserts de layout quebrados); `scripts/fetch-ffmpeg.ps1` baixa os dois em `sala/third_party/`. Crate `ffmpeg-next` com o mesmo major do FFmpeg (7.1.x), features `codec`+`format` juntas.
+- `decoder::find(Id::AV1)` devolve libdav1d (software): use `find_by_name("av1")` para hwaccel D3D11VA.
+- Nunca chamar `sala_video::capabilities()` (probe bloqueante, 2–4 s) de código async ou testes: use `capabilities_if_ready()`; só o `main` aquece o cache.

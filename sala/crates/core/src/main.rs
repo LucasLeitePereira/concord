@@ -25,6 +25,30 @@ fn main() {
     }
 }
 
+/// Prints on the console. The release build has no console subsystem, so it attaches to
+/// the parent's console and writes to `CONOUT$` (std handles are null in that case).
+fn print_to_console(text: &str) {
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS, GetStdHandle, STD_OUTPUT_HANDLE};
+        // SAFETY: plain Win32 calls without pointers.
+        let has_stdout = unsafe { !GetStdHandle(STD_OUTPUT_HANDLE).is_null() };
+        if has_stdout {
+            // Debug build or redirected output: ordinary stdout works.
+            print!("{text}");
+            return;
+        }
+        unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open("CONOUT$")
+            && f.write_all(text.as_bytes()).is_ok()
+        {
+            return;
+        }
+    }
+    print!("{text}");
+}
+
 /// Logs to `<data_dir>/logs/sala-core.log.<date>` (daily rotation, 14 files) and
 /// to stderr. The returned guard flushes the file on drop.
 fn init_logging(profile: &Profile) -> Option<tracing_appender::non_blocking::WorkerGuard> {
@@ -60,6 +84,13 @@ fn init_logging(profile: &Profile) -> Option<tracing_appender::non_blocking::Wor
 
 async fn run() -> Result<(), String> {
     let args = CliArgs::parse(std::env::args().skip(1))?;
+    if args.probe {
+        let report = tokio::task::spawn_blocking(|| sala_video::report().summary())
+            .await
+            .map_err(|e| e.to_string())?;
+        print_to_console(&report);
+        return Ok(());
+    }
     let (profile, migration) = Profile::resolve_with_outcome(args.profile.as_deref()).map_err(|e| e.to_string())?;
     let _log_guard = init_logging(&profile);
     match migration {
@@ -79,6 +110,11 @@ async fn run() -> Result<(), String> {
         config.friends.len(),
         identity.fingerprint().to_hex()
     );
+    // Probe the video hardware once now (cached for every Hello); log what was found.
+    match tokio::task::spawn_blocking(|| sala_video::report().summary()).await {
+        Ok(summary) => tracing::info!("video probe:\n{summary}"),
+        Err(e) => tracing::warn!("video probe failed: {e}"),
+    }
     let source = if args.synthetic_audio { AudioSource::SyntheticMic } else { AudioSource::Device };
     match sala_core::app::run(args.profile.as_deref(), profile, config, &identity, source).await {
         Ok(()) => Ok(()),

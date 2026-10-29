@@ -1,0 +1,5 @@
+# FFmpeg (LGPL shared) and libclang (for bindgen) are fetched by scripts/fetch-ffmpeg.ps1 into
+# sala/third_party/. `relative = true`: resolved against the directory that holds `.cargo` (sala/).
+[env]
+FFMPEG_DIR = { value = "third_party/ffmpeg", relative = true }
+LIBCLANG_PATH = { value = "third_party/libclang", relative = true }

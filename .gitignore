@@ -5,3 +5,4 @@ node_modules/
 __pycache__/
 oi.txt
 sala/crates/ui/gen/
+sala/third_party/

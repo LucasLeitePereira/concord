@@ -71,11 +71,12 @@ Design atual: `ideia/sala-handoff/design/DESIGN.md` + `telas/` (inclui Compartil
 `--synthetic-audio` troca **só o microfone** por um tom e abre a saída real (D-024): dá para ouvir os sons e a voz do outro perfil. Os testes de integração usam `AudioSource::Synthetic` (sem nenhum dispositivo).
 
 **Próximos passos, por prioridade (decididos pelo usuário):**
-1. **Ajustes de áudio**: dispositivos de entrada e saída (`ListAudioDevices`), sensibilidade com linha arrastável sobre o medidor (`SetMicMeter`/`MicLevel`, `UpdateConfig{audio}`) e botão **"Ouvir minha voz"** (loopback local que passa pelo mesmo ganho e VAD do envio; IPC novo `SetMicTest{on}`). Hoje o limiar fica em `config.toml` (`vad_threshold`; −49 ficou bom no microfone do usuário).
-2. F4: compartilhamento de tela (WGC + encoder de hardware via FFmpeg LGPL + visualizador wgpu). F5: mesa de sons. README e CI (GitHub Actions) também ficaram para depois.
+1. **F4 — compartilhamento de tela** (pedido do usuário em 2026-10-29: antes de "Ouvir minha voz"), em fatias, uma por sessão (plano: T-033a probe ✔ · T-033b captura WGC + encoder + fragmentação, sem rede · T-033c transmissão, presets e bitrate adaptativo · T-033d visualizador wgpu · T-033e UI Compartilhar/"Ao vivo" · T-033f áudio do sistema). Sem fallback `libx264` (GPL): sem encoder de hardware, variante `Compartilhar-sem-encoder`.
+2. **Ajustes de áudio** (vira T-034): dispositivos de entrada e saída (`ListAudioDevices`), sensibilidade com linha arrastável sobre o medidor (`SetMicMeter`/`MicLevel`, `UpdateConfig{audio}`) e botão **"Ouvir minha voz"** (loopback local que passa pelo mesmo ganho e VAD do envio; IPC novo `SetMicTest{on}`), e "Adicionar jogo". Hoje o limiar fica em `config.toml` (`vad_threshold`; −49 ficou bom no microfone do usuário).
+3. F5: mesa de sons. README e CI (GitHub Actions) também ficaram para depois.
 Aviso do Windows (SmartScreen, "fornecedor desconhecido"): o instalador não é assinado. Para tirar o aviso é preciso um certificado de assinatura de código (por exemplo, Certum Open Source, para projeto público) e `signtool`/`SignTool=` no Inno Setup; a reputação no SmartScreen ainda leva algum tempo de downloads para se formar. A decisão e o custo são do usuário.
 
-T-032 (chamada com toque, sons de aviso do Kenney CC0 em `crates/core/assets/cues/`, D-024) saiu na v0.1.8. Próximo: T-033 ("Ouvir minha voz", "Adicionar jogo") e depois F4. Em janela pequena o botão "Desligar" da barra de baixo some (o usuário pediu para deixar assim por ora).
+T-032 (chamada com toque, sons de aviso do Kenney CC0 em `crates/core/assets/cues/`, D-024) saiu na v0.1.8. Em janela pequena o botão "Desligar" da barra de baixo some (o usuário pediu para deixar assim por ora).
 
 Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo e o instalador baixando o Tailscale (nunca executado de fato).
 
@@ -89,3 +90,5 @@ Ver `.claude/agent-memory/pleno.md` (vale para qualquer modelo). As principais:
 - O terminal maximizado conta como jogo no teste manual de detecção. Os executáveis do próprio Concord já são excluídos no código.
 - cpal 0.18 tem API diferente da que os modelos lembram: consulte os exemplos no registry local.
 - `cargo build --example X` não compila o binário principal. Para o release completo, use `cargo build --release` sem filtro.
+
+T-033a (não commitada): `scripts/fetch-ffmpeg.ps1` baixa FFmpeg n7.1.5 LGPL shared (BtbN) e libclang 18 em `sala/third_party/` (ignorado pelo git; rodar o script antes do primeiro build). Crate `sala-video`: `probe`, `choose_codec` (AV1 > HEVC > H.264), cache `capabilities_if_ready()`; `concord --probe`; o `Hello` leva as capacidades reais. Nesta máquina: encode só QSV (HEVC/H.264), NVENC falha com "Generic error in an external library" (investigar na T-033b); decode AV1/HEVC/H.264 via D3D11VA. Pendências: o `concord.exe` agora exige as DLLs do FFmpeg, e o `concord.iss` ainda não as inclui; o `f2_game_mode` leva ~85 s na rodada completa (limite 90 s). Próximo: T-033b.
