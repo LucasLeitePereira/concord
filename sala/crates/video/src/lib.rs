@@ -3,9 +3,12 @@
 //!
 //! FFmpeg is the LGPL shared build from `scripts/fetch-ffmpeg.ps1` (no libx264/GPL).
 
+pub mod abr;
 pub mod capture;
 pub mod encoder;
 pub mod fragment;
+pub mod preset;
+pub mod sender;
 
 use std::sync::OnceLock;
 

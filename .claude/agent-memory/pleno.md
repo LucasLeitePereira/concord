@@ -65,3 +65,4 @@
 - Nunca chamar `sala_video::capabilities()` (probe bloqueante, 2–4 s) de código async ou testes: use `capabilities_if_ready()`; só o `main` aquece o cache.
 - `windows-capture` 2.x: API difere da memória (`start_free_threaded`, `Settings::new` com 8 args, `as_nopadding_buffer`); leia os fontes no registry após `cargo fetch`. WGC só emite quadro quando a tela muda: reenviar o último quadro.
 - `ffmpeg-next`: swscale exige feature `software-scaling`; `rc_buffer_size` sem setter (escreva via `as_mut_ptr()` antes do `open`). Erro opaco de encoder: rode `third_party/ffmpeg/bin/ffmpeg.exe` com o mesmo encoder para ver o log real (a MX110 desta máquina não tem NVENC).
+- `VideoEncoder` tem `unsafe impl Send` (swscale `*mut`): só mover para a thread, nunca compartilhar. QSV não troca bitrate com contexto aberto (reabrir + keyframe). Dimensão/bitrate em inteiros (float dá 1919.99).

@@ -91,7 +91,7 @@ fn h06_encode_frame_too_large() {
 #[test]
 fn h07_datagram_roundtrip() {
     let a = MediaDatagram::Audio { stream: AudioStream::ShareAudio, seq: u16::MAX, timestamp: 960, payload: vec![7; 200] };
-    let v = MediaDatagram::Video { frame_id: 42, frag_idx: 3, frag_count: 9, keyframe: true, timestamp: 123, payload: vec![1; 500] };
+    let v = MediaDatagram::Video { frame_id: 42, frag_idx: 3, frag_count: 9, keyframe: true, fec_group: 8, timestamp: 123, payload: vec![1; 500] };
     for d in [a, v] {
         let bytes = d.encode(DEFAULT_MAX_DATAGRAM).unwrap();
         assert!(bytes.len() <= DEFAULT_MAX_DATAGRAM);
@@ -103,7 +103,7 @@ fn h07_datagram_roundtrip() {
 fn h08_max_payload_is_tight_bound() {
     for max in [DEFAULT_MAX_DATAGRAM, 1350, 600] {
         let pv = max_video_payload(max);
-        let v = |n| MediaDatagram::Video { frame_id: u32::MAX, frag_idx: u16::MAX, frag_count: u16::MAX, keyframe: true, timestamp: u32::MAX, payload: vec![0xAB; n] };
+        let v = |n| MediaDatagram::Video { frame_id: u32::MAX, frag_idx: u16::MAX, frag_count: u16::MAX, keyframe: true, fec_group: u8::MAX, timestamp: u32::MAX, payload: vec![0xAB; n] };
         let ok = v(pv).encode(max).unwrap();
         assert!(ok.len() <= max, "video {} > {}", ok.len(), max);
         assert!(matches!(v(pv + 1).encode(max), Err(ProtocolError::TooLarge { .. })), "video bound not tight at {max}");

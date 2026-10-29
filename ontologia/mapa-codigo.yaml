@@ -16,13 +16,21 @@ mapa:
     codigo: ["sala/crates/video/src/lib.rs (choose_codec: AV1 > HEVC > H.264, exige encode local E decode remoto)"]
     testes: ["sala/crates/video/src/lib.rs (mod tests)"]
   video-fragmentation:
-    codigo: ["sala/crates/video/src/fragment.rs (fragment, Reassembler, Frame, Output; tempo injetado em ms; inv-keyframe-request-500ms)"]
+    codigo: ["sala/crates/video/src/fragment.rs (fragment, fragment_fec, data_count, Reassembler com recuperação FEC, Frame, Output; tempo injetado em ms; inv-keyframe-request-500ms)"]
     testes: ["sala/crates/video/src/fragment.rs (mod tests)"]
   screen-capture:
     codigo: ["sala/crates/video/src/capture.rs (list_monitors, list_windows, CaptureSession, BgraFrame; windows-capture 2.0.1, cópia GPU->CPU, TODO zero-copy D3D11)"]
   hw-video-encoder:
     codigo: ["sala/crates/video/src/encoder.rs (VideoEncoder::open nvenc>amf>qsv, encode_bgra, force_keyframe; BGRA->NV12 por swscale; nunca libx264)", "sala/crates/video/examples/capture_encode.rs (captura+codifica+fragmenta+remonta, imprime fps/bitrate)"]
     testes: ["sala/crates/video/src/encoder.rs (mod tests; o de codificação passa em silêncio sem encoder)"]
+  share-preset:
+    codigo: ["sala/crates/video/src/preset.rs (SharePreset, BitrateRange, encoder_config sem upscale; conta em inteiros)"]
+  adaptive-bitrate:
+    codigo: ["sala/crates/video/src/abr.rs (Abr, ReceiverReport; tempo injetado em ms)", "sala/crates/video/src/encoder.rs (set_bitrate: QSV reabre se mudar >15% e força keyframe)"]
+    testes: ["sala/crates/video/src/abr.rs (mod tests)"]
+  screen-share:
+    codigo: ["sala/crates/video/src/sender.rs (FrameSlot último-quadro, Sender: thread de encode, reenvio em tela parada, canal descarta delta cheio; ainda não ligado ao core)"]
+    testes: ["sala/crates/video/src/sender.rs (mod tests; passam em silêncio sem encoder)"]
   ffmpeg-setup:
     codigo: ["scripts/fetch-ffmpeg.ps1 (FFmpeg n7.1.5 LGPL shared da BtbN + libclang 18.1.1 em sala/third_party/, ignorado pelo git)", "sala/.cargo/config.toml (FFMPEG_DIR, LIBCLANG_PATH relativos)", "sala/crates/video/build.rs (copia as DLLs para target/<perfil>/ e deps/)"]
   ipc-message:

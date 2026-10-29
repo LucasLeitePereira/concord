@@ -13,6 +13,14 @@ const BACKENDS: [&str; 3] = ["nvenc", "amf", "qsv"];
 /// Presentation clock of `pts` and of the fragment `timestamp`: 90 kHz.
 pub const TIME_BASE_HZ: i32 = 90_000;
 
+/// A bitrate change smaller than this share of the applied rate is not worth a reopen.
+pub const REOPEN_THRESHOLD_PERCENT: u64 = 15;
+
+/// Whether moving from `current` to `target` kbps justifies reopening the encoder.
+pub fn bitrate_change_needs_reopen(current: u32, target: u32) -> bool {
+    target > 0 && u64::from(current.abs_diff(target)) * 100 > u64::from(current) * REOPEN_THRESHOLD_PERCENT
+}
+
 #[derive(Debug, Clone)]
 pub struct EncoderConfig {
     pub codec: VideoCodec,
@@ -102,6 +110,7 @@ fn backend_options(backend: &str, keyframe_gop: u32) -> ff::Dictionary<'static> 
 pub struct VideoEncoder {
     enc: ff::encoder::video::Encoder,
     name: String,
+    backend: String,
     cfg: EncoderConfig,
     scaler: Option<(ff::software::scaling::Context, u32, u32)>,
     src: Option<ff::frame::Video>,
@@ -109,6 +118,11 @@ pub struct VideoEncoder {
     force_key: bool,
     last_pts: i64,
 }
+
+// SAFETY: the FFmpeg codec and swscale contexts are plain heap objects with no thread
+// affinity; `VideoEncoder` is not `Sync` and every method takes `&mut self`, so it is only
+// ever used by one thread at a time (moved into the encode thread, never shared).
+unsafe impl Send for VideoEncoder {}
 
 impl VideoEncoder {
     /// Opens the first hardware backend that works for `cfg.codec` (nvenc, amf, qsv).
@@ -161,6 +175,7 @@ impl VideoEncoder {
         Ok(VideoEncoder {
             enc,
             name: name.to_string(),
+            backend: backend.to_string(),
             cfg: cfg.clone(),
             scaler: None,
             src: None,
@@ -177,6 +192,24 @@ impl VideoEncoder {
 
     pub fn config(&self) -> &EncoderConfig {
         &self.cfg
+    }
+
+    /// Moves the bitrate target. Hardware encoders do not take a new rate on a live context
+    /// (QSV ignores it), so the context is reopened, and only when the change exceeds
+    /// [`REOPEN_THRESHOLD_PERCENT`] of the applied rate; the next frame is then a keyframe.
+    /// Returns whether the encoder was reopened.
+    pub fn set_bitrate(&mut self, kbps: u32) -> Result<bool, EncodeError> {
+        if !bitrate_change_needs_reopen(self.cfg.bitrate_kbps, kbps) {
+            return Ok(false);
+        }
+        let mut cfg = self.cfg.clone();
+        cfg.bitrate_kbps = kbps;
+        let fresh = Self::open_named(&self.name, &self.backend, &cfg).map_err(EncodeError::Ffmpeg)?;
+        self.enc = fresh.enc;
+        self.dst = fresh.dst;
+        self.cfg = cfg;
+        self.force_key = true;
+        Ok(true)
     }
 
     /// The next frame is encoded as an IDR keyframe (answer to a `KeyframeRequest`).
@@ -265,6 +298,36 @@ impl VideoEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reopen_only_beyond_fifteen_percent() {
+        assert!(!bitrate_change_needs_reopen(6000, 6000));
+        assert!(!bitrate_change_needs_reopen(6000, 6900)); // +15% exactly: no
+        assert!(bitrate_change_needs_reopen(6000, 6901));
+        assert!(!bitrate_change_needs_reopen(6000, 5100)); // -15% exactly: no
+        assert!(bitrate_change_needs_reopen(6000, 4200)); // the ABR cut
+        assert!(!bitrate_change_needs_reopen(6000, 0));
+    }
+
+    /// Hardware-dependent: skipped (passes) when this machine has no encoder.
+    #[test]
+    fn set_bitrate_reopens_and_forces_a_keyframe() {
+        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 640, height: 360, fps: 30, bitrate_kbps: 4000 };
+        let Ok(mut enc) = VideoEncoder::open(&cfg) else { return };
+        let frame = vec![90u8; 640 * 360 * 4];
+        enc.encode_bgra(&frame, 640, 360, 0).unwrap();
+        assert!(!enc.set_bitrate(4300).unwrap());
+        assert_eq!(enc.config().bitrate_kbps, 4000);
+        assert!(enc.set_bitrate(2000).unwrap());
+        assert_eq!(enc.config().bitrate_kbps, 2000);
+        let mut first_key = None;
+        for i in 1..10i64 {
+            for p in enc.encode_bgra(&frame, 640, 360, i * 3000).unwrap() {
+                first_key.get_or_insert(p.keyframe);
+            }
+        }
+        assert_eq!(first_key, Some(true), "no keyframe after reopening");
+    }
 
     #[test]
     fn rejects_odd_sizes() {

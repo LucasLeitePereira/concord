@@ -196,6 +196,9 @@ pub enum MediaDatagram {
         frag_idx: u16,
         frag_count: u16,
         keyframe: bool,
+        /// XOR FEC: one parity fragment per this many data fragments (0 = no FEC).
+        /// Parity fragments follow the data ones: `frag_count` counts both.
+        fec_group: u8,
         timestamp: u32,
         payload: Vec<u8>,
     },
@@ -248,6 +251,7 @@ pub fn max_video_payload(max_datagram: usize) -> usize {
         frag_idx: 0,
         frag_count: 0,
         keyframe: false,
+        fec_group: 0,
         timestamp: 0,
         payload: Vec::new(),
     };
@@ -660,6 +664,7 @@ mod tests {
             frag_idx: 2,
             frag_count: 5,
             keyframe: true,
+            fec_group: 8,
             timestamp: 123,
             payload: vec![1; n],
         }

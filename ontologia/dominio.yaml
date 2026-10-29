@@ -204,12 +204,12 @@ conceitos:
 
   - id: adaptive-bitrate
     nome: AdaptiveBitrate
-    definicao: "Controle de bitrate da transmissão por perda e RTT do QUIC."
+    definicao: "Controle de bitrate da transmissão pelo ReceiverReport (perda de fragmentos, quadros descartados, RTT)."
     secao: "§5.5"
 
   - id: video-fragmentation
     nome: VideoFragmentation
-    definicao: "Corte de um quadro codificado em VideoFragments e remontagem no receptor (fora de ordem, duplicatas ignoradas, timeout 250 ms)."
+    definicao: "Corte de um quadro codificado em VideoFragments e remontagem no receptor (fora de ordem, duplicatas ignoradas, timeout 250 ms). Keyframes levam FEC XOR: 1 paridade a cada fec_group (8) fragmentos de dados, recupera 1 perda por grupo; paridade vem depois dos dados (frag_idx >= n_data)."
     secao: "§5.5"
   - id: screen-capture
     nome: ScreenCapture
@@ -290,8 +290,8 @@ invariantes:
     testado_em: "sala/crates/video/src/fragment.rs (mod tests)"
   - id: inv-adaptive-bitrate-rule
     conceitos: [adaptive-bitrate, share-preset]
-    regra: "Perda > 2% ⇒ bitrate × 0,8. Rede estável por 10 s ⇒ bitrate × 1,05, nunca acima do alvo do preset."
-    testado_em: ""
+    regra: "Perda > 5% ⇒ ×0,7 (no máx. 1 corte/s); perda < 1%, sem quadros descartados e RTT ≤ 400 ms ⇒ +5%/s, só 5 s após o último corte; sempre em [min,max] do preset."
+    testado_em: "sala/crates/video/src/abr.rs (mod tests)"
   - id: inv-mix-no-clipping
     conceitos: [soundboard, voice-frame]
     regra: "Mixagem de som + voz nunca estoura: amostras finais limitadas a [-1.0, 1.0] (limitador ou clamp)."
