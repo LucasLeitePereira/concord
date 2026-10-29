@@ -31,6 +31,7 @@ use crate::share::{
     Pipe, PipeFactory, ShareIn, ShareOut, ShareParams, ShareShared, ShareStats, VideoFrame, abr_report,
     handle_output, peer_supports_video, screen_pipe,
 };
+use crate::share_audio::{AudioCapture, AudioFactory};
 use crate::voice::{Activation, SineSource, VoiceEngine};
 
 /// Where captured audio comes from.
@@ -176,8 +177,21 @@ enum EngineCmd {
     MicMeter(bool),
     PeerVolume(String, f32),
     /// A screen share whose pipe is already running (the factory ran on the caller's thread).
-    ShareStart(Box<Pipe>),
+    ShareStart(Box<Pipe>, Option<AudioCapture>),
     ShareStop,
+    /// Volume of the sound of the shares we watch (0.0..=1.0).
+    ShareAudioVolume(f32),
+}
+
+/// Receive counters of one friend's share audio (`Session::share_audio_counters`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ShareAudioCounters {
+    /// `ShareAudio` datagrams received.
+    pub received: u64,
+    /// Frames the jitter buffer delivered to the mix.
+    pub played: u64,
+    /// Peak of the decoded sound in dBFS (-120 for none).
+    pub peak_db: f32,
 }
 
 struct State {
@@ -228,6 +242,8 @@ struct Shared {
     share_claim: AtomicBool,
     /// Frames of friends' shares, for the viewer. Bounded: live video never queues.
     video: mpsc::Sender<VideoFrame>,
+    /// Counters of the sound of friends' shares (published by the loop).
+    share_audio: Mutex<HashMap<String, ShareAudioCounters>>,
 }
 
 impl Shared {
@@ -317,6 +333,7 @@ impl Session {
             share: Mutex::new(None),
             share_claim: AtomicBool::new(false),
             video: video_tx,
+            share_audio: Mutex::new(HashMap::new()),
         });
         let (stop, stop_rx) = watch::channel(false);
         let task = tokio::spawn(run_loop(
@@ -355,6 +372,18 @@ impl Session {
     /// (`VIDEO_PROTOCOL_VERSION`); friends that connect later join automatically. `factory`
     /// opens the capture and encoder on the caller's thread (it can take a while).
     pub fn start_share(&self, preset: SharePreset, factory: PipeFactory) -> Result<(), String> {
+        self.start_share_with_audio(preset, factory, None).map(|_| ())
+    }
+
+    /// Like [`Session::start_share`], also sending the PC's sound when `audio` is given.
+    /// `Ok(true)` when the audio capture opened; if it fails the share goes on without sound
+    /// (the reason is logged) and the result is `Ok(false)`.
+    pub fn start_share_with_audio(
+        &self,
+        preset: SharePreset,
+        factory: PipeFactory,
+        audio: Option<AudioFactory>,
+    ) -> Result<bool, String> {
         // Claim it now so that a second call cannot start another encoder meanwhile.
         if self.shared.share_claim.swap(true, Ordering::AcqRel) {
             return Err("already sharing".into());
@@ -368,9 +397,17 @@ impl Session {
             .unwrap_or(DEFAULT_MAX_DATAGRAM);
         match factory(&ShareParams { preset, max_datagram }) {
             Ok(pipe) => {
+                let capture = audio.and_then(|open| match open() {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        tracing::warn!("sharing without audio: {e}");
+                        None
+                    }
+                });
+                let with_audio = capture.is_some();
                 // Announce `sharing = true` to everybody, then hand the pipe to the loop.
-                self.change_local(Some(EngineCmd::ShareStart(Box::new(pipe))), |s| s.sharing = true);
-                Ok(())
+                self.change_local(Some(EngineCmd::ShareStart(Box::new(pipe), capture)), |s| s.sharing = true);
+                Ok(with_audio)
             }
             Err(e) => {
                 self.shared.share_claim.store(false, Ordering::Release);
@@ -388,6 +425,16 @@ impl Session {
     pub fn stop_share(&self) {
         self.shared.share_claim.store(false, Ordering::Release);
         self.change_local(Some(EngineCmd::ShareStop), |s| s.sharing = false);
+    }
+
+    /// Volume (0.0..=1.0) of the sound of the shares we watch, apart from the voices.
+    pub fn set_share_audio_volume(&self, volume: f32) {
+        let _ = self.shared.commands.send(EngineCmd::ShareAudioVolume(volume));
+    }
+
+    /// What arrived of `friend`'s share audio (zeroes if none did).
+    pub fn share_audio_counters(&self, friend: &str) -> ShareAudioCounters {
+        lock(&self.shared.share_audio).get(friend).copied().unwrap_or_default()
     }
 
     /// Counters of the running share; `None` when not sharing.
@@ -903,6 +950,7 @@ async fn run_loop(
                 let now_ms = started.elapsed().as_millis() as u64;
                 sink.play(engine.playout_tick(now_ms));
                 publish_voice_counters(&engine, &shared);
+                publish_share_audio(&engine, &shared);
                 continue;
             }
             _ = stats_tick.tick() => {
@@ -1051,7 +1099,8 @@ async fn run_loop(
                         meter_on = on;
                     }
                     EngineCmd::PeerVolume(friend, v) => engine.set_peer_volume(&friend, v),
-                    EngineCmd::ShareStart(pipe) => {
+                    EngineCmd::ShareAudioVolume(v) => engine.set_share_audio_volume(v),
+                    EngineCmd::ShareStart(pipe, audio) => {
                         if let Some(old) = share_out.take() {
                             *lock(&shared.share) = None;
                             old.stop(&net);
@@ -1065,7 +1114,10 @@ async fn run_loop(
                                 .collect()
                         };
                         tracing::info!(viewers = peers.len(), "share started");
-                        let out = ShareOut::start(&net, *pipe, &peers);
+                        let mut out = ShareOut::start(&net, *pipe, &peers);
+                        if let Some(capture) = audio {
+                            out.start_audio(&net, capture);
+                        }
                         *lock(&shared.share) = Some(out.shared());
                         share_out = Some(out);
                     }
@@ -1145,11 +1197,13 @@ async fn run_loop(
                 ControlMessage::ShareStart { codec, width, height, fps } => {
                     tracing::info!(%friend, ?codec, width, height, fps, "event: ShareStart");
                     let now_ms = started.elapsed().as_millis() as u64;
+                    engine.drop_share_audio(&friend);
                     shares_in.insert(friend, ShareIn::new(now_ms, codec));
                 }
                 ControlMessage::ShareStop => {
                     tracing::info!(%friend, "event: ShareStop");
                     shares_in.remove(&friend);
+                    engine.drop_share_audio(&friend);
                 }
                 ControlMessage::KeyframeRequest => {
                     if let Some(out) = &share_out {
@@ -1225,6 +1279,14 @@ async fn run_loop(
                     let now_ms = started.elapsed().as_millis() as u64;
                     engine.push_datagram(&friend, seq, timestamp, payload, now_ms);
                 }
+                MediaDatagram::Audio { stream: AudioStream::ShareAudio, seq, timestamp, payload } => {
+                    // Only while the friend's share is announced (late datagrams after a
+                    // `ShareStop` must not bring the decoder back).
+                    if shares_in.contains_key(&friend) {
+                        let now_ms = started.elapsed().as_millis() as u64;
+                        engine.push_share_audio(&friend, seq, timestamp, payload, now_ms);
+                    }
+                }
                 MediaDatagram::Video { .. } => {
                     if let Some(rx) = shares_in.get_mut(&friend) {
                         let now_ms = started.elapsed().as_millis() as u64;
@@ -1232,10 +1294,10 @@ async fn run_loop(
                         handle_output(out, &friend, rx.codec(), &net, &shared.video);
                     }
                 }
-                _ => tracing::trace!(%friend, "event: datagram"),
             },
             NetEvent::Disconnected { friend } => {
                 shares_in.remove(&friend);
+                engine.drop_share_audio(&friend);
                 if let Some(out) = &share_out {
                     out.remove_peer(&friend);
                 }
@@ -1295,6 +1357,22 @@ fn publish_voice_counters(engine: &VoiceEngine, shared: &Shared) {
             c.played = p.jitter.played;
             c.lost = p.jitter.lost;
             c.late_dropped = p.jitter.late_dropped;
+        }
+    }
+}
+
+/// Mirrors the engine's share-audio counters for `Session::share_audio_counters`. A friend
+/// whose share ended keeps its last counters (like the voice ones).
+fn publish_share_audio(engine: &VoiceEngine, shared: &Shared) {
+    let names = engine.share_audio_names();
+    if names.is_empty() {
+        return;
+    }
+    let mut map = lock(&shared.share_audio);
+    for n in names {
+        if let Some((stats, peak)) = engine.share_audio_stats(&n) {
+            let peak_db = if peak > 0.0 { 20.0 * peak.log10() } else { -120.0 };
+            map.insert(n, ShareAudioCounters { received: stats.received, played: stats.played, peak_db });
         }
     }
 }

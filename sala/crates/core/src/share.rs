@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use sala_protocol::{ControlMessage, MediaDatagram, VIDEO_PROTOCOL_VERSION, VideoCodec};
+use sala_protocol::{AudioStream, ControlMessage, MediaDatagram, VIDEO_PROTOCOL_VERSION, VideoCodec};
 use sala_video::abr::ReceiverReport as AbrReport;
 use sala_video::capture::{CaptureSession, Source, Target};
 use sala_video::fragment::{Frame, Output, Reassembler};
@@ -23,6 +23,7 @@ use sala_video::sender::{FrameSlot, RawFrame, Sender, SenderConfig};
 use tokio::sync::mpsc;
 
 use crate::net::Net;
+use crate::share_audio::{AudioCapture, BITRATE_KBPS, ShareAudioEncoder};
 
 /// Spacing of the `ReceiverReport`s.
 pub const REPORT_INTERVAL_MS: u64 = 1_000;
@@ -87,6 +88,10 @@ pub struct ShareStats {
     pub send_errors: u64,
     pub reports: u64,
     pub viewers: usize,
+    /// The PC's sound is being sent (the capture opened).
+    pub audio: bool,
+    /// `ShareAudio` datagrams handed to the connections.
+    pub audio_datagrams_sent: u64,
 }
 
 // ---------------------------------------------------------------- loss measurement
@@ -229,6 +234,8 @@ pub struct ShareShared {
     sent: AtomicU64,
     send_errors: AtomicU64,
     reports: AtomicU64,
+    audio: AtomicBool,
+    audio_sent: AtomicU64,
 }
 
 impl ShareShared {
@@ -240,6 +247,8 @@ impl ShareShared {
             send_errors: self.send_errors.load(Ordering::Relaxed),
             reports: self.reports.load(Ordering::Relaxed),
             viewers: lock(&self.recipients).len(),
+            audio: self.audio.load(Ordering::Relaxed),
+            audio_datagrams_sent: self.audio_sent.load(Ordering::Relaxed),
         }
     }
 }
@@ -248,6 +257,7 @@ impl ShareShared {
 pub struct ShareOut {
     shared: Arc<ShareShared>,
     thread: Option<JoinHandle<()>>,
+    audio_thread: Option<JoinHandle<()>>,
     start_msg: ControlMessage,
 }
 
@@ -265,8 +275,10 @@ impl ShareOut {
             sent: AtomicU64::new(0),
             send_errors: AtomicU64::new(0),
             reports: AtomicU64::new(0),
+            audio: AtomicBool::new(false),
+            audio_sent: AtomicU64::new(0),
         });
-        let out = ShareOut { shared: shared.clone(), thread: None, start_msg };
+        let out = ShareOut { shared: shared.clone(), thread: None, audio_thread: None, start_msg };
         for p in peers {
             out.add_peer(net, p);
         }
@@ -284,6 +296,20 @@ impl ShareOut {
 
     pub fn shared(&self) -> Arc<ShareShared> {
         self.shared.clone()
+    }
+
+    /// Starts sending the PC's sound (`ShareAudio`) to the same viewers as the video. The
+    /// capture lives on the new thread and stops with it.
+    pub fn start_audio(&mut self, net: &Net, capture: AudioCapture) {
+        let shared = self.shared.clone();
+        let net = net.clone();
+        let thread = std::thread::Builder::new()
+            .name("share-audio-send".into())
+            .spawn(move || audio_drain(&shared, capture, &net))
+            .map_err(|e| tracing::error!("cannot start the share audio thread: {e}"))
+            .ok();
+        self.shared.audio.store(thread.is_some(), Ordering::Relaxed);
+        self.audio_thread = thread;
     }
 
     /// Adds a viewer: `ShareStart` plus a keyframe so that it can join mid-stream. `false` when
@@ -320,6 +346,11 @@ impl ShareOut {
     /// last `Arc<ShareShared>` goes away.
     pub fn stop(mut self, net: &Net) {
         self.shared.stop.store(true, Ordering::Relaxed);
+        // The audio ends first: no `ShareAudio` datagram may follow the `ShareStop`.
+        if let Some(t) = self.audio_thread.take() {
+            let _ = t.join();
+        }
+        self.shared.audio.store(false, Ordering::Relaxed);
         let viewers: Vec<String> = lock(&self.shared.recipients).drain().collect();
         for v in viewers {
             if let Err(e) = net.send_control(&v, ControlMessage::ShareStop) {
@@ -353,6 +384,50 @@ fn drain(shared: &ShareShared, rx: &Receiver<Vec<MediaDatagram>>, net: &Net) {
         }
     }
     shared.running.store(false, Ordering::Relaxed);
+}
+
+/// Encodes every captured stereo frame and sends it to every viewer until stopped or the
+/// capture ends. The capture is dropped (and so stopped) when this returns.
+fn audio_drain(shared: &ShareShared, capture: AudioCapture, net: &Net) {
+    let mut enc = match ShareAudioEncoder::new(BITRATE_KBPS) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("share audio: cannot create the Opus encoder: {e}");
+            shared.audio.store(false, Ordering::Relaxed);
+            return;
+        }
+    };
+    while !shared.stop.load(Ordering::Relaxed) {
+        match capture.frames.recv_timeout(Duration::from_millis(50)) {
+            Ok(pcm) => {
+                let f = match enc.encode(&pcm) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!("share audio: encode failed: {e}");
+                        continue;
+                    }
+                };
+                let dg = MediaDatagram::Audio {
+                    stream: AudioStream::ShareAudio,
+                    seq: f.seq,
+                    timestamp: f.timestamp,
+                    payload: f.payload,
+                };
+                let viewers: Vec<String> = lock(&shared.recipients).iter().cloned().collect();
+                for v in &viewers {
+                    if net.send_datagram(v, &dg).is_ok() {
+                        shared.audio_sent.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                tracing::warn!("share audio: the capture ended");
+                break;
+            }
+        }
+    }
+    shared.audio.store(false, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------- real source

@@ -13,6 +13,8 @@ use sala_core::config::{Config, Friend, Profile};
 use sala_core::identity::LocalIdentity;
 use sala_core::session::{AudioSource, Session};
 use sala_core::share::{Pipe, PipeFactory, VideoFrame, VideoPipe};
+use sala_core::share_audio::{AudioCapture, AudioFactory, FRAME_VALUES};
+use sala_core::voice::FRAME_SAMPLES;
 use sala_protocol::{DEFAULT_MAX_DATAGRAM, MediaDatagram, VideoCodec, max_video_payload};
 use sala_video::abr::{Abr, ReceiverReport};
 use sala_video::fragment::{DEFAULT_FEC_GROUP, fragment_fec};
@@ -254,6 +256,107 @@ async fn loss_at_the_viewer_cuts_the_bitrate_and_asks_for_keyframes() {
     a.stop_share();
     wait_until("pipe released", || probe.released.load(Ordering::Relaxed)).await;
     drain.abort();
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+// ---------------------------------------------------------------- T-033f1: share audio
+
+/// Raises `released` when dropped (the capture stopped); the producer thread stops with it.
+struct SineGuard {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+    released: Arc<AtomicBool>,
+}
+
+impl Drop for SineGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        self.released.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A synthetic capture: 440 Hz at 0.5 on both channels, one 20 ms frame per 20 ms.
+fn sine_audio(released: &Arc<AtomicBool>) -> AudioFactory {
+    let released = released.clone();
+    Box::new(move || {
+        let (tx, frames) = mpsc::sync_channel::<Vec<f32>>(50);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let start = Instant::now();
+                let mut n = 0usize;
+                while !stop.load(Ordering::Relaxed) {
+                    let mut pcm = Vec::with_capacity(FRAME_VALUES);
+                    for i in 0..FRAME_SAMPLES {
+                        let t = (n * FRAME_SAMPLES + i) as f32 / 48_000.0;
+                        let s = (t * 440.0 * std::f32::consts::TAU).sin() * 0.5;
+                        pcm.extend([s, s]);
+                    }
+                    if tx.send(pcm).is_err() {
+                        break;
+                    }
+                    n += 1;
+                    // Absolute deadlines: Windows sleeps are coarse, the cadence must not drift.
+                    let due = start + Duration::from_millis(20 * n as u64);
+                    std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                }
+            })
+        };
+        Ok(AudioCapture { frames, guard: Box::new(SineGuard { stop, thread: Some(thread), released }) })
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn share_audio_reaches_the_viewer_and_stops_with_the_share() {
+    let (a, b) = connected_pair().await;
+    let _frames = b.take_video_frames().expect("video stream");
+    let (probe, released) = (Probe::default(), Arc::new(AtomicBool::new(false)));
+    let with_audio =
+        a.start_share_with_audio(PRESET, factory(&probe, false), Some(sine_audio(&released))).expect("start share");
+    assert!(with_audio, "the capture opened");
+    wait_until("B receives and plays the share audio", || {
+        let c = b.share_audio_counters("a");
+        c.received >= 40 && c.played >= 20
+    })
+    .await;
+    // 0.5 amplitude through Opus and the stereo -> mono average: about -6 dBFS peak.
+    let c = b.share_audio_counters("a");
+    assert!((-9.0..=-3.0).contains(&c.peak_db), "peak {} dBFS", c.peak_db);
+    let stats = a.share_stats().unwrap();
+    assert!(stats.audio && stats.audio_datagrams_sent >= 40, "{stats:?}");
+    // The voice counters are untouched: share audio is not voice.
+    assert_eq!(b.voice_counters("a").received, 0);
+
+    // Stop: the capture is released and nothing more arrives.
+    a.stop_share();
+    wait_until("capture released", || released.load(Ordering::Relaxed)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after = b.share_audio_counters("a").received;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(b.share_audio_counters("a").received, after, "share audio kept arriving after ShareStop");
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+/// Negative control: no audio factory, or one that fails, sends no `ShareAudio` at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_a_capture_no_share_audio_is_sent() {
+    let (a, b) = connected_pair().await;
+    let mut frames = b.take_video_frames().expect("video stream");
+    let probe = Probe::default();
+    let failing: AudioFactory = Box::new(|| Err("process loopback unavailable".into()));
+    let with_audio = a.start_share_with_audio(PRESET, factory(&probe, false), Some(failing)).expect("start share");
+    assert!(!with_audio, "a failed capture means a share without sound");
+    recv_frame(&mut frames, "video still flows").await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(a.share_stats().is_some_and(|s| !s.audio && s.audio_datagrams_sent == 0));
+    assert_eq!(b.share_audio_counters("a").received, 0);
+    a.stop_share();
     a.shutdown().await;
     b.shutdown().await;
 }

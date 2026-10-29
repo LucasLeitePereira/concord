@@ -28,6 +28,7 @@ use crate::ipc::{ClientId, IpcClient, IpcError, IpcServer, current_user_pipe_nam
 use crate::platform::{self, Hotkey, HotkeyAction, MenuItem, Platform, PlatformEvent, TrayState};
 use crate::session::{AudioSource, Session, SessionEvent, StatusFlags};
 use crate::share::{SharePlanner, VideoFrame, list_share_sources, real_share_planner};
+use crate::share_audio::{AudioPlanner, real_audio_planner};
 use crate::settings;
 use crate::ui_process::{SHUTDOWN_TIMEOUT, ShutdownOutcome, UiProcess, resolve_ui_exe};
 use crate::voice::clamp_volume;
@@ -247,8 +248,12 @@ pub struct Controller<P: PlatformApi> {
     video_forwarded: bool,
     /// Turns a `StartShare` into a pipe factory (tests use a synthetic source).
     share_planner: SharePlanner,
+    /// Turns `StartShare { audio: true }` into a capture of the PC's sound (tests inject one).
+    audio_planner: AudioPlanner,
     /// Height and fps of the running share (what `ShareState` reports); `None` = not sharing.
     share: Option<(u32, u32)>,
+    /// The running share also sends the PC's sound (the capture really opened).
+    share_audio: bool,
     session: Arc<Session>,
     host: UiHost,
     platform: P,
@@ -276,7 +281,9 @@ impl<P: PlatformApi> Controller<P> {
             viewer_sink: Arc::new(Mutex::new(None)),
             video_forwarded: false,
             share_planner: real_share_planner(),
+            audio_planner: real_audio_planner(),
             share: None,
+            share_audio: false,
             session,
             host,
             platform,
@@ -302,6 +309,11 @@ impl<P: PlatformApi> Controller<P> {
         self.share_planner = planner;
     }
 
+    /// Replaces how the PC's sound is captured for a share (tests use a synthetic source).
+    pub fn set_audio_planner(&mut self, planner: AudioPlanner) {
+        self.audio_planner = planner;
+    }
+
     /// Whether this PC is sharing its screen.
     pub fn sharing(&self) -> bool {
         self.share.is_some()
@@ -309,18 +321,22 @@ impl<P: PlatformApi> Controller<P> {
 
     /// Starts sharing `source_id` at `resolution` (height) and `fps` (`screen-share`). Opening
     /// capture and encoder can take a while, so it runs off the async threads.
-    pub async fn start_share(&mut self, source_id: &str, resolution: u32, fps: u32) -> Result<(), String> {
+    /// With `audio`, the PC's sound goes along (without Concord's own); if its capture cannot
+    /// open the share starts without it and `ShareState.audio` is false.
+    pub async fn start_share(&mut self, source_id: &str, resolution: u32, fps: u32, audio: bool) -> Result<(), String> {
         if self.share.is_some() {
             return Err("já está transmitindo a tela".into());
         }
         let launch = (self.share_planner)(source_id, resolution, fps)?;
         let session = self.session.clone();
         let (preset, factory) = (launch.preset, launch.factory);
-        tokio::task::spawn_blocking(move || session.start_share(preset, factory))
+        let audio_factory = audio.then(|| (self.audio_planner)());
+        let with_audio = tokio::task::spawn_blocking(move || session.start_share_with_audio(preset, factory, audio_factory))
             .await
             .map_err(|e| format!("falha ao iniciar a transmissão: {e}"))??;
         self.share = Some((launch.resolution, preset.fps()));
-        info!(resolution = launch.resolution, fps = preset.fps(), "screen share started");
+        self.share_audio = with_audio;
+        info!(resolution = launch.resolution, fps = preset.fps(), audio = with_audio, "screen share started");
         self.publish_share();
         Ok(())
     }
@@ -328,6 +344,7 @@ impl<P: PlatformApi> Controller<P> {
     /// Stops the screen share (D-012 step 3 and `StopShare`); harmless when not sharing.
     pub fn stop_share(&mut self) {
         let was = self.share.take().is_some();
+        self.share_audio = false;
         self.session.stop_share();
         if was {
             info!("screen share stopped");
@@ -337,7 +354,7 @@ impl<P: PlatformApi> Controller<P> {
 
     fn share_state_msg(&self) -> CoreToUi {
         let (resolution, fps) = self.share.unwrap_or((0, 0));
-        CoreToUi::ShareState { sharing: self.share.is_some(), resolution, fps }
+        CoreToUi::ShareState { sharing: self.share.is_some(), resolution, fps, audio: self.share_audio }
     }
 
     fn publish_share(&self) {
@@ -805,13 +822,14 @@ impl<P: PlatformApi> Controller<P> {
                     tokio::task::spawn_blocking(list_share_sources).await.unwrap_or_default();
                 self.host.ipc.send_to(client, &CoreToUi::ShareSources { encoder, monitors, windows });
             }
-            UiToCore::StartShare { source_id, resolution, fps } => {
-                if let Err(e) = self.start_share(&source_id, resolution, fps).await {
+            UiToCore::StartShare { source_id, resolution, fps, audio } => {
+                if let Err(e) = self.start_share(&source_id, resolution, fps, audio).await {
                     warn!("cannot start the screen share: {e}");
                     self.reply_error(client, format!("não foi possível transmitir a tela: {e}"));
                 }
             }
             UiToCore::StopShare => self.stop_share(),
+            UiToCore::SetShareAudioVolume { volume } => self.session.set_share_audio_volume(volume),
         }
     }
 

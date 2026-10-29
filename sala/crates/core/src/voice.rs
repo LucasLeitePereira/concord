@@ -15,6 +15,7 @@ use nnnoiseless::DenoiseState;
 use crate::config::{AudioConfig, AudioMode};
 use crate::cues::{Cue, CuePlayer};
 use crate::jitter::{JitterBuffer, JitterStats, Pop};
+use crate::share_audio::ShareAudioIn;
 
 pub const SAMPLE_RATE: u32 = 48_000;
 /// Samples per 20 ms frame (mono).
@@ -477,6 +478,10 @@ pub struct VoiceEngine {
     in_room: bool,
     /// Notification sounds, mixed after the "deafened" silencing (D-024).
     cues: CuePlayer,
+    /// The sound of the shares we watch, one per sharing friend (T-033f1).
+    share_audio: HashMap<String, ShareAudioIn>,
+    /// Volume of all of `share_audio` together (0.0..=1.0), apart from the voices.
+    share_volume: f32,
 }
 
 impl VoiceEngine {
@@ -494,7 +499,46 @@ impl VoiceEngine {
             ui_meter_on: false,
             in_room: false,
             cues: CuePlayer::new(cfg.cue_volume),
+            share_audio: HashMap::new(),
+            share_volume: 1.0,
         })
+    }
+
+    /// Volume of the shares' sound (0.0..=1.0; NaN keeps full volume).
+    pub fn set_share_audio_volume(&mut self, volume: f32) {
+        self.share_volume = if volume.is_nan() { 1.0 } else { volume.clamp(0.0, 1.0) };
+    }
+
+    /// A `ShareAudio` datagram from `friend` arrived (the caller checked that the share exists).
+    pub fn push_share_audio(&mut self, friend: &str, seq: u16, timestamp: u32, payload: Vec<u8>, now_ms: u64) {
+        if !self.share_audio.contains_key(friend) {
+            match ShareAudioIn::new() {
+                Ok(rx) => {
+                    self.share_audio.insert(friend.to_string(), rx);
+                }
+                Err(e) => {
+                    tracing::warn!(%friend, "cannot create the share audio decoder: {e}");
+                    return;
+                }
+            }
+        }
+        if let Some(rx) = self.share_audio.get_mut(friend) {
+            rx.push(seq, timestamp, payload, now_ms);
+        }
+    }
+
+    /// The share of `friend` ended: its buffer and decoder go away.
+    pub fn drop_share_audio(&mut self, friend: &str) {
+        self.share_audio.remove(friend);
+    }
+
+    /// Receive counters and peak of `friend`'s share audio; `None` when it sent none.
+    pub fn share_audio_stats(&self, friend: &str) -> Option<(JitterStats, f32)> {
+        self.share_audio.get(friend).map(|s| (s.stats(), s.peak()))
+    }
+
+    pub fn share_audio_names(&self) -> Vec<String> {
+        self.share_audio.keys().cloned().collect()
     }
 
     /// Plays a one-shot notification sound (D-024).
@@ -687,6 +731,15 @@ impl VoiceEngine {
                 apply_volume(&mut frame, p.volume);
                 for (m, s) in mix.iter_mut().zip(&frame) {
                     *m += s;
+                }
+            }
+        }
+        // Shares' sound: their own volume, no room gating; "Silenciar" silences it with the rest.
+        for s in self.share_audio.values_mut() {
+            if let Some(mut frame) = s.pop_mono(now_ms) {
+                apply_volume(&mut frame, self.share_volume);
+                for (m, x) in mix.iter_mut().zip(&frame) {
+                    *m += x;
                 }
             }
         }
@@ -1335,5 +1388,60 @@ mod tests {
         e.add_peer("a").unwrap();
         assert_eq!(e.peer_stats("a").unwrap().jitter.received, 1, "buffer survives");
         assert_eq!(e.peers["a"].volume, 0.5);
+    }
+
+    /// Summed output rms after `a`'s share audio (a stereo 440 Hz tone) was pushed.
+    fn share_audio_energy(volume: f32, deafened: bool, dropped: bool) -> f32 {
+        share_audio_energy_in_room(volume, deafened, dropped, true)
+    }
+
+    fn share_audio_energy_in_room(volume: f32, deafened: bool, dropped: bool, in_room: bool) -> f32 {
+        use crate::share_audio::{BITRATE_KBPS, FRAME_VALUES, ShareAudioEncoder};
+        let mut e = engine();
+        e.set_in_room(in_room);
+        e.set_share_audio_volume(volume);
+        e.activation_mut().set_deafened(deafened);
+        let mut enc = ShareAudioEncoder::new(BITRATE_KBPS).unwrap();
+        let mut energy = 0.0;
+        // Real time: one frame arrives and one tick plays per 20 ms. The energy counts from tick
+        // 10 on; `dropped` ends the share there (no datagram can follow, the session checks).
+        for k in 0..45usize {
+            let now = (k * 20) as u64;
+            if k == 10 && dropped {
+                e.drop_share_audio("a");
+            }
+            if k < 30 && !(k >= 10 && dropped) {
+                let mut pcm = Vec::with_capacity(FRAME_VALUES);
+                for i in 0..FRAME_SAMPLES {
+                    let t = (k * FRAME_SAMPLES + i) as f32 / SAMPLE_RATE as f32;
+                    let s = (t * 440.0 * std::f32::consts::TAU).sin() * 0.5;
+                    pcm.extend([s, s]);
+                }
+                let f = enc.encode(&pcm).unwrap();
+                e.push_share_audio("a", f.seq, f.timestamp, f.payload, now);
+            }
+            let out = e.playout_tick(now);
+            if k >= 10 {
+                energy += rms(&out);
+            }
+        }
+        energy
+    }
+
+    #[test]
+    fn share_audio_is_mixed_with_its_own_volume_and_silenced_by_deafen() {
+        let full = share_audio_energy(1.0, false, false);
+        assert!(full > 3.0, "the share audio must be audible: {full}");
+        let half = share_audio_energy(0.5, false, false);
+        assert!((half / full - 0.5).abs() < 0.05, "half volume: {half} vs {full}");
+        assert_eq!(share_audio_energy(0.0, false, false), 0.0);
+        // Out of range values are clamped; NaN keeps full volume.
+        assert!((share_audio_energy(7.0, false, false) / full - 1.0).abs() < 0.001);
+        assert!((share_audio_energy(f32::NAN, false, false) / full - 1.0).abs() < 0.001);
+        // "Silenciar" (deafened) silences it; so does the end of the share.
+        assert_eq!(share_audio_energy(1.0, true, false), 0.0);
+        assert_eq!(share_audio_energy(1.0, false, true), 0.0);
+        // Out of the room voices are muted (D-015), a watched share is not.
+        assert!(share_audio_energy_in_room(1.0, false, false, false) > 3.0);
     }
 }

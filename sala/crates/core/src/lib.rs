@@ -12,12 +12,15 @@ pub mod identity;
 #[cfg(windows)]
 pub mod ipc;
 pub mod jitter;
+#[cfg(windows)]
+pub mod loopback;
 pub mod net;
 #[cfg(windows)]
 pub mod platform;
 pub mod session;
 pub mod settings;
 pub mod share;
+pub mod share_audio;
 #[cfg(windows)]
 pub mod tailscale;
 #[cfg(windows)]

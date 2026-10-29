@@ -33,6 +33,16 @@ tracing-appender = "0.2"
 nnnoiseless = { version = "0.5.2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
+# Already in the lock (windows-capture); only used for WASAPI process loopback (loopback.rs).
+windows-core = "=0.62.2" # the `#[implement]` macro names this crate directly
+windows = { version = "=0.62.2", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+] }
 windows-sys = { version = "0.61", default-features = false, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

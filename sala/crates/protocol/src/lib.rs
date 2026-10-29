@@ -410,10 +410,20 @@ pub enum UiToCore {
     ListShareSources,
     /// Starts sharing the screen. `source_id` comes from `ShareSources`; `resolution` is the
     /// height (480, 720, 1080 or 1440; capped at the source's, never upscaled), `fps` 30 or 60.
-    /// Success is told by `ShareState`; failure by `Error`.
-    StartShare { source_id: String, resolution: u32, fps: u32 },
+    /// Success is told by `ShareState`; failure by `Error`. `audio`: also send this PC's sound
+    /// (without Concord's own); if capturing it fails the share goes on without it and
+    /// `ShareState.audio` says so.
+    StartShare {
+        source_id: String,
+        resolution: u32,
+        fps: u32,
+        #[serde(default)]
+        audio: bool,
+    },
     /// Stops the screen share (harmless when not sharing).
     StopShare,
+    /// Volume (0.0 to 1.0) of the sound of the shares we watch, apart from the voices.
+    SetShareAudioVolume { volume: f32 },
 }
 
 /// One monitor or window that can be shared (`screen-capture`).
@@ -512,8 +522,15 @@ pub enum CoreToUi {
     /// (`"nvenc"`, `"amf"` or `"qsv"`); `None` = this PC cannot share its screen.
     ShareSources { encoder: Option<String>, monitors: Vec<ShareSource>, windows: Vec<ShareSource> },
     /// Whether this PC is sharing its screen, at what height and fps (0 when not). Sent at
-    /// every change and on `GetState`.
-    ShareState { sharing: bool, resolution: u32, fps: u32 },
+    /// every change and on `GetState`. `audio`: the PC's sound is being sent (true only if the
+    /// capture really opened).
+    ShareState {
+        sharing: bool,
+        resolution: u32,
+        fps: u32,
+        #[serde(default)]
+        audio: bool,
+    },
 }
 
 /// Encodes an IPC message as exactly one JSON line terminated by `\n`.
@@ -800,8 +817,9 @@ mod tests {
             UiToCore::ListTailnetPeers,
             UiToCore::SetPeerVolume { friend: "bia".into(), volume: 1.5 },
             UiToCore::ListShareSources,
-            UiToCore::StartShare { source_id: "monitor:65537".into(), resolution: 1080, fps: 60 },
+            UiToCore::StartShare { source_id: "monitor:65537".into(), resolution: 1080, fps: 60, audio: true },
             UiToCore::StopShare,
+            UiToCore::SetShareAudioVolume { volume: 0.5 },
         ];
         for c in cmds {
             let l = encode_ipc_line(&c).unwrap();
@@ -833,7 +851,7 @@ mod tests {
                 windows: vec![ShareSource { id: "window:394".into(), name: "Notepad".into(), width: 0, height: 0, primary: false }],
             },
             CoreToUi::ShareSources { encoder: None, monitors: vec![], windows: vec![] },
-            CoreToUi::ShareState { sharing: true, resolution: 720, fps: 30 },
+            CoreToUi::ShareState { sharing: true, resolution: 720, fps: 30, audio: true },
             CoreToUi::TailnetPeers {
                 running: true,
                 peers: vec![TailnetPeer {
@@ -913,12 +931,27 @@ mod tests {
         );
         assert_eq!(encode_ipc_line(&UiToCore::JoinRoom).unwrap(), "{\"type\":\"JoinRoom\"}\n");
         assert_eq!(
-            encode_ipc_line(&UiToCore::StartShare { source_id: "monitor:1".into(), resolution: 720, fps: 30 }).unwrap(),
-            "{\"type\":\"StartShare\",\"source_id\":\"monitor:1\",\"resolution\":720,\"fps\":30}\n"
+            encode_ipc_line(&UiToCore::StartShare { source_id: "monitor:1".into(), resolution: 720, fps: 30, audio: true })
+                .unwrap(),
+            "{\"type\":\"StartShare\",\"source_id\":\"monitor:1\",\"resolution\":720,\"fps\":30,\"audio\":true}\n"
         );
         assert_eq!(
-            encode_ipc_line(&CoreToUi::ShareState { sharing: false, resolution: 0, fps: 0 }).unwrap(),
-            "{\"type\":\"ShareState\",\"sharing\":false,\"resolution\":0,\"fps\":0}\n"
+            encode_ipc_line(&CoreToUi::ShareState { sharing: false, resolution: 0, fps: 0, audio: false }).unwrap(),
+            "{\"type\":\"ShareState\",\"sharing\":false,\"resolution\":0,\"fps\":0,\"audio\":false}\n"
+        );
+        assert_eq!(
+            encode_ipc_line(&UiToCore::SetShareAudioVolume { volume: 0.5 }).unwrap(),
+            "{\"type\":\"SetShareAudioVolume\",\"volume\":0.5}\n"
+        );
+        // Old UI/core without the new fields: they default to false.
+        assert_eq!(
+            decode_ipc_line::<UiToCore>("{\"type\":\"StartShare\",\"source_id\":\"monitor:1\",\"resolution\":720,\"fps\":30}\n")
+                .unwrap(),
+            UiToCore::StartShare { source_id: "monitor:1".into(), resolution: 720, fps: 30, audio: false }
+        );
+        assert_eq!(
+            decode_ipc_line::<CoreToUi>("{\"type\":\"ShareState\",\"sharing\":true,\"resolution\":720,\"fps\":30}\n").unwrap(),
+            CoreToUi::ShareState { sharing: true, resolution: 720, fps: 30, audio: false }
         );
         assert_eq!(
             encode_ipc_line(&CoreToUi::Calls { incoming: vec!["a".into()], outgoing: vec![] }).unwrap(),

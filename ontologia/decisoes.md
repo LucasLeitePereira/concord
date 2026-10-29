@@ -211,3 +211,8 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - O viewer nunca decodifica delta antes de keyframe nem após buraco em `frame_id`; pede keyframe no máximo a cada 500 ms. `VideoFrame` carrega o codec do `ShareStart`.
 - Thread `video-forward` encaminha `take_video_frames` ao viewer aberto e descarta sem viewer; modo jogo fecha o viewer no passo 2 (D-012).
 - **Data:** 2026-10-29
+
+## D-028 — T-033f: áudio do PC na transmissão (F4)
+- Captura por WASAPI process loopback excluindo a árvore do próprio processo (Win10 2004+). Sem fallback para loopback comum (ecoaria a voz dos amigos): se falhar, transmite só vídeo e `ShareState.audio=false`.
+- Opus estéreo 128 kbps 20 ms como `ShareAudio`, aos mesmos destinatários do vídeo; o receptor mistura em mono (saída é mono) com volume próprio, antes do "Silenciar", e toca mesmo fora da sala.
+- **Data:** 2026-10-29
