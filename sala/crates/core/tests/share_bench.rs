@@ -131,7 +131,7 @@ impl Drop for BenchPipe {
 fn factory(c: &Arc<Counters>, kbps: u32) -> PipeFactory {
     let c = c.clone();
     Box::new(move |params| {
-        let max_payload = max_video_payload(params.max_datagram);
+        let budget = params.datagram_budget.clone();
         let (tx, rx) = mpsc::sync_channel::<Vec<MediaDatagram>>(16);
         let (key_flag, stop) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         let thread = {
@@ -160,7 +160,7 @@ fn factory(c: &Arc<Counters>, kbps: u32) -> PipeFactory {
                     let size = if key { delta_avg * 9 } else { delta_avg * jitter / 100 } as usize;
                     let data = vec![(id % 251) as u8; size];
                     let fec = if key { DEFAULT_FEC_GROUP } else { 0 };
-                    let dgs = fragment_fec(id, key, id.wrapping_mul(3000), &data, max_payload, fec);
+                    let dgs = fragment_fec(id, key, id.wrapping_mul(3000), &data, max_video_payload(budget.load(Ordering::Relaxed)), fec);
                     match tx.try_send(dgs) {
                         Err(TrySendError::Disconnected(_)) => break,
                         Err(TrySendError::Full(_)) => {

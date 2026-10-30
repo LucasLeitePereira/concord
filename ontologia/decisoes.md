@@ -227,3 +227,9 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - D3D11VA tenta os adaptadores 0..3 (o 0 pode não decodificar em notebook iGPU+dGPU) antes de cair para software; software com frame threading (2 threads, sem LOW_DELAY).
 - Threads de encode/decode de vídeo em BELOW_NORMAL; o cpal já põe o áudio em TIME_CRITICAL.
 - **Data:** 2026-10-29
+
+## D-031 — T-035c/d: perda de vídeo em rajada (F4)
+- Socket UDP criado com std e buffers SO_RCVBUF/SO_SNDBUF de 4 MiB antes do `quinn::Endpoint::new` (o padrão do Windows é 64 KB e transborda numa rajada de keyframe sob CPU disputada).
+- `DEFAULT_MAX_DATAGRAM` = 1162 (mínimo garantido pelo QUIC); a fragmentação do vídeo segue o `max_datagram_size` vivo da conexão (`datagram_budget`), senão um black hole de MTU vira recusa permanente.
+- No máximo 1 keyframe forçado por segundo (pedidos coalescidos).
+- **Data:** 2026-10-30

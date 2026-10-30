@@ -8,13 +8,13 @@
 //! never are. No network, no clock injection needed beyond what tests can control through
 //! [`SenderConfig::idle_resend`].
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use sala_protocol::{MediaDatagram, VideoCodec, max_video_payload};
+use sala_protocol::{DEFAULT_MAX_DATAGRAM, MediaDatagram, VideoCodec, max_video_payload};
 
 use crate::abr::{Abr, ReceiverReport};
 use crate::encoder::{EncodeError, EncoderConfig, TIME_BASE_HZ, VideoEncoder};
@@ -94,8 +94,9 @@ pub struct SenderConfig {
     /// Size of the captured source (the encoder scales to the preset).
     pub src_width: u32,
     pub src_height: u32,
-    /// Largest encoded datagram (QUIC datagram budget).
-    pub max_datagram: usize,
+    /// Largest encoded datagram (QUIC datagram budget). Shared and read before every frame:
+    /// the owner of the connection lowers it when QUIC reduces its limit mid-stream.
+    pub max_datagram: Arc<AtomicUsize>,
     /// XOR FEC group size for keyframes (0 = off).
     pub fec_group: u8,
     /// Repeat the last frame after this long without a new one.
@@ -111,7 +112,7 @@ impl SenderConfig {
             codec,
             src_width,
             src_height,
-            max_datagram: 1200,
+            max_datagram: Arc::new(AtomicUsize::new(DEFAULT_MAX_DATAGRAM)),
             fec_group: DEFAULT_FEC_GROUP,
             // 500 ms: a lost last frame of a static screen is only noticed when the next frame
             // arrives, and the 1 s report window then always holds at least two samples. The cost
@@ -160,6 +161,36 @@ pub struct Sender {
     encoder_name: String,
     config: EncoderConfig,
     handle: Option<JoinHandle<()>>,
+}
+
+/// Smallest datagram size the fragmenter will use, whatever the budget says (a closed or
+/// confused connection must not turn a frame into thousands of tiny fragments).
+pub const MIN_DATAGRAM_BUDGET: usize = 1000;
+
+/// Video payload per fragment for the budget as it is right now.
+fn payload_for(budget: &AtomicUsize) -> usize {
+    max_video_payload(budget.load(Ordering::Relaxed).clamp(MIN_DATAGRAM_BUDGET, DEFAULT_MAX_DATAGRAM))
+}
+
+/// Spacing of forced keyframes. A viewer asks for one on every loss it cannot repair; a
+/// keyframe is ~9x a delta, so answering each ask feeds the congestion that caused it.
+pub const MIN_KEYFRAME_SPACING: Duration = Duration::from_secs(1);
+
+/// Lets at most one forced keyframe through per [`MIN_KEYFRAME_SPACING`]; the asks in between
+/// stay pending (they coalesce into the next one).
+#[derive(Debug, Default)]
+struct KeyGate {
+    last: Option<Instant>,
+}
+
+impl KeyGate {
+    fn open(&self, now: Instant) -> bool {
+        self.last.is_none_or(|t| now.saturating_duration_since(t) >= MIN_KEYFRAME_SPACING)
+    }
+
+    fn mark(&mut self, now: Instant) {
+        self.last = Some(now);
+    }
 }
 
 /// Whether this tick should produce a frame.
@@ -266,7 +297,7 @@ fn run(
 ) {
     crate::lower_current_thread_priority();
     let tick = Duration::from_micros(1_000_000 / u64::from(enc.config().fps.max(1)));
-    let max_payload = max_video_payload(cfg.max_datagram);
+    let mut key_gate = KeyGate::default();
     let mut next = Instant::now();
     let mut last: Option<RawFrame> = None;
     let mut last_encode: Option<Instant> = None;
@@ -283,7 +314,8 @@ fn run(
             last = fresh;
             has_fresh = true;
         }
-        let key_wanted = shared.key_requested.load(Ordering::Relaxed);
+        // A request inside the spacing window stays pending until the gate opens.
+        let key_wanted = shared.key_requested.load(Ordering::Relaxed) && key_gate.open(now);
         let due = should_encode(has_fresh, last.is_some(), key_wanted, last_encode.map(|t| now - t), cfg.idle_resend);
         // A keyframe request wakes the loop early: encode right away, then restart the pacing.
         if now < next && !(key_wanted && due) {
@@ -294,8 +326,9 @@ fn run(
             continue;
         }
         let Some(frame) = &last else { continue };
-        if shared.key_requested.swap(false, Ordering::Relaxed) {
+        if key_wanted && shared.key_requested.swap(false, Ordering::Relaxed) {
             enc.force_keyframe();
+            key_gate.mark(now);
         }
         let now_ms = started.elapsed().as_millis() as u64;
         match enc.set_bitrate(shared.target_kbps.load(Ordering::Relaxed), now_ms) {
@@ -323,7 +356,7 @@ fn run(
         for p in packets {
             frame_id = frame_id.wrapping_add(1);
             let fec = if p.keyframe { cfg.fec_group } else { 0 };
-            let dgs = fragment_fec(frame_id, p.keyframe, p.pts as u32, &p.data, max_payload, fec);
+            let dgs = fragment_fec(frame_id, p.keyframe, p.pts as u32, &p.data, payload_for(&cfg.max_datagram), fec);
             if dgs.is_empty() {
                 tracing::warn!(bytes = p.data.len(), "encoded frame cannot be fragmented, dropped");
                 continue;
@@ -340,6 +373,7 @@ fn run(
                     // Channel full: the picture is broken until the next keyframe.
                     shared.dropped_deltas.fetch_add(1, Ordering::Relaxed);
                     enc.force_keyframe();
+                    key_gate.mark(now);
                 }
             }
         }
@@ -410,6 +444,45 @@ mod tests {
         assert!(should_encode(false, true, false, ms(1000), idle)); // static screen, resend
         assert!(should_encode(false, true, true, ms(10), idle)); // keyframe asked
         assert!(should_encode(false, true, false, None, idle)); // never encoded yet
+    }
+
+    #[test]
+    fn keyframe_gate_lets_one_through_per_second() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut gate = KeyGate::default();
+        assert!(gate.open(at(0)), "the first ask is answered at once");
+        gate.mark(at(0));
+        // A storm of asks inside the window is held back...
+        for ms in [1, 100, 500, 999] {
+            assert!(!gate.open(at(ms)), "ask at {ms} ms must wait");
+        }
+        // ...and the pending one is served as soon as the window ends, once.
+        assert!(gate.open(at(1000)));
+        gate.mark(at(1000));
+        assert!(!gate.open(at(1001)));
+        assert!(gate.open(at(2000)));
+    }
+
+    #[test]
+    fn fragments_follow_the_live_budget() {
+        let budget = AtomicUsize::new(DEFAULT_MAX_DATAGRAM);
+        let data = vec![7u8; 30_000];
+        let encodable = |max: usize| {
+            fragment_fec(1, false, 0, &data, payload_for(&budget), 0).iter().all(|d| d.encode(max).is_ok())
+        };
+        assert!(encodable(DEFAULT_MAX_DATAGRAM));
+        // QUIC lowers its limit mid-stream: the next frame is cut to the new size and still goes.
+        budget.store(1100, Ordering::Relaxed);
+        assert!(encodable(1100), "fragments must follow the lowered budget");
+        // Control: a fragmenter stuck on the old size is refused for good.
+        let stale = fragment_fec(1, false, 0, &data, max_video_payload(DEFAULT_MAX_DATAGRAM), 0);
+        assert!(stale.iter().any(|d| d.encode(1100).is_err()));
+        // Nonsense values (closed connection: 0) are clamped to the floor / cap.
+        budget.store(0, Ordering::Relaxed);
+        assert_eq!(payload_for(&budget), max_video_payload(MIN_DATAGRAM_BUDGET));
+        budget.store(100_000, Ordering::Relaxed);
+        assert_eq!(payload_for(&budget), max_video_payload(DEFAULT_MAX_DATAGRAM));
     }
 
     #[test]

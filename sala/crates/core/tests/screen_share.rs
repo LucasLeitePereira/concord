@@ -93,6 +93,8 @@ struct Probe {
     /// Set when the pipe is dropped (after its producer thread ended).
     released: Arc<AtomicBool>,
     max_datagram: Arc<AtomicUsize>,
+    /// The live budget the session hands to the factory (kept to be tampered with).
+    live_budget: Arc<Mutex<Option<Arc<AtomicUsize>>>>,
 }
 
 struct FakePipe {
@@ -136,6 +138,7 @@ fn factory(probe: &Probe, lossy: bool) -> PipeFactory {
     let probe = probe.clone();
     Box::new(move |params| {
         probe.max_datagram.store(params.max_datagram, Ordering::Relaxed);
+        *probe.live_budget.lock().unwrap() = Some(params.datagram_budget.clone());
         let max_payload = max_video_payload(params.max_datagram);
         let (tx, rx) = mpsc::sync_channel::<Vec<MediaDatagram>>(16);
         let (key_flag, stop) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
@@ -195,6 +198,13 @@ async fn share_start_reaches_the_viewer_who_reports_and_share_stop_releases_ever
     let max = probe.max_datagram.load(Ordering::Relaxed);
     assert!(max > 0 && max <= DEFAULT_MAX_DATAGRAM, "max_datagram from the real connection: {max}");
     assert!(a.start_share(PRESET, factory(&Probe::default(), false)).is_err(), "one share at a time");
+
+    // The budget the encoder fragments to follows the connection while the share runs: a stale
+    // value (QUIC lowered its limit, or the budget was never refreshed) is corrected within a frame.
+    let live = probe.live_budget.lock().unwrap().clone().expect("factory got the live budget");
+    assert_eq!(live.load(Ordering::Relaxed), max);
+    live.store(1, Ordering::Relaxed);
+    wait_until("budget refreshed from the connection", || live.load(Ordering::Relaxed) == max).await;
 
     // The first frame the viewer gets is a keyframe; every frame is reassembled intact.
     let first = recv_frame(&mut frames, "first frame").await;

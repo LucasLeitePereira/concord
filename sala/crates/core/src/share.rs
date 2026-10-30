@@ -8,7 +8,7 @@
 //! plug a synthetic one in through [`PipeFactory`].
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -45,11 +45,31 @@ pub fn peer_supports_video(protocol_version: u16) -> bool {
 }
 
 /// What the factory needs to build a pipe.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ShareParams {
     pub preset: SharePreset,
-    /// Smallest datagram budget among the viewers (the real QUIC limit, not a constant).
+    /// Smallest datagram budget among the viewers when the share starts (the real QUIC limit,
+    /// not a constant).
     pub max_datagram: usize,
+    /// Live version of `max_datagram`: the sending thread keeps it at the smallest limit among
+    /// the viewers, and the encoder must fragment to its current value on every frame (QUIC
+    /// lowers the limit after losses; a stale size would be refused for good).
+    pub datagram_budget: Arc<AtomicUsize>,
+}
+
+/// Smallest datagram limit among `viewers`' connections; `None` when none reports one.
+fn min_datagram_limit(net: &Net, viewers: &[String]) -> Option<usize> {
+    viewers.iter().filter_map(|v| net.max_datagram_size(v)).min()
+}
+
+/// Copies the viewers' current limit into the encoder's budget (kept as is when unknown).
+fn refresh_budget(net: &Net, viewers: &[String], budget: &AtomicUsize) {
+    if let Some(limit) = min_datagram_limit(net, viewers) {
+        let old = budget.swap(limit, Ordering::Relaxed);
+        if old != limit {
+            tracing::info!(old, new = limit, "share: datagram budget changed");
+        }
+    }
 }
 
 /// Control surface of a running encoder. Dropping it must stop everything it started.
@@ -342,7 +362,7 @@ pub struct ShareOut {
 impl ShareOut {
     /// Announces the share to `peers` (already filtered by [`peer_supports_video`]) and starts
     /// draining `pipe` into the network.
-    pub fn start(net: &Net, pipe: Pipe, peers: &[String]) -> ShareOut {
+    pub fn start(net: &Net, pipe: Pipe, peers: &[String], budget: Arc<AtomicUsize>) -> ShareOut {
         let Pipe { control, datagrams, codec, width, height, fps } = pipe;
         let start_msg = ControlMessage::ShareStart { codec, width, height, fps };
         let shared = Arc::new(ShareShared {
@@ -367,7 +387,7 @@ impl ShareOut {
         let net = net.clone();
         let thread = std::thread::Builder::new()
             .name("share-send".into())
-            .spawn(move || drain(&shared, &datagrams, &net))
+            .spawn(move || drain(&shared, &datagrams, &net, &budget))
             .map_err(|e| tracing::error!("cannot start the share sender thread: {e}"))
             .ok();
         if thread.is_none() {
@@ -446,12 +466,14 @@ impl ShareOut {
 }
 
 /// Sends every fragmented frame to every viewer until stopped or the encoder ends.
-fn drain(shared: &ShareShared, rx: &Receiver<Vec<MediaDatagram>>, net: &Net) {
+fn drain(shared: &ShareShared, rx: &Receiver<Vec<MediaDatagram>>, net: &Net, budget: &AtomicUsize) {
     let mut log = TxLog::new(Instant::now());
     while !shared.stop.load(Ordering::Relaxed) {
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(dgs) => {
                 let viewers: Vec<String> = lock(&shared.recipients).iter().cloned().collect();
+                // The next frame is fragmented to whatever QUIC allows by then.
+                refresh_budget(net, &viewers, budget);
                 let bytes: usize = dgs.iter().map(video_payload_len).sum();
                 shared.frames_out.fetch_add(1, Ordering::Relaxed);
                 shared.generated.fetch_add(dgs.len() as u64, Ordering::Relaxed);
@@ -641,7 +663,7 @@ impl Drop for ScreenPipe {
 pub fn screen_pipe(params: &ShareParams, codec: VideoCodec, source: &Source) -> Result<Pipe, String> {
     let slot = FrameSlot::new();
     let mut cfg = SenderConfig::new(params.preset, codec, source.width, source.height);
-    cfg.max_datagram = params.max_datagram;
+    cfg.max_datagram = params.datagram_budget.clone();
     let (sender, datagrams) = Sender::start(cfg, slot.clone()).map_err(|e| format!("cannot open the encoder: {e}"))?;
     let ec = sender.encoder_config().clone();
     tracing::info!(encoder = sender.encoder_name(), width = ec.width, height = ec.height, fps = ec.fps, "share encoder ready");

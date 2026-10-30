@@ -25,8 +25,10 @@ pub const RING_PROTOCOL_VERSION: u16 = 2;
 /// datagrams of a screen share (same gate as D-024).
 pub const VIDEO_PROTOCOL_VERSION: u16 = 3;
 
-/// Datagram size limit to assume when the connection does not report one.
-pub const DEFAULT_MAX_DATAGRAM: usize = 1200;
+/// Datagram size limit to assume when the connection does not report one, and the cap for
+/// everything we send: 1162 is what QUIC leaves of the minimum 1200-byte path MTU, and quinn
+/// falls back to it after losses (a larger fixed size would then be refused for good).
+pub const DEFAULT_MAX_DATAGRAM: usize = 1162;
 
 /// Upper bound for one control frame payload (defensive limit for the decoder).
 pub const MAX_CONTROL_FRAME: usize = 64 * 1024;

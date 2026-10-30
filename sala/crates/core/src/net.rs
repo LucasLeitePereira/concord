@@ -325,6 +325,38 @@ fn transport() -> Arc<quinn::TransportConfig> {
     Arc::new(t)
 }
 
+/// Kernel buffer size asked for the QUIC socket. The Windows default receive buffer is 64 KB,
+/// which a keyframe burst overflows as soon as the receiver loses the CPU for a moment.
+const SOCKET_BUFFER_BYTES: i32 = 4 << 20;
+
+/// Raises SO_RCVBUF and SO_SNDBUF of the endpoint socket and logs what the OS granted.
+#[cfg(windows)]
+fn tune_socket_buffers(socket: &std::net::UdpSocket) {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{SO_RCVBUF, SO_SNDBUF, SOL_SOCKET, getsockopt, setsockopt};
+
+    let raw = socket.as_raw_socket() as usize;
+    let mut effective = [0i32; 2];
+    for (slot, opt) in effective.iter_mut().zip([SO_RCVBUF, SO_SNDBUF]) {
+        // SAFETY: `raw` is the live socket owned by `socket`; the option buffers are valid i32s.
+        unsafe {
+            let want = SOCKET_BUFFER_BYTES;
+            if setsockopt(raw, SOL_SOCKET, opt, (&raw const want).cast(), 4) != 0 {
+                tracing::warn!(option = opt, "cannot resize the socket buffer");
+            }
+            let mut len = 4i32;
+            let mut got = 0i32;
+            if getsockopt(raw, SOL_SOCKET, opt, (&raw mut got).cast(), &mut len) == 0 {
+                *slot = got;
+            }
+        }
+    }
+    tracing::info!(recv_buffer = effective[0], send_buffer = effective[1], "UDP socket buffers");
+}
+
+#[cfg(not(windows))]
+fn tune_socket_buffers(_socket: &std::net::UdpSocket) {}
+
 fn build_configs(
     identity: &LocalIdentity,
 ) -> Result<(quinn::ServerConfig, quinn::ClientConfig), NetError> {
@@ -428,7 +460,11 @@ impl Net {
         trust: TrustStore,
     ) -> Result<(Net, mpsc::UnboundedReceiver<NetEvent>), NetError> {
         let (server_cfg, client_cfg) = build_configs(identity)?;
-        let mut endpoint = quinn::Endpoint::server(server_cfg, addr)?;
+        // Same as `Endpoint::server`, but with room in the kernel buffers (see `tune_socket_buffers`).
+        let socket = std::net::UdpSocket::bind(addr)?;
+        tune_socket_buffers(&socket);
+        let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime found"))?;
+        let mut endpoint = quinn::Endpoint::new(quinn::EndpointConfig::default(), Some(server_cfg), socket, runtime)?;
         endpoint.set_default_client_config(client_cfg);
         let (events, rx) = mpsc::unbounded_channel();
         let (shutdown, _) = watch::channel(false);

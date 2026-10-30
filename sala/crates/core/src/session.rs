@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -179,7 +179,8 @@ enum EngineCmd {
     MicTest(bool),
     PeerVolume(String, f32),
     /// A screen share whose pipe is already running (the factory ran on the caller's thread).
-    ShareStart(Box<Pipe>, Option<AudioCapture>),
+    /// The pipe, the PC's audio capture and the live datagram budget the pipe fragments to.
+    ShareStart(Box<Pipe>, Option<AudioCapture>, Arc<AtomicUsize>),
     ShareStop,
     /// Volume of the sound of the shares we watch (0.0..=1.0).
     ShareAudioVolume(f32),
@@ -397,7 +398,8 @@ impl Session {
             .filter_map(|f| self.net.max_datagram_size(f))
             .min()
             .unwrap_or(DEFAULT_MAX_DATAGRAM);
-        match factory(&ShareParams { preset, max_datagram }) {
+        let datagram_budget = Arc::new(AtomicUsize::new(max_datagram));
+        match factory(&ShareParams { preset, max_datagram, datagram_budget: datagram_budget.clone() }) {
             Ok(pipe) => {
                 let capture = audio.and_then(|open| match open() {
                     Ok(c) => Some(c),
@@ -408,7 +410,7 @@ impl Session {
                 });
                 let with_audio = capture.is_some();
                 // Announce `sharing = true` to everybody, then hand the pipe to the loop.
-                self.change_local(Some(EngineCmd::ShareStart(Box::new(pipe), capture)), |s| s.sharing = true);
+                self.change_local(Some(EngineCmd::ShareStart(Box::new(pipe), capture, datagram_budget)),|s| s.sharing = true);
                 Ok(with_audio)
             }
             Err(e) => {
@@ -1114,7 +1116,7 @@ async fn run_loop(
                     }
                     EngineCmd::PeerVolume(friend, v) => engine.set_peer_volume(&friend, v),
                     EngineCmd::ShareAudioVolume(v) => engine.set_share_audio_volume(v),
-                    EngineCmd::ShareStart(pipe, audio) => {
+                    EngineCmd::ShareStart(pipe, audio, budget) => {
                         if let Some(old) = share_out.take() {
                             *lock(&shared.share) = None;
                             old.stop(&net);
@@ -1128,7 +1130,7 @@ async fn run_loop(
                                 .collect()
                         };
                         tracing::info!(viewers = peers.len(), "share started");
-                        let mut out = ShareOut::start(&net, *pipe, &peers);
+                        let mut out = ShareOut::start(&net, *pipe, &peers, budget);
                         if let Some(capture) = audio {
                             out.start_audio(&net, capture);
                         }
