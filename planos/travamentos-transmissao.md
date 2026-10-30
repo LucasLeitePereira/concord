@@ -18,6 +18,18 @@ God of War 2 transmitido pelo amigo Lukeson, pela internet (Tailscale direto, 45
 - **Falha sem causa conhecida:** às 19:04:10–19:04:25 a perda foi de 91–100%, por cerca de 10 s. Às 18:28 outra queda terminou em desconexão. Pode ser internet, PC ou a própria transmissão. Teste sugerido: jogar o mesmo trecho em chamada, sem transmitir.
 - **Achado no código:** a FEC protege só keyframes (`SenderConfig`, `sala/crates/video/src/sender.rs:100`). Um pacote perdido em quadro comum faz os quadros seguintes serem descartados até o próximo keyframe. É o que transforma 2–3% de perda em 1 de cada 4 quadros descartados em 1080p.
 
+## Aceleração de hardware (hipótese de um amigo do usuário)
+
+Um amigo teve um problema parecido no Skype, e a causa era a aceleração de hardware. Situação do Concord:
+
+- **Usa GPU:** captura (WGC), codificação (`h264_qsv`, obrigatória, sem modo por software), decodificação (D3D11VA, com plano B por software) e janela de quem assiste (wgpu).
+- **Usa CPU:** cópia do quadro para a RAM e conversão de cor (swscale).
+- **Não existe** opção no app para ligar ou desligar a aceleração.
+
+A disputa pela GPU combina com o encode mais lento e com o Chrome travar mais que o terminal. Sozinha, não explica o swscale, que roda só na CPU, ficar até 5× mais lento.
+
+**Teste sem código, ainda não feito:** no PC que transmite, desligar "Usar aceleração de hardware quando disponível" em `chrome://settings/system`, reiniciar o Chrome, repetir 1080p60 com vídeo e mouse, e religar depois. Se melhorar, ganham força a prioridade de GPU e a T-035f2.
+
 ## Contexto
 
 No reteste da v0.1.10, vídeos (YouTube, vlogs, filmes) ficaram muito bons em 1080p60: qualidade e fps se mantiveram. O problema restante é específico: a transmissão trava quando o mouse se mexe muito no PC que transmite, e o comportamento com jogos ainda não foi medido.
