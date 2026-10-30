@@ -63,7 +63,7 @@ powershell -File scripts/build-installer.ps1           # gera target/installer/C
 - Antes de mudar arquitetura, protocolo ou formato persistido, leia `ontologia/decisoes.md` e registre uma decisão nova (D-0NN) curta.
 - Edite código com a ferramenta de edição do harness, nunca com heredoc/sed/Python no Git Bash (arquivos CRLF; já corrompeu edições várias vezes).
 
-## 6. Estado atual (2026-10-29)
+## 6. Estado atual (2026-10-30)
 > Esta seção é a **passagem de bastão** e o único lugar com o estado do projeto: atualize-a ao fechar cada tarefa e comece a próxima em sessão nova. Trabalhe em fatias pequenas (um assunto por tarefa), leia só o trecho da função (não arquivos grandes inteiros) e rode só o teste do que mudou; a rodada completa de clippy + testes é uma vez no fim.
 
 Feito: F1 (rede, voz, identidade), F2 (núcleo residente, modo jogo, bandeja, IPC), F3 parcial (UI no design revisado no Claude Design em 2026-10-28: lateral única, Chamada, aba Amigos, Ajustes em 2 colunas — T-031), F6 parcial (instalador Inno Setup, release no GitHub).
@@ -77,6 +77,8 @@ Design atual: `ideia/sala-handoff/design/DESIGN.md` + `telas/` (inclui Compartil
 Aviso do Windows (SmartScreen, "fornecedor desconhecido"): o instalador não é assinado. Para tirar o aviso é preciso um certificado de assinatura de código (por exemplo, Certum Open Source, para projeto público) e `signtool`/`SignTool=` no Inno Setup; a reputação no SmartScreen ainda leva algum tempo de downloads para se formar. A decisão e o custo são do usuário.
 
 T-032 (chamada com toque, sons de aviso do Kenney CC0 em `crates/core/assets/cues/`, D-024) saiu na v0.1.8. Em janela pequena o botão "Desligar" da barra de baixo some (o usuário pediu para deixar assim por ora).
+
+**F4 depois do 1º teste manual (T-035a–d, 2026-10-30):** "Ouvir minha voz" aprovado pelo usuário. Corrigidos: visualizador fecha no fim da transmissão e reabre (um `EventLoop` só, D-029); desligar para a transmissão; tempestade de reaberturas do ABR e D3D11VA no adaptador errado (D-030); perda de vídeo em rajada — SO_RCVBUF de 64 KB, black hole de MTU e tempestade de keyframes (D-031; bench `share_bench` sob CPU disputada 0–2,7 → ~29 fps). **Próximo:** reteste manual em 1080p (sem Chrome pesando a CPU), olhando `share stats tx/rx` no log; depois a rodada completa (clippy ok; `cargo test --workspace` não roda desde a T-034; `sala-video --lib` com `--test-threads=1`). Conhecidos: encode QSV custa 32–37 ms/quadro em 1080p (≤ 22–27 fps; swscale BGRA→NV12 na CPU — candidato a fatia), instalador sem as DLLs do FFmpeg, codec sempre H.264, falta faixa "Assistindo"/"N assistindo", `ShareState` não reflete a morte do encoder, eco do áudio do sistema não testado em chamada real.
 
 Pendências de teste manual: "Não perturbe" do Windows com chat no modo jogo e o instalador baixando o Tailscale (nunca executado de fato).
 
