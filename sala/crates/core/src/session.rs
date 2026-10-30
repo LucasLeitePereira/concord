@@ -1047,7 +1047,8 @@ async fn run_loop(
                 let now_ms = started.elapsed().as_millis() as u64;
                 for (friend, rx) in shares_in.iter_mut() {
                     let (out, report) = rx.tick(now_ms);
-                    handle_output(out, friend, rx.codec(), &net, &shared.video);
+                    handle_output(out, friend, rx, &net, &shared.video);
+                    rx.log_stats(now_ms, friend, &net);
                     let Some(report) = report else { continue };
                     // The sender announced the share, so it is new enough; check anyway (D-024).
                     if lock(&shared.state).proto.get(friend).is_some_and(|v| peer_supports_video(*v))
@@ -1304,7 +1305,7 @@ async fn run_loop(
                     if let Some(rx) = shares_in.get_mut(&friend) {
                         let now_ms = started.elapsed().as_millis() as u64;
                         let out = rx.on_datagram(now_ms, &dg);
-                        handle_output(out, &friend, rx.codec(), &net, &shared.video);
+                        handle_output(out, &friend, rx, &net, &shared.video);
                     }
                 }
             },

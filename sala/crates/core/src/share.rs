@@ -12,21 +12,24 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sala_protocol::{AudioStream, ControlMessage, MediaDatagram, VIDEO_PROTOCOL_VERSION, VideoCodec};
 use sala_video::abr::ReceiverReport as AbrReport;
 use sala_video::capture::{CaptureSession, Source, Target};
-use sala_video::fragment::{Frame, Output, Reassembler};
+use sala_video::fragment::{Frame, Output, Reassembler, ReassemblerStats};
 use sala_video::preset::SharePreset;
-use sala_video::sender::{FrameSlot, RawFrame, Sender, SenderConfig};
+use sala_video::sender::{FrameSlot, RawFrame, Sender, SenderConfig, SenderStats};
 use tokio::sync::mpsc;
 
-use crate::net::Net;
+use crate::net::{Net, TransportStats};
 use crate::share_audio::{AudioCapture, BITRATE_KBPS, ShareAudioEncoder};
 
 /// Spacing of the `ReceiverReport`s.
 pub const REPORT_INTERVAL_MS: u64 = 1_000;
+
+/// Spacing of the `share stats` log lines (both sides).
+pub const STATS_INTERVAL_MS: u64 = 5_000;
 
 /// At most this many whole frames are counted as lost from one id gap (a long outage must not
 /// inflate the window).
@@ -56,6 +59,10 @@ pub trait VideoPipe: Send + Sync {
     /// Applies a viewer report to the adaptive bitrate; returns the new target in kbps.
     fn report(&self, report: AbrReport) -> u32;
     fn target_kbps(&self) -> u32;
+    /// Encoder counters, when the source has an encoder (for the `share stats` log).
+    fn encoder_stats(&self) -> Option<SenderStats> {
+        None
+    }
 }
 
 /// A running video source: its control plus the channel of fragmented frames.
@@ -168,12 +175,41 @@ pub struct ShareIn {
     meter: LossMeter,
     window_start_ms: u64,
     codec: VideoCodec,
+    rx: RxCounters,
+    log: RxLog,
+}
+
+/// Receiver counters beyond the reassembler's (for the `share stats` log).
+#[derive(Debug, Default, Clone, Copy)]
+struct RxCounters {
+    /// `Video` datagrams that reached the session loop.
+    datagrams: u64,
+    keyframe_requests: u64,
+    /// Complete frames the viewer channel refused because it was full.
+    viewer_full: u64,
+}
+
+/// What the previous `share stats` line saw (the line shows the change since then).
+#[derive(Debug, Default)]
+struct RxLog {
+    at_ms: u64,
+    rx: RxCounters,
+    reasm: ReassemblerStats,
+    udp_rx: u64,
+    datagram_frames_rx: u64,
 }
 
 impl ShareIn {
     /// `codec` is the one announced by `ShareStart`; it travels with every frame to the viewer.
     pub fn new(now_ms: u64, codec: VideoCodec) -> Self {
-        ShareIn { reasm: Reassembler::new(), meter: LossMeter::default(), window_start_ms: now_ms, codec }
+        ShareIn {
+            reasm: Reassembler::new(),
+            meter: LossMeter::default(),
+            window_start_ms: now_ms,
+            codec,
+            rx: RxCounters::default(),
+            log: RxLog { at_ms: now_ms, ..Default::default() },
+        }
     }
 
     pub fn codec(&self) -> VideoCodec {
@@ -183,11 +219,43 @@ impl ShareIn {
     fn note(&mut self, out: &Output) {
         if out.request_keyframe {
             self.meter.on_dropped_frame();
+            self.rx.keyframe_requests += 1;
         }
+    }
+
+    /// Once per [`STATS_INTERVAL_MS`]: one `share stats rx` line with the change since the last.
+    pub fn log_stats(&mut self, now_ms: u64, friend: &str, net: &Net) {
+        let window = now_ms.saturating_sub(self.log.at_ms);
+        if window < STATS_INTERVAL_MS {
+            return;
+        }
+        let (rx, re) = (self.rx, self.reasm.stats());
+        let ts = net.transport_stats(friend);
+        let (udp_rx, dg_rx) = ts.map_or((0, 0), |t| (t.udp_rx, t.datagram_frames_rx));
+        let prev = std::mem::replace(
+            &mut self.log,
+            RxLog { at_ms: now_ms, rx, reasm: re, udp_rx, datagram_frames_rx: dg_rx },
+        );
+        tracing::info!(
+            %friend,
+            window_ms = window,
+            video_datagrams = rx.datagrams - prev.rx.datagrams,
+            frames = re.delivered - prev.reasm.delivered,
+            keyframes = re.keyframes - prev.reasm.keyframes,
+            incomplete = re.incomplete - prev.reasm.incomplete,
+            dropped_deltas = re.dropped_deltas - prev.reasm.dropped_deltas,
+            fec_recovered = re.fec_recovered - prev.reasm.fec_recovered,
+            keyframe_requests = rx.keyframe_requests - prev.rx.keyframe_requests,
+            viewer_full = rx.viewer_full - prev.rx.viewer_full,
+            udp_rx = udp_rx.saturating_sub(prev.udp_rx),
+            datagram_frames_rx = dg_rx.saturating_sub(prev.datagram_frames_rx),
+            "share stats rx"
+        );
     }
 
     pub fn on_datagram(&mut self, now_ms: u64, dg: &MediaDatagram) -> Output {
         if let MediaDatagram::Video { frame_id, frag_count, .. } = dg {
+            self.rx.datagrams += 1;
             self.meter.on_fragment(*frame_id, *frag_count);
         }
         let out = self.reasm.push(now_ms, dg);
@@ -212,9 +280,11 @@ impl ShareIn {
 
 /// Delivers what the reassembler produced: the frame to the viewer channel (dropped when it is
 /// full: live video never queues) and the keyframe request to the sender.
-pub fn handle_output(out: Output, friend: &str, codec: VideoCodec, net: &Net, frames: &mpsc::Sender<VideoFrame>) {
-    if let Some(frame) = out.frame {
-        let _ = frames.try_send(VideoFrame { friend: friend.to_string(), codec, frame });
+pub fn handle_output(out: Output, friend: &str, share: &mut ShareIn, net: &Net, frames: &mpsc::Sender<VideoFrame>) {
+    if let Some(frame) = out.frame
+        && frames.try_send(VideoFrame { friend: friend.to_string(), codec: share.codec, frame }).is_err()
+    {
+        share.rx.viewer_full += 1;
     }
     if out.request_keyframe
         && let Err(e) = net.send_control(friend, ControlMessage::KeyframeRequest)
@@ -236,6 +306,14 @@ pub struct ShareShared {
     reports: AtomicU64,
     audio: AtomicBool,
     audio_sent: AtomicU64,
+    /// Fragmented frames taken from the encoder channel.
+    frames_out: AtomicU64,
+    /// Video datagrams the encoder produced (per viewer: `sent + send_errors` is this times viewers).
+    generated: AtomicU64,
+    /// Payload bytes of the largest frame so far.
+    max_frame_bytes: AtomicU64,
+    /// Last `send_datagram` error text (what kind of refusal, e.g. `datagram too large`).
+    last_send_error: Mutex<Option<String>>,
 }
 
 impl ShareShared {
@@ -277,6 +355,10 @@ impl ShareOut {
             reports: AtomicU64::new(0),
             audio: AtomicBool::new(false),
             audio_sent: AtomicU64::new(0),
+            frames_out: AtomicU64::new(0),
+            generated: AtomicU64::new(0),
+            max_frame_bytes: AtomicU64::new(0),
+            last_send_error: Mutex::new(None),
         });
         let out = ShareOut { shared: shared.clone(), thread: None, audio_thread: None, start_msg };
         for p in peers {
@@ -365,16 +447,24 @@ impl ShareOut {
 
 /// Sends every fragmented frame to every viewer until stopped or the encoder ends.
 fn drain(shared: &ShareShared, rx: &Receiver<Vec<MediaDatagram>>, net: &Net) {
+    let mut log = TxLog::new(Instant::now());
     while !shared.stop.load(Ordering::Relaxed) {
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(dgs) => {
                 let viewers: Vec<String> = lock(&shared.recipients).iter().cloned().collect();
+                let bytes: usize = dgs.iter().map(video_payload_len).sum();
+                shared.frames_out.fetch_add(1, Ordering::Relaxed);
+                shared.generated.fetch_add(dgs.len() as u64, Ordering::Relaxed);
+                shared.max_frame_bytes.fetch_max(bytes as u64, Ordering::Relaxed);
                 for dg in &dgs {
                     for v in &viewers {
                         // `send_datagram` refuses anything above this connection's real limit.
                         match net.send_datagram(v, dg) {
                             Ok(()) => shared.sent.fetch_add(1, Ordering::Relaxed),
-                            Err(_) => shared.send_errors.fetch_add(1, Ordering::Relaxed),
+                            Err(e) => {
+                                *lock(&shared.last_send_error) = Some(e.to_string());
+                                shared.send_errors.fetch_add(1, Ordering::Relaxed)
+                            }
                         };
                     }
                 }
@@ -382,8 +472,89 @@ fn drain(shared: &ShareShared, rx: &Receiver<Vec<MediaDatagram>>, net: &Net) {
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
+        if log.at.is_some_and(|t| t.elapsed() >= Duration::from_millis(STATS_INTERVAL_MS)) {
+            let first = lock(&shared.recipients).iter().next().cloned();
+            log_tx_stats(shared, first.and_then(|v| net.transport_stats(&v)), &mut log);
+        }
     }
     shared.running.store(false, Ordering::Relaxed);
+}
+
+fn video_payload_len(dg: &MediaDatagram) -> usize {
+    match dg {
+        MediaDatagram::Video { payload, .. } => payload.len(),
+        _ => 0,
+    }
+}
+
+/// What the previous `share stats tx` line saw (the line shows the change since then).
+#[derive(Default)]
+struct TxLog {
+    at: Option<Instant>,
+    frames_out: u64,
+    generated: u64,
+    sent: u64,
+    errors: u64,
+    encoder: SenderStats,
+    lost_packets: u64,
+    congestion_events: u64,
+    udp_tx: u64,
+    datagram_frames_tx: u64,
+}
+
+impl TxLog {
+    fn new(at: Instant) -> Self {
+        TxLog { at: Some(at), ..Default::default() }
+    }
+}
+
+/// One `share stats tx` line: encoder, datagrams handed to QUIC and QUIC's own counters, all as
+/// the change since the previous line (except the instantaneous values).
+fn log_tx_stats(shared: &ShareShared, ts: Option<TransportStats>, prev: &mut TxLog) {
+    let now = Instant::now();
+    let window = prev.at.map_or(0, |t| now.duration_since(t).as_millis());
+    let enc = shared.pipe.encoder_stats().unwrap_or_default();
+    let cur = TxLog {
+        at: Some(now),
+        frames_out: shared.frames_out.load(Ordering::Relaxed),
+        generated: shared.generated.load(Ordering::Relaxed),
+        sent: shared.sent.load(Ordering::Relaxed),
+        errors: shared.send_errors.load(Ordering::Relaxed),
+        encoder: enc,
+        lost_packets: ts.map_or(0, |t| t.lost_packets),
+        congestion_events: ts.map_or(0, |t| t.congestion_events),
+        udp_tx: ts.map_or(0, |t| t.udp_tx),
+        datagram_frames_tx: ts.map_or(0, |t| t.datagram_frames_tx),
+    };
+    let frames = enc.frames - prev.encoder.frames;
+    tracing::info!(
+        window_ms = window as u64,
+        target_kbps = shared.pipe.target_kbps(),
+        encoded_frames = frames,
+        keyframes = enc.keyframes - prev.encoder.keyframes,
+        encoder_dropped_deltas = enc.dropped_deltas - prev.encoder.dropped_deltas,
+        reopens = enc.reopens - prev.encoder.reopens,
+        encode_ms_avg = (enc.encode_micros - prev.encoder.encode_micros) / 1000 / frames.max(1),
+        encoded_bytes = enc.bytes - prev.encoder.bytes,
+        frames_out = cur.frames_out - prev.frames_out,
+        datagrams = cur.generated - prev.generated,
+        send_ok = cur.sent - prev.sent,
+        send_errors = cur.errors - prev.errors,
+        last_send_error = ?lock(&shared.last_send_error).clone(),
+        max_frame_bytes = shared.max_frame_bytes.load(Ordering::Relaxed),
+        rtt_ms = ts.map_or(0.0, |t| t.rtt_ms),
+        cwnd = ts.map_or(0, |t| t.cwnd),
+        lost_packets = cur.lost_packets.saturating_sub(prev.lost_packets),
+        congestion_events = cur.congestion_events.saturating_sub(prev.congestion_events),
+        udp_tx = cur.udp_tx.saturating_sub(prev.udp_tx),
+        datagram_frames_tx = cur.datagram_frames_tx.saturating_sub(prev.datagram_frames_tx),
+        send_buffer_space = ts.map_or(0, |t| t.send_buffer_space),
+        max_datagram = ts.map_or(0, |t| t.max_datagram),
+        mtu = ts.map_or(0, |t| t.mtu),
+        black_holes = ts.map_or(0, |t| t.black_holes),
+        "share stats tx"
+    );
+    *prev = cur;
 }
 
 /// Encodes every captured stereo frame and sends it to every viewer until stopped or the
@@ -449,6 +620,10 @@ impl VideoPipe for ScreenPipe {
 
     fn target_kbps(&self) -> u32 {
         self.sender.target_kbps()
+    }
+
+    fn encoder_stats(&self) -> Option<SenderStats> {
+        Some(self.sender.stats())
     }
 }
 

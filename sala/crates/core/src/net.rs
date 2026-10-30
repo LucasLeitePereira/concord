@@ -70,6 +70,29 @@ pub enum NetError {
     SendDatagram(String),
 }
 
+/// Snapshot of the QUIC connection counters (a subset of `quinn::ConnectionStats`).
+#[derive(Debug, Clone, Copy)]
+pub struct TransportStats {
+    pub rtt_ms: f32,
+    pub cwnd: u64,
+    pub congestion_events: u64,
+    pub lost_packets: u64,
+    pub sent_packets: u64,
+    /// UDP datagrams (QUIC packets) sent / received by the connection.
+    pub udp_tx: u64,
+    pub udp_rx: u64,
+    /// QUIC DATAGRAM frames sent / received.
+    pub datagram_frames_tx: u64,
+    pub datagram_frames_rx: u64,
+    /// Room left in the connection's outgoing datagram buffer, in bytes.
+    pub send_buffer_space: usize,
+    /// Largest datagram the connection accepts right now (the path MTU moves it).
+    pub max_datagram: usize,
+    pub mtu: u16,
+    /// Times QUIC concluded that big packets vanish and fell back to the minimum MTU.
+    pub black_holes: u64,
+}
+
 /// Events emitted to the application (UI / main loop).
 #[derive(Debug, Clone)]
 pub enum NetEvent {
@@ -533,6 +556,27 @@ impl Net {
         let bytes = dg.encode(max)?;
         conn.send_datagram(bytes.into())
             .map_err(|e| NetError::SendDatagram(e.to_string()))
+    }
+
+    /// QUIC counters of the active connection to `friend` (for the `share stats` log).
+    pub fn transport_stats(&self, friend: &str) -> Option<TransportStats> {
+        let conn = self.connection(friend).ok()?;
+        let s = conn.stats();
+        Some(TransportStats {
+            rtt_ms: conn.rtt().as_secs_f32() * 1000.0,
+            cwnd: s.path.cwnd,
+            congestion_events: s.path.congestion_events,
+            lost_packets: s.path.lost_packets,
+            sent_packets: s.path.sent_packets,
+            udp_tx: s.udp_tx.datagrams,
+            udp_rx: s.udp_rx.datagrams,
+            datagram_frames_tx: s.frame_tx.datagram,
+            datagram_frames_rx: s.frame_rx.datagram,
+            send_buffer_space: conn.datagram_send_buffer_space(),
+            max_datagram: conn.max_datagram_size().unwrap_or(0),
+            mtu: s.path.current_mtu,
+            black_holes: s.path.black_holes_detected,
+        })
     }
 
     /// Largest datagram currently allowed towards `friend`.

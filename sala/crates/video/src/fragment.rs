@@ -122,11 +122,13 @@ struct Partial {
 }
 
 impl Partial {
-    /// Rebuilds a data fragment from a group's parity when exactly one is missing.
-    fn recover(&mut self) {
+    /// Rebuilds a data fragment from a group's parity when exactly one is missing. Returns how
+    /// many fragments it rebuilt.
+    fn recover(&mut self) -> u64 {
+        let mut rebuilt = 0;
         let k = self.fec_group as usize;
         if k == 0 {
-            return;
+            return 0;
         }
         let n = self.parts.len();
         for g in 0..self.parity.len() {
@@ -149,8 +151,25 @@ impl Partial {
             buf.truncate(len);
             self.parts[m] = Some(buf);
             self.received += 1;
+            rebuilt += 1;
         }
+        rebuilt
     }
+}
+
+/// Counters of a [`Reassembler`] since it was created (for the `share stats` log).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReassemblerStats {
+    /// Frames handed to the decoder.
+    pub delivered: u64,
+    /// Of those, keyframes.
+    pub keyframes: u64,
+    /// Frames that never completed (timed out or overtaken by a newer frame).
+    pub incomplete: u64,
+    /// Complete delta frames discarded while waiting for a keyframe.
+    pub dropped_deltas: u64,
+    /// Fragments rebuilt from the XOR parity.
+    pub fec_recovered: u64,
 }
 
 /// `a` is newer than `b` (wrapping `u32` ids).
@@ -166,11 +185,16 @@ pub struct Reassembler {
     /// A loss happened (or nothing was received yet): deltas are useless until a keyframe.
     awaiting_keyframe: bool,
     last_request_ms: Option<u64>,
+    stats: ReassemblerStats,
 }
 
 impl Reassembler {
     pub fn new() -> Self {
         Reassembler { awaiting_keyframe: true, ..Default::default() }
+    }
+
+    pub fn stats(&self) -> ReassemblerStats {
+        self.stats
     }
 
     /// Feeds one `Video` datagram. Other datagram kinds are ignored.
@@ -206,6 +230,7 @@ impl Reassembler {
             let older: Vec<u32> = self.partial.keys().copied().filter(|id| newer(frame_id, *id)).collect();
             for id in older {
                 self.partial.remove(&id);
+                self.stats.incomplete += 1;
                 lost = true;
             }
             if self.partial.keys().any(|id| newer(*id, frame_id)) {
@@ -236,7 +261,7 @@ impl Reassembler {
         if !is_parity {
             p.received += 1;
         }
-        p.recover();
+        self.stats.fec_recovered += p.recover();
         if p.received < p.parts.len() {
             return self.finish(now_ms, None, lost);
         }
@@ -245,6 +270,7 @@ impl Reassembler {
         let stale: Vec<u32> = self.partial.keys().copied().filter(|id| newer(frame_id, *id)).collect();
         for id in stale {
             self.partial.remove(&id);
+            self.stats.incomplete += 1;
             lost = true;
         }
         let gap = self.last_delivered.is_some_and(|last| frame_id != last.wrapping_add(1));
@@ -267,7 +293,9 @@ impl Reassembler {
     fn expire_inner(&mut self, now_ms: u64) -> bool {
         let before = self.partial.len();
         self.partial.retain(|_, p| now_ms.saturating_sub(p.first_seen_ms) < FRAME_TIMEOUT_MS);
-        self.partial.len() != before
+        let expired = before - self.partial.len();
+        self.stats.incomplete += expired as u64;
+        expired != 0
     }
 
     /// Applies the keyframe policy to a completed frame and decides on the request.
@@ -283,7 +311,12 @@ impl Reassembler {
             } else if self.awaiting_keyframe {
                 frame = None; // undecodable delta
                 dropped_delta = true;
+                self.stats.dropped_deltas += 1;
             }
+        }
+        if let Some(f) = &frame {
+            self.stats.delivered += 1;
+            self.stats.keyframes += u64::from(f.keyframe);
         }
         let mut request = false;
         if self.awaiting_keyframe && (lost || dropped_delta) {
@@ -594,5 +627,25 @@ mod tests {
         let out = r.push(0, &fragment(40, false, 0, &data(10), 1000)[0]);
         assert!(out.frame.is_none());
         assert!(out.request_keyframe);
+    }
+
+    #[test]
+    fn stats_count_what_the_log_reports() {
+        let mut r = Reassembler::new();
+        // A keyframe that lost fragment 1: the parity rebuilds it.
+        let key = fragment_fec(1, true, 0, &data(5000), 1000, 4);
+        let kept: Vec<_> = key.into_iter().filter(|d| !matches!(d, MediaDatagram::Video { frag_idx: 1, .. })).collect();
+        push_all(&mut r, 0, &kept);
+        let s = r.stats();
+        assert_eq!((s.delivered, s.keyframes, s.fec_recovered, s.incomplete, s.dropped_deltas), (1, 1, 1, 0, 0));
+        // Frame 2 never completes; frame 3 overtakes it and is useless without a keyframe.
+        r.push(10, &fragment(2, false, 0, &data(3000), 1000)[0]);
+        r.push(20, &fragment(3, false, 0, &data(100), 1000)[0]);
+        let s = r.stats();
+        assert_eq!((s.delivered, s.incomplete, s.dropped_deltas), (1, 1, 1));
+        // A stalled frame that times out counts as incomplete too.
+        r.push(30, &fragment(4, true, 0, &data(3000), 1000)[0]);
+        r.expire(30 + FRAME_TIMEOUT_MS);
+        assert_eq!(r.stats().incomplete, 2);
     }
 }
