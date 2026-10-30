@@ -308,6 +308,7 @@ fn decode_thread(
     proxy: EventLoopProxy<UserEvent>,
     id: u64,
 ) -> Receiver<Incoming> {
+    crate::lower_current_thread_priority();
     let started = Instant::now();
     let now_ms = || started.elapsed().as_millis() as u64;
     let mut decoder: Option<(String, VideoDecoder)> = None;

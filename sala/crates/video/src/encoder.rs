@@ -13,12 +13,24 @@ const BACKENDS: [&str; 3] = ["nvenc", "amf", "qsv"];
 /// Presentation clock of `pts` and of the fragment `timestamp`: 90 kHz.
 pub const TIME_BASE_HZ: i32 = 90_000;
 
-/// A bitrate change smaller than this share of the applied rate is not worth a reopen.
-pub const REOPEN_THRESHOLD_PERCENT: u64 = 15;
+/// A bitrate change smaller than this share of the applied rate is not worth a reopen: every
+/// reopen forces a keyframe, a burst that the network answers with loss (and the ABR with a cut).
+pub const REOPEN_THRESHOLD_PERCENT: u64 = 25;
+/// Minimum spacing between two reopens.
+pub const REOPEN_MIN_INTERVAL_MS: u64 = 10_000;
+/// A cut (the network is losing packets) may reopen sooner than that.
+pub const REOPEN_CUT_INTERVAL_MS: u64 = 2_000;
 
-/// Whether moving from `current` to `target` kbps justifies reopening the encoder.
-pub fn bitrate_change_needs_reopen(current: u32, target: u32) -> bool {
-    target > 0 && u64::from(current.abs_diff(target)) * 100 > u64::from(current) * REOPEN_THRESHOLD_PERCENT
+/// Whether moving from the applied `current` to `target` kbps justifies reopening the encoder
+/// now. `since_reopen_ms` is the time since the last reopen (`None`: never). Pure: the caller
+/// owns the clock.
+pub fn bitrate_change_needs_reopen(current: u32, target: u32, since_reopen_ms: Option<u64>) -> bool {
+    if target == 0 {
+        return false;
+    }
+    let spacing = if target < current { REOPEN_CUT_INTERVAL_MS } else { REOPEN_MIN_INTERVAL_MS };
+    u64::from(current.abs_diff(target)) * 100 > u64::from(current) * REOPEN_THRESHOLD_PERCENT
+        && since_reopen_ms.is_none_or(|s| s >= spacing)
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +129,7 @@ pub struct VideoEncoder {
     dst: ff::frame::Video,
     force_key: bool,
     last_pts: i64,
+    last_reopen_ms: Option<u64>,
 }
 
 // SAFETY: the FFmpeg codec and swscale contexts are plain heap objects with no thread
@@ -182,6 +195,7 @@ impl VideoEncoder {
             dst,
             force_key: false,
             last_pts: i64::MIN,
+            last_reopen_ms: None,
         })
     }
 
@@ -194,12 +208,16 @@ impl VideoEncoder {
         &self.cfg
     }
 
-    /// Moves the bitrate target. Hardware encoders do not take a new rate on a live context
-    /// (QSV ignores it), so the context is reopened, and only when the change exceeds
-    /// [`REOPEN_THRESHOLD_PERCENT`] of the applied rate; the next frame is then a keyframe.
-    /// Returns whether the encoder was reopened.
-    pub fn set_bitrate(&mut self, kbps: u32) -> Result<bool, EncodeError> {
-        if !bitrate_change_needs_reopen(self.cfg.bitrate_kbps, kbps) {
+    /// Moves the bitrate target (`now_ms`: a monotonic clock owned by the caller). Hardware
+    /// encoders do not follow a new rate without a keyframe (QSV accepts it on the open context
+    /// but restarts the GOP; the others need a reopen), and a keyframe is a burst that the
+    /// network answers with loss. So the context is reopened only when the change exceeds
+    /// [`REOPEN_THRESHOLD_PERCENT`] of the applied rate and [`REOPEN_MIN_INTERVAL_MS`] passed
+    /// since the last reopen (a cut waits only [`REOPEN_CUT_INTERVAL_MS`]); a target held back
+    /// stays pending and is judged again on the next call. Returns whether it reopened.
+    pub fn set_bitrate(&mut self, kbps: u32, now_ms: u64) -> Result<bool, EncodeError> {
+        let since = self.last_reopen_ms.map(|t| now_ms.saturating_sub(t));
+        if !bitrate_change_needs_reopen(self.cfg.bitrate_kbps, kbps, since) {
             return Ok(false);
         }
         let mut cfg = self.cfg.clone();
@@ -209,6 +227,7 @@ impl VideoEncoder {
         self.dst = fresh.dst;
         self.cfg = cfg;
         self.force_key = true;
+        self.last_reopen_ms = Some(now_ms);
         Ok(true)
     }
 
@@ -300,25 +319,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reopen_only_beyond_fifteen_percent() {
-        assert!(!bitrate_change_needs_reopen(6000, 6000));
-        assert!(!bitrate_change_needs_reopen(6000, 6900)); // +15% exactly: no
-        assert!(bitrate_change_needs_reopen(6000, 6901));
-        assert!(!bitrate_change_needs_reopen(6000, 5100)); // -15% exactly: no
-        assert!(bitrate_change_needs_reopen(6000, 4200)); // the ABR cut
-        assert!(!bitrate_change_needs_reopen(6000, 0));
+    fn reopen_needs_a_big_change_and_spacing_but_cuts_may_come_sooner() {
+        assert!(!bitrate_change_needs_reopen(6000, 6000, None));
+        assert!(!bitrate_change_needs_reopen(6000, 7500, None)); // +25% exactly: no
+        assert!(bitrate_change_needs_reopen(6000, 7501, None));
+        assert!(!bitrate_change_needs_reopen(6000, 4500, None)); // -25% exactly: no
+        assert!(bitrate_change_needs_reopen(6000, 4200, None)); // the ABR cut
+        assert!(!bitrate_change_needs_reopen(6000, 0, None));
+        // Spacing: a raise waits the full interval, a cut only the short one.
+        assert!(!bitrate_change_needs_reopen(6000, 9000, Some(9_999)));
+        assert!(bitrate_change_needs_reopen(6000, 9000, Some(10_000)));
+        assert!(!bitrate_change_needs_reopen(6000, 3000, Some(1_999)));
+        assert!(bitrate_change_needs_reopen(6000, 3000, Some(2_000)));
+    }
+
+    /// The feedback loop seen in the field: the network holds ~6 Mbps, a keyframe burst from a
+    /// reopen makes the next report lossy, the ABR cuts, then climbs, and the encoder reopens
+    /// again. Runs the real ABR with a fake clock for two minutes of reports (one per second)
+    /// and returns the reopens `policy(applied, target, ms since the last reopen)` allowed.
+    fn simulate_reopens(policy: impl Fn(u32, u32, Option<u64>) -> bool) -> u32 {
+        use crate::abr::{Abr, ReceiverReport};
+        use crate::preset::BitrateRange;
+        let mut abr = Abr::new(BitrateRange { initial: 8_000, min: 2_000, max: 10_000 });
+        let (mut applied, mut last_reopen, mut reopens) = (8_000u32, None::<u64>, 0u32);
+        for second in 0..120u64 {
+            let now = second * 1_000;
+            let burst = last_reopen.is_some_and(|t| now - t <= 1_000);
+            let loss_pct = if burst || applied > 6_000 { 8.0 } else { 0.0 };
+            let target = abr.on_report(now, &ReceiverReport { loss_pct, ..Default::default() });
+            if policy(applied, target, last_reopen.map(|t| now - t)) {
+                applied = target;
+                last_reopen = Some(now);
+                reopens += 1;
+                abr.note_encoder_reopen(now);
+            }
+        }
+        reopens
+    }
+
+    #[test]
+    fn oscillating_loss_cannot_cause_a_reopen_storm() {
+        let reopens = simulate_reopens(bitrate_change_needs_reopen);
+        assert!(reopens <= 120 / 10 + 2, "{reopens} reopens in 120 s");
+        assert!(reopens >= 1, "the ABR never got the encoder to move");
+        // Control: with no threshold and no spacing the same reports reopen far more, so this
+        // simulation does catch a storm.
+        let ungated = simulate_reopens(|current, target, _| target > 0 && current != target);
+        assert!(ungated >= 3 * reopens, "ungated {ungated} vs gated {reopens}");
     }
 
     /// Hardware-dependent: skipped (passes) when this machine has no encoder.
     #[test]
-    fn set_bitrate_reopens_and_forces_a_keyframe() {
+    fn set_bitrate_reopens_forces_a_keyframe_and_respects_the_spacing() {
         let cfg = EncoderConfig { codec: VideoCodec::H264, width: 640, height: 360, fps: 30, bitrate_kbps: 4000 };
         let Ok(mut enc) = VideoEncoder::open(&cfg) else { return };
         let frame = vec![90u8; 640 * 360 * 4];
         enc.encode_bgra(&frame, 640, 360, 0).unwrap();
-        assert!(!enc.set_bitrate(4300).unwrap());
+        assert!(!enc.set_bitrate(4300, 0).unwrap());
+        assert!(!enc.set_bitrate(3300, 0).unwrap()); // -17.5%: inside the threshold
         assert_eq!(enc.config().bitrate_kbps, 4000);
-        assert!(enc.set_bitrate(2000).unwrap());
+        assert!(enc.set_bitrate(2000, 0).unwrap());
         assert_eq!(enc.config().bitrate_kbps, 2000);
         let mut first_key = None;
         for i in 1..10i64 {
@@ -327,6 +387,9 @@ mod tests {
             }
         }
         assert_eq!(first_key, Some(true), "no keyframe after reopening");
+        // Right after a reopen, another large raise waits for the spacing.
+        assert!(!enc.set_bitrate(4000, 1_000).unwrap());
+        assert!(enc.set_bitrate(4000, REOPEN_MIN_INTERVAL_MS).unwrap());
     }
 
     #[test]

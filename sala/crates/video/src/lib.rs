@@ -16,6 +16,25 @@ use std::sync::OnceLock;
 
 use sala_protocol::{Capabilities, VideoCodec};
 
+/// Lets the calling video thread (encode, decode) yield to everything else, voice first: the
+/// audio callbacks run at time-critical priority (cpal), and a picture that arrives a few
+/// milliseconds late is far less noticeable than a voice that stutters. Best effort.
+pub(crate) fn lower_current_thread_priority() {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentThread() -> isize;
+            fn SetThreadPriority(thread: isize, priority: i32) -> i32;
+        }
+        const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
+        // SAFETY: both are plain Win32 calls; the pseudo-handle of the current thread needs no close.
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
+    }
+}
+
 /// Codecs in negotiation order: best first.
 pub const PRIORITY: [VideoCodec; 3] = [VideoCodec::Av1, VideoCodec::Hevc, VideoCodec::H264];
 

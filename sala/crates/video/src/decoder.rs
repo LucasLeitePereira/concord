@@ -6,6 +6,8 @@
 //! never shows garbage: deltas are skipped until a keyframe arrives, and any error drops the
 //! reference chain and asks for a new keyframe (`DecodeOutput::request_keyframe`).
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use ffmpeg_next as ff;
 use ff::ffi;
 use sala_protocol::VideoCodec;
@@ -45,6 +47,32 @@ impl std::fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
+/// D3D11 adapters tried for hardware decoding, by DXGI index. On a laptop with an iGPU and a dGPU
+/// the default adapter (0) may not decode what the iGPU encoder produces, while another does.
+const MAX_ADAPTERS: u32 = 4;
+
+/// Adapter that decoded a picture last in this process (`u32::MAX`: none yet).
+static GOOD_ADAPTER: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// Order in which adapters are tried: the one that worked before, then the others by index,
+/// skipping the ones in the `tried` bit mask.
+fn adapter_order(good: Option<u32>, tried: u32) -> Vec<u32> {
+    let skip = |a: u32| tried & (1 << a) != 0;
+    good.filter(|&g| g < MAX_ADAPTERS && !skip(g))
+        .into_iter()
+        .chain((0..MAX_ADAPTERS).filter(|&a| Some(a) != good && !skip(a)))
+        .collect()
+}
+
+fn good_adapter() -> Option<u32> {
+    Some(GOOD_ADAPTER.load(Ordering::Relaxed)).filter(|&a| a != u32::MAX)
+}
+
+/// Worker threads for the RGBA conversion (swscale slices the picture).
+fn convert_threads() -> i64 {
+    std::thread::available_parallelism().map_or(2, |n| n.get().min(4)) as i64
+}
+
 fn init() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
@@ -81,19 +109,20 @@ unsafe extern "C" fn pick_d3d11(_ctx: *mut ffi::AVCodecContext, fmts: *const ffi
 struct HwDevice(*mut ffi::AVBufferRef);
 
 impl HwDevice {
-    fn d3d11va() -> Result<Self, String> {
+    fn d3d11va(adapter: u32) -> Result<Self, String> {
         let mut device: *mut ffi::AVBufferRef = std::ptr::null_mut();
+        let name = std::ffi::CString::new(adapter.to_string()).expect("digits only");
         // SAFETY: plain FFmpeg call; `device` is only used when it returns success.
         let r = unsafe {
             ffi::av_hwdevice_ctx_create(
                 &mut device,
                 ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA,
-                std::ptr::null(),
+                name.as_ptr(),
                 std::ptr::null_mut(),
                 0,
             )
         };
-        if r < 0 { Err(format!("cannot create a D3D11VA device (error {r})")) } else { Ok(HwDevice(device)) }
+        if r < 0 { Err(format!("cannot create a D3D11VA device on adapter {adapter} (error {r})")) } else { Ok(HwDevice(device)) }
     }
 }
 
@@ -111,6 +140,10 @@ pub struct VideoDecoder {
     name: String,
     /// Keeps the D3D11 device alive as long as the decoder (the codec context holds its own ref).
     _device: Option<HwDevice>,
+    /// D3D11 adapter of the hardware decoder.
+    adapter: Option<u32>,
+    /// Bit mask of the adapters that already failed to decode in this decoder's lifetime.
+    tried: u32,
     /// A keyframe was fed since the decoder was opened or last failed.
     synced: bool,
     produced: u64,
@@ -118,11 +151,80 @@ pub struct VideoDecoder {
     sw: ff::frame::Video,
 }
 
+/// swscale context converting a decoded picture to tightly packed RGBA straight into a `Vec`
+/// (no intermediate frame and no row-by-row copy), sliced over several threads.
 struct Scaler {
-    ctx: ff::software::scaling::Context,
-    format: ff::format::Pixel,
+    ctx: *mut ffi::SwsContext,
+    format: ffi::AVPixelFormat,
     width: u32,
     height: u32,
+}
+
+impl Scaler {
+    fn new(format: ffi::AVPixelFormat, width: u32, height: u32) -> Result<Self, String> {
+        // SAFETY: the context is allocated, configured through its AVOptions and initialised
+        // before any use; it is freed on every error path and in `Drop`.
+        unsafe {
+            let ctx = ffi::sws_alloc_context();
+            if ctx.is_null() {
+                return Err("cannot allocate the scaler".into());
+            }
+            let set = |name: &std::ffi::CStr, v: i64| ffi::av_opt_set_int(ctx.cast(), name.as_ptr(), v, 0);
+            set(c"srcw", i64::from(width));
+            set(c"srch", i64::from(height));
+            set(c"src_format", format as i64);
+            set(c"dstw", i64::from(width));
+            set(c"dsth", i64::from(height));
+            set(c"dst_format", ffi::AVPixelFormat::AV_PIX_FMT_RGBA as i64);
+            set(c"sws_flags", i64::from(ffi::SWS_BILINEAR));
+            set(c"threads", convert_threads());
+            let r = ffi::sws_init_context(ctx, std::ptr::null_mut(), std::ptr::null_mut());
+            if r < 0 {
+                ffi::sws_freeContext(ctx);
+                return Err(format!("cannot initialise the scaler (error {r})"));
+            }
+            Ok(Scaler { ctx, format, width, height })
+        }
+    }
+
+    fn matches(&self, format: ffi::AVPixelFormat, width: u32, height: u32) -> bool {
+        self.format == format && self.width == width && self.height == height
+    }
+
+    /// Converts `src` (of the size and format this scaler was made for) to RGBA.
+    fn convert(&mut self, src: &ff::frame::Video) -> Result<Vec<u8>, String> {
+        let (w, h) = (self.width as usize, self.height as usize);
+        // A few spare bytes: SIMD tails must never touch memory that is not ours.
+        let mut data = vec![0u8; w * h * 4 + 64];
+        let dst: [*mut u8; 4] = [data.as_mut_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()];
+        let dst_stride: [i32; 4] = [(w * 4) as i32, 0, 0, 0];
+        // SAFETY: `src` is a valid AVFrame of the size and format given to `new`; `dst` points
+        // to a buffer of `h` rows of `w * 4` bytes.
+        let rows = unsafe {
+            let f = &*src.as_ptr();
+            ffi::sws_scale(
+                self.ctx,
+                f.data.as_ptr().cast(),
+                f.linesize.as_ptr(),
+                0,
+                h as i32,
+                dst.as_ptr(),
+                dst_stride.as_ptr(),
+            )
+        };
+        if rows != h as i32 {
+            return Err(format!("the scaler produced {rows} of {h} rows"));
+        }
+        data.truncate(w * h * 4);
+        Ok(data)
+    }
+}
+
+impl Drop for Scaler {
+    fn drop(&mut self) {
+        // SAFETY: we own the context.
+        unsafe { ffi::sws_freeContext(self.ctx) };
+    }
 }
 
 // SAFETY: FFmpeg codec/swscale contexts have no thread affinity; `VideoDecoder` is not `Sync` and
@@ -133,12 +235,11 @@ impl VideoDecoder {
     /// Opens D3D11VA decoding for `codec`, falling back to FFmpeg's software decoder.
     pub fn open(codec: VideoCodec) -> Result<Self, DecodeError> {
         init();
-        let hw = Self::open_inner(codec, true);
-        match hw {
+        match Self::open_hardware(codec, 0) {
             Ok(d) => Ok(d),
             Err(hw_err) => {
                 tracing::info!(?codec, "hardware decoder unavailable ({hw_err}); using software");
-                Self::open_inner(codec, false).map_err(|sw_err| DecodeError::NoDecoder(format!("hardware: {hw_err}; software: {sw_err}")))
+                Self::open_inner(codec, None).map_err(|sw_err| DecodeError::NoDecoder(format!("hardware: {hw_err}; software: {sw_err}")))
             }
         }
     }
@@ -146,16 +247,32 @@ impl VideoDecoder {
     /// Opens the software decoder only (tests, and the fallback after a hardware failure).
     pub fn open_software(codec: VideoCodec) -> Result<Self, DecodeError> {
         init();
-        Self::open_inner(codec, false).map_err(DecodeError::NoDecoder)
+        Self::open_inner(codec, None).map_err(DecodeError::NoDecoder)
     }
 
-    fn open_inner(codec: VideoCodec, hardware: bool) -> Result<Self, String> {
+    /// The first D3D11VA adapter (see [`adapter_order`]) on which a decoder opens.
+    fn open_hardware(codec: VideoCodec, tried: u32) -> Result<Self, String> {
+        let mut errors = Vec::new();
+        for adapter in adapter_order(good_adapter(), tried) {
+            match Self::open_inner(codec, Some(adapter)) {
+                Ok(mut d) => {
+                    d.tried = tried;
+                    return Ok(d);
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+        Err(if errors.is_empty() { "every adapter failed".to_string() } else { errors.join("; ") })
+    }
+
+    fn open_inner(codec: VideoCodec, adapter: Option<u32>) -> Result<Self, String> {
+        let hardware = adapter.is_some();
         let name = decoder_name(codec);
         let found = ff::decoder::find_by_name(name).ok_or("decoder not built into this FFmpeg")?;
         let mut ctx = ff::codec::context::Context::new_with_codec(found);
         let mut device = None;
-        if hardware {
-            let dev = HwDevice::d3d11va()?;
+        if let Some(adapter) = adapter {
+            let dev = HwDevice::d3d11va(adapter)?;
             // SAFETY: plain field writes on the context we own, before `open`.
             unsafe {
                 let raw = ctx.as_mut_ptr();
@@ -164,23 +281,33 @@ impl VideoDecoder {
             }
             device = Some(dev);
         }
-        // SAFETY: low-latency flags on the context we own, before `open`.
+        // SAFETY: plain field writes on the context we own, before `open`.
         unsafe {
             let raw = ctx.as_mut_ptr();
-            (*raw).flags |= ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
-            if !hardware {
+            if hardware {
+                (*raw).flags |= ffi::AV_CODEC_FLAG_LOW_DELAY as i32;
+            } else {
+                // LOW_DELAY switches frame threading off, which leaves the single-slice streams
+                // of the hardware encoders on one core. Two frame threads (one frame of delay)
+                // decode 1080p about 1.5x faster; more threads gained nothing in the bench.
                 (*raw).thread_count = 2;
+                (*raw).thread_type = ffi::FF_THREAD_FRAME;
             }
         }
         let dec = ctx.decoder().open().map_err(|e| e.to_string())?;
-        let label = if hardware { format!("{name}+d3d11va") } else { format!("{name} (software)") };
-        tracing::info!(decoder = %label, "video decoder opened");
+        let label = match adapter {
+            Some(_) => format!("{name}+d3d11va"),
+            None => format!("{name} (software)"),
+        };
+        tracing::info!(decoder = %label, ?adapter, "video decoder opened");
         Ok(VideoDecoder {
             dec,
             codec,
             hardware,
             name: label,
             _device: device,
+            adapter,
+            tried: 0,
             synced: false,
             produced: 0,
             scaler: None,
@@ -212,7 +339,8 @@ impl VideoDecoder {
         match self.try_decode(frame) {
             Ok(frame) => DecodeOutput { frame, request_keyframe: false },
             Err(e) => {
-                tracing::debug!(decoder = %self.name, "decode failed: {e}");                if self.switch_to_software() {
+                tracing::debug!(decoder = %self.name, "decode failed: {e}");
+                if self.switch_decoder() {
                     // Same keyframe, new decoder: no round trip to the sender.
                     return self.decode(frame);
                 }
@@ -223,13 +351,23 @@ impl VideoDecoder {
         }
     }
 
-    /// A hardware decoder that never produced a picture is replaced by the software one (the GPU
-    /// may lack the codec profile although the probe opened it). `true` when it was replaced.
-    fn switch_to_software(&mut self) -> bool {
-        if !self.hardware || self.produced > 0 {
+    /// A hardware decoder that never produced a picture is replaced by the next D3D11 adapter and,
+    /// when none is left, by the software one (the GPU may lack the codec profile although the
+    /// probe opened it; on a laptop another GPU often has it). `true` when it was replaced.
+    fn switch_decoder(&mut self) -> bool {
+        let Some(adapter) = self.adapter.filter(|_| self.hardware && self.produced == 0) else {
             return false;
+        };
+        let tried = self.tried | (1 << adapter);
+        match Self::open_hardware(self.codec, tried) {
+            Ok(next) => {
+                tracing::warn!(codec = ?self.codec, from = adapter, to = ?next.adapter, "hardware decode produced nothing; trying another adapter");
+                *self = next;
+                return true;
+            }
+            Err(e) => tracing::debug!("no other hardware decoder: {e}"),
         }
-        match Self::open_inner(self.codec, false) {
+        match Self::open_inner(self.codec, None) {
             Ok(sw) => {
                 tracing::warn!(codec = ?self.codec, "hardware decode produced nothing; switching to software");
                 *self = sw;
@@ -263,6 +401,9 @@ impl VideoDecoder {
         let Some(decoded) = latest else { return Ok(None) };
         let rgba = self.convert(decoded)?;
         self.produced += 1;
+        if let Some(a) = self.adapter.filter(|_| self.produced == 1) {
+            GOOD_ADAPTER.store(a, Ordering::Relaxed);
+        }
         Ok(Some(rgba))
     }
 
@@ -276,32 +417,15 @@ impl VideoDecoder {
             }
         }
         let src: &ff::frame::Video = if on_gpu { &self.sw } else { &decoded };
-        let (w, h, fmt) = (src.width(), src.height(), src.format());
+        let (w, h) = (src.width(), src.height());
+        let fmt: ffi::AVPixelFormat = src.format().into();
         if w == 0 || h == 0 {
             return Err("empty picture".into());
         }
-        if self.scaler.as_ref().is_none_or(|s| s.format != fmt || s.width != w || s.height != h) {
-            let ctx = ff::software::scaling::Context::get(
-                fmt,
-                w,
-                h,
-                ff::format::Pixel::RGBA,
-                w,
-                h,
-                ff::software::scaling::Flags::BILINEAR,
-            )
-            .map_err(|e| e.to_string())?;
-            self.scaler = Some(Scaler { ctx, format: fmt, width: w, height: h });
+        if self.scaler.as_ref().is_none_or(|s| !s.matches(fmt, w, h)) {
+            self.scaler = Some(Scaler::new(fmt, w, h)?);
         }
-        let mut out = ff::frame::Video::new(ff::format::Pixel::RGBA, w, h);
-        self.scaler.as_mut().expect("set above").ctx.run(src, &mut out).map_err(|e| e.to_string())?;
-        let stride = out.stride(0);
-        let row = w as usize * 4;
-        let plane = out.data(0);
-        let mut data = Vec::with_capacity(row * h as usize);
-        for y in 0..h as usize {
-            data.extend_from_slice(&plane[y * stride..y * stride + row]);
-        }
+        let data = self.scaler.as_mut().expect("set above").convert(src)?;
         Ok(RgbaFrame { width: w, height: h, data })
     }
 }
@@ -310,6 +434,18 @@ impl VideoDecoder {
 mod tests {
     use super::*;
     use crate::encoder::{EncoderConfig, VideoEncoder};
+
+    #[test]
+    fn adapters_are_tried_good_first_then_by_index_skipping_failures() {
+        assert_eq!(adapter_order(None, 0), vec![0, 1, 2, 3]);
+        assert_eq!(adapter_order(Some(1), 0), vec![1, 0, 2, 3]);
+        // The one that failed in this decoder's lifetime is not tried again, even when it was good.
+        assert_eq!(adapter_order(Some(1), 0b0010), vec![0, 2, 3]);
+        assert_eq!(adapter_order(None, 0b0001), vec![1, 2, 3]);
+        assert!(adapter_order(None, 0b1111).is_empty());
+        // A stale value outside the range is ignored.
+        assert_eq!(adapter_order(Some(9), 0), vec![0, 1, 2, 3]);
+    }
 
     const W: u32 = 640;
     const H: u32 = 360;
@@ -423,16 +559,20 @@ mod tests {
     fn corrupt_data_requests_a_keyframe_and_recovers() {
         let Some(stream) = encode_stream(VideoCodec::H264, 6) else { return };
         let mut dec = VideoDecoder::open_software(VideoCodec::H264).unwrap();
-        assert!(dec.decode(&stream[0]).frame.is_some());
-        let garbage = Frame { frame_id: 99, keyframe: false, timestamp: 1, data: vec![0xAB; 300] };
-        let out = dec.decode(&garbage);
-        assert!(out.frame.is_none());
-        // After the garbage, a delta must not be fed to a broken chain.
+        // Frame threading delays the output by a frame: the keyframe's picture comes with the next packet.
         let delta = stream.iter().find(|f| !f.keyframe).unwrap();
-        if out.request_keyframe {
-            assert!(dec.decode(delta).request_keyframe);
+        dec.decode(&stream[0]);
+        assert!(dec.decode(delta).frame.is_some());
+        let garbage = Frame { frame_id: 99, keyframe: false, timestamp: 1, data: vec![0xAB; 300] };
+        let mut asked = false;
+        for _ in 0..3 {
+            asked |= dec.decode(&garbage).request_keyframe;
         }
-        let again = dec.decode(&stream[0]);
+        assert!(asked, "garbage never asked for a keyframe");
+        // After the garbage, a delta must not be fed to a broken chain.
+        assert!(dec.decode(delta).request_keyframe);
+        dec.decode(&stream[0]);
+        let again = dec.decode(delta);
         assert!(again.frame.is_some() && !again.request_keyframe);
     }
 }

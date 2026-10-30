@@ -146,6 +146,8 @@ struct Shared {
     dropped_deltas: AtomicU64,
     bytes: AtomicU64,
     reopens: AtomicU64,
+    /// Milliseconds since the start plus one, of the last reopen (0: never).
+    last_reopen_ms: AtomicU64,
     encode_micros: AtomicU64,
     failed: AtomicBool,
 }
@@ -198,7 +200,12 @@ impl Sender {
     /// Feeds a receiver report to the adaptive bitrate; returns the new target in kbps.
     pub fn report(&self, report: ReceiverReport) -> u32 {
         let now = self.started.elapsed().as_millis() as u64;
-        let target = lock(&self.abr).on_report(now, &report);
+        let mut abr = lock(&self.abr);
+        if let Some(t) = self.shared.last_reopen_ms.load(Ordering::Relaxed).checked_sub(1) {
+            abr.note_encoder_reopen(t);
+        }
+        let target = abr.on_report(now, &report);
+        drop(abr);
         self.shared.target_kbps.store(target, Ordering::Relaxed);
         target
     }
@@ -257,6 +264,7 @@ fn run(
     tx: &SyncSender<Vec<MediaDatagram>>,
     started: Instant,
 ) {
+    crate::lower_current_thread_priority();
     let tick = Duration::from_micros(1_000_000 / u64::from(enc.config().fps.max(1)));
     let max_payload = max_video_payload(cfg.max_datagram);
     let mut next = Instant::now();
@@ -289,9 +297,11 @@ fn run(
         if shared.key_requested.swap(false, Ordering::Relaxed) {
             enc.force_keyframe();
         }
-        match enc.set_bitrate(shared.target_kbps.load(Ordering::Relaxed)) {
+        let now_ms = started.elapsed().as_millis() as u64;
+        match enc.set_bitrate(shared.target_kbps.load(Ordering::Relaxed), now_ms) {
             Ok(true) => {
                 shared.reopens.fetch_add(1, Ordering::Relaxed);
+                shared.last_reopen_ms.store(now_ms + 1, Ordering::Relaxed);
                 tracing::info!(kbps = enc.config().bitrate_kbps, "video encoder reopened for a new bitrate");
             }
             Ok(false) => {}

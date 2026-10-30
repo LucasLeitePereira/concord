@@ -221,3 +221,9 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - O winit só permite um EventLoop por processo: o viewer tem uma thread de UI criada uma vez (`OnceLock`) com o loop eterno; abrir/fechar = criar/destruir janela e device wgpu por user events.
 - O visualizador fecha quando o último amigo assistido para de transmitir (`inv-viewer-closes-when-share-ends`). Sair da sala (`set_in_room(false)`) para a própria transmissão (`inv-leave-room-stops-share`).
 - **Data:** 2026-10-29
+
+## D-030 — T-035b: desempenho do vídeo (ABR, adaptador D3D11, prioridade)
+- QSV aceita mudar bitrate ao vivo, mas força IDR: todo backend usa reabertura limitada (mudança > 25%; ≥ 10 s para subir, ≥ 2 s para cortar). O ABR ignora a perda dos 2,5 s após uma reabertura e faz backoff de subida após cortes repetidos.
+- D3D11VA tenta os adaptadores 0..3 (o 0 pode não decodificar em notebook iGPU+dGPU) antes de cair para software; software com frame threading (2 threads, sem LOW_DELAY).
+- Threads de encode/decode de vídeo em BELOW_NORMAL; o cpal já põe o áudio em TIME_CRITICAL.
+- **Data:** 2026-10-29
