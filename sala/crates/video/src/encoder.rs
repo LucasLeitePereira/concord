@@ -7,6 +7,8 @@
 use ffmpeg_next as ff;
 use sala_protocol::VideoCodec;
 
+use crate::scale::BgraToNv12;
+
 /// Backends in the same order the probe uses.
 const BACKENDS: [&str; 3] = ["nvenc", "amf", "qsv"];
 
@@ -41,6 +43,17 @@ pub struct EncoderConfig {
     pub height: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
+}
+
+/// Where the time of one `encode_bgra` call went, in microseconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EncodeTimings {
+    /// Filling the swscale input frame from the caller's buffer.
+    pub copy_micros: u64,
+    /// BGRA to NV12 conversion (and scaling).
+    pub sws_micros: u64,
+    /// `send_frame` plus draining the packets.
+    pub enc_micros: u64,
 }
 
 /// One encoded access unit.
@@ -124,12 +137,12 @@ pub struct VideoEncoder {
     name: String,
     backend: String,
     cfg: EncoderConfig,
-    scaler: Option<(ff::software::scaling::Context, u32, u32)>,
-    src: Option<ff::frame::Video>,
+    scaler: Option<BgraToNv12>,
     dst: ff::frame::Video,
     force_key: bool,
     last_pts: i64,
     last_reopen_ms: Option<u64>,
+    last_timings: EncodeTimings,
 }
 
 // SAFETY: the FFmpeg codec and swscale contexts are plain heap objects with no thread
@@ -191,12 +204,17 @@ impl VideoEncoder {
             backend: backend.to_string(),
             cfg: cfg.clone(),
             scaler: None,
-            src: None,
             dst,
             force_key: false,
             last_pts: i64::MIN,
             last_reopen_ms: None,
+            last_timings: EncodeTimings::default(),
         })
+    }
+
+    /// Time split of the last `encode_bgra` call.
+    pub fn last_timings(&self) -> EncodeTimings {
+        self.last_timings
     }
 
     /// FFmpeg encoder name in use (`h264_qsv`).
@@ -253,31 +271,16 @@ impl VideoEncoder {
         let pts = if pts <= self.last_pts { self.last_pts + 1 } else { pts };
         self.last_pts = pts;
 
-        if self.src.as_ref().is_none_or(|f| f.width() != width || f.height() != height) {
-            self.src = Some(ff::frame::Video::new(ff::format::Pixel::BGRA, width, height));
+        if self.scaler.as_ref().is_none_or(|s| s.src_size() != (width, height)) {
+            let threads = crate::scale::default_threads();
+            self.scaler = Some(
+                BgraToNv12::new(width, height, self.cfg.width, self.cfg.height, threads).map_err(EncodeError::Ffmpeg)?,
+            );
         }
-        if self.scaler.as_ref().is_none_or(|(_, w, h)| *w != width || *h != height) {
-            let sws = ff::software::scaling::Context::get(
-                ff::format::Pixel::BGRA,
-                width,
-                height,
-                ff::format::Pixel::NV12,
-                self.cfg.width,
-                self.cfg.height,
-                ff::software::scaling::Flags::BILINEAR,
-            )
-            .map_err(err)?;
-            self.scaler = Some((sws, width, height));
-        }
-        let src = self.src.as_mut().expect("set above");
-        let stride = src.stride(0);
-        let row = width as usize * 4;
-        let plane = src.data_mut(0);
-        for y in 0..height as usize {
-            plane[y * stride..y * stride + row].copy_from_slice(&bgra[y * row..(y + 1) * row]);
-        }
-        let (sws, _, _) = self.scaler.as_mut().expect("set above");
-        sws.run(src, &mut self.dst).map_err(err)?;
+        let t0 = std::time::Instant::now();
+        let sws = self.scaler.as_mut().expect("set above");
+        let copy_micros = sws.convert(bgra, &mut self.dst).map_err(EncodeError::Ffmpeg)?;
+        let t2 = std::time::Instant::now();
 
         self.dst.set_pts(Some(pts));
         self.dst.set_kind(if std::mem::take(&mut self.force_key) {
@@ -286,7 +289,13 @@ impl VideoEncoder {
             ff::picture::Type::None
         });
         self.enc.send_frame(&self.dst).map_err(err)?;
-        self.drain()
+        let packets = self.drain();
+        self.last_timings = EncodeTimings {
+            copy_micros,
+            sws_micros: (t2 - t0).as_micros() as u64 - copy_micros,
+            enc_micros: t2.elapsed().as_micros() as u64,
+        };
+        packets
     }
 
     /// Flushes the encoder at the end of the stream.
@@ -398,6 +407,20 @@ mod tests {
         assert!(matches!(VideoEncoder::open(&cfg), Err(EncodeError::Invalid(_))));
     }
 
+    /// Hardware-dependent: skipped (passes) when this machine has no encoder. A source whose
+    /// width is not a multiple of 16 (1366x768 monitors) is converted through a padded copy.
+    #[test]
+    fn encodes_a_source_that_needs_the_padded_copy() {
+        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 640, height: 360, fps: 30, bitrate_kbps: 2000 };
+        let Ok(mut enc) = VideoEncoder::open(&cfg) else { return };
+        let frame = vec![120u8; 650 * 360 * 4];
+        enc.encode_bgra(&frame, 650, 360, 0).unwrap();
+        assert!(enc.last_timings().copy_micros > 0);
+        // Back to a width that needs no copy: the converter is rebuilt for the new size.
+        enc.encode_bgra(&vec![120u8; 640 * 360 * 4], 640, 360, 3000).unwrap();
+        assert_eq!(enc.last_timings().copy_micros, 0);
+    }
+
     /// Hardware-dependent: skipped (passes) when this machine has no encoder.
     #[test]
     fn encodes_and_forces_keyframes() {
@@ -420,6 +443,10 @@ mod tests {
                 }
             }
         }
+        // The time split of the last call (what `share stats tx` reports) is filled in.
+        let parts = enc.last_timings();
+        assert!(parts.sws_micros > 0 && parts.enc_micros > 0, "{parts:?}");
+        assert_eq!(parts.copy_micros, 0, "640 is a multiple of 16: no input copy expected");
         for p in enc.finish().unwrap() {
             total += 1;
             keys += usize::from(p.keyframe);

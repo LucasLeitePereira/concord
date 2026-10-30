@@ -9,6 +9,7 @@ pub mod decoder;
 pub mod encoder;
 pub mod fragment;
 pub mod preset;
+pub mod scale;
 pub mod sender;
 pub mod viewer;
 
@@ -16,7 +17,7 @@ use std::sync::OnceLock;
 
 use sala_protocol::{Capabilities, VideoCodec};
 
-/// Lets the calling video thread (encode, decode) yield to everything else, voice first: the
+/// Lets the calling video thread (decode) yield to everything else, voice first: the
 /// audio callbacks run at time-critical priority (cpal), and a picture that arrives a few
 /// milliseconds late is far less noticeable than a voice that stutters. Best effort.
 pub(crate) fn lower_current_thread_priority() {

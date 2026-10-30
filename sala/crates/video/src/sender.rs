@@ -134,6 +134,10 @@ pub struct SenderStats {
     /// Times the encoder was reopened for a new bitrate.
     pub reopens: u64,
     pub encode_micros: u64,
+    /// Parts of `encode_micros` (see `EncodeTimings`): input copy, BGRA to NV12, encoder proper.
+    pub copy_micros: u64,
+    pub sws_micros: u64,
+    pub enc_micros: u64,
     /// The encode thread stopped on an encoder error.
     pub failed: bool,
 }
@@ -150,6 +154,9 @@ struct Shared {
     /// Milliseconds since the start plus one, of the last reopen (0: never).
     last_reopen_ms: AtomicU64,
     encode_micros: AtomicU64,
+    copy_micros: AtomicU64,
+    sws_micros: AtomicU64,
+    enc_micros: AtomicU64,
     failed: AtomicBool,
 }
 
@@ -264,6 +271,9 @@ impl Sender {
             bytes: s.bytes.load(Ordering::Relaxed),
             reopens: s.reopens.load(Ordering::Relaxed),
             encode_micros: s.encode_micros.load(Ordering::Relaxed),
+            copy_micros: s.copy_micros.load(Ordering::Relaxed),
+            sws_micros: s.sws_micros.load(Ordering::Relaxed),
+            enc_micros: s.enc_micros.load(Ordering::Relaxed),
             failed: s.failed.load(Ordering::Relaxed),
         }
     }
@@ -295,7 +305,8 @@ fn run(
     tx: &SyncSender<Vec<MediaDatagram>>,
     started: Instant,
 ) {
-    crate::lower_current_thread_priority();
+    // Normal priority on purpose (D-032): below normal, a saturated CPU starved this thread down
+    // to ~1 fps, while the audio callbacks already run time-critical and still preempt it.
     let tick = Duration::from_micros(1_000_000 / u64::from(enc.config().fps.max(1)));
     let mut key_gate = KeyGate::default();
     let mut next = Instant::now();
@@ -351,6 +362,10 @@ fn run(
             }
         };
         shared.encode_micros.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
+        let parts = enc.last_timings();
+        shared.copy_micros.fetch_add(parts.copy_micros, Ordering::Relaxed);
+        shared.sws_micros.fetch_add(parts.sws_micros, Ordering::Relaxed);
+        shared.enc_micros.fetch_add(parts.enc_micros, Ordering::Relaxed);
         last_encode = Some(now);
         has_fresh = false;
         for p in packets {

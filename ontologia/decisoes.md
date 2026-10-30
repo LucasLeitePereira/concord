@@ -233,3 +233,9 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - `DEFAULT_MAX_DATAGRAM` = 1162 (mínimo garantido pelo QUIC); a fragmentação do vídeo segue o `max_datagram_size` vivo da conexão (`datagram_budget`), senão um black hole de MTU vira recusa permanente.
 - No máximo 1 keyframe forçado por segundo (pedidos coalescidos).
 - **Data:** 2026-10-30
+
+## D-032 — T-035f1: conversão BGRA→NV12 com threads e encode em prioridade normal (revisa D-030)
+- swscale com `sws_scale_frame` + opção `threads` (min(núcleos/2, 4)); o `sws_scale` antigo ignora threads. Sem cópia linha a linha: o buffer BGRA entra como AVBuffer emprestado; largura não múltipla de 16 usa cópia com padding (SIMD lê além da última linha).
+- A thread de encode volta à prioridade normal: no bench 1080p com a CPU saturada, BELOW_NORMAL derrubava o encode a ~1,5 fps contra ~53 fps em normal. O áudio do cpal segue em TIME_CRITICAL e ainda preempta. O decode do espectador continua BELOW_NORMAL.
+- Medição: `share stats tx` registra `copy_ms_avg`, `sws_ms_avg`, `enc_ms_avg`; bench em `sala/crates/video/examples/encode_bench.rs`.
+- **Data:** 2026-10-30

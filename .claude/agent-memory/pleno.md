@@ -73,4 +73,5 @@
 - REGRA: edição só com Edit/Write, mesmo em arquivo LF (T-033f1 usou python/sed de novo).
 - Fatias acima de US$ 2 (T-033d decoder+janela+core; T-033f1 COM/WASAPI+rede): separe crate de mídia/nativo da integração no core.
 - T-035b custou US$ 5,61 (201 tool calls): diagnóstico + ABR + decoder + bench numa fatia só. Diagnóstico/medição vira fatia própria antes da correção.
+- Examples do `sala-video` precisam das DLLs no PATH: `PATH=$PWD/target/release:$PATH target/release/examples/x.exe`. Bench com CPU saturada: `--frames 30` + timeout. swscale só usa threads via `sws_scale_frame` (o `sws_scale` ignora).
 - QSV aceita mudar `bit_rate` ao vivo, mas força IDR (não poupa a rajada). `AV_CODEC_FLAG_LOW_DELAY` desliga frame threading. `cargo test -p sala-video --lib` em paralelo dá 0xc0000005: use `--test-threads=1`.
