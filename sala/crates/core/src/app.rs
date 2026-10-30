@@ -465,7 +465,15 @@ impl<P: PlatformApi> Controller<P> {
     }
 
     /// One detector tick (`POLL_INTERVAL`).
+    ///
+    /// D-033: while this PC shares its screen or the viewer is open, the detector is not fed, so
+    /// automatic detection never enters game mode (a full-screen window there is the stream
+    /// itself). Leaving game mode stays automatic. When the stream ends the detector counts from
+    /// zero again: a game still in the foreground enters after `Hysteresis::ENTER_AFTER` ticks.
     pub async fn tick(&mut self, sample: Option<&ForegroundSample>) {
+        if !self.detector.in_game() && (self.sharing() || self.viewer_open()) {
+            return;
+        }
         if let Some(t) = self.detector.tick(sample) {
             self.apply(t, Trigger::auto(sample)).await;
         }

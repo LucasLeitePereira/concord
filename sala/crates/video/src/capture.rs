@@ -5,7 +5,9 @@
 //! converted to NV12 by swscale. The zero-copy path would hand the captured `ID3D11Texture2D`
 //! straight to the hardware encoder (FFmpeg `d3d11` hw frames context) and skip both copies.
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame;
@@ -91,17 +93,42 @@ pub fn list_windows() -> Result<Vec<Source>, CaptureError> {
 
 type FrameCallback = Box<dyn FnMut(&BgraFrame<'_>) + Send>;
 
+/// What the capture callback measures (shared with the owner of the session).
+#[derive(Default)]
+struct CaptureCounters {
+    frames: AtomicU64,
+    read_micros: AtomicU64,
+    deliver_micros: AtomicU64,
+    /// Longest read since the last [`CaptureSession::stats`] call.
+    read_micros_max: AtomicU64,
+}
+
+/// Capture callback counters. Totals count since the start; `read_micros_max` is the longest
+/// read since the previous snapshot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CaptureStats {
+    /// Frames WGC delivered to the callback.
+    pub frames: u64,
+    /// Time spent reading the frame (`frame.buffer()` + `as_nopadding_buffer`: GPU -> CPU copy).
+    pub read_micros: u64,
+    /// Time spent in the `on_frame` callback (handing the frame off).
+    pub deliver_micros: u64,
+    pub read_micros_max: u64,
+}
+
 struct Handler {
     on_frame: FrameCallback,
+    counters: Arc<CaptureCounters>,
     scratch: Vec<u8>,
 }
 
 impl GraphicsCaptureApiHandler for Handler {
-    type Flags = FrameCallback;
+    type Flags = (FrameCallback, Arc<CaptureCounters>);
     type Error = CaptureError;
 
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
-        Ok(Handler { on_frame: ctx.flags, scratch: Vec::new() })
+        let (on_frame, counters) = ctx.flags;
+        Ok(Handler { on_frame, counters, scratch: Vec::new() })
     }
 
     fn on_frame_arrived(&mut self, frame: &mut Frame, _control: InternalCaptureControl) -> Result<(), Self::Error> {
@@ -109,9 +136,17 @@ impl GraphicsCaptureApiHandler for Handler {
         // 100 ns ticks.
         let ticks = frame.timestamp()?.Duration.max(0) as u64;
         let timestamp = Duration::from_nanos(ticks.saturating_mul(100));
+        let t0 = Instant::now();
         let buffer = frame.buffer()?;
         let data = buffer.as_nopadding_buffer(&mut self.scratch);
+        let t1 = Instant::now();
         (self.on_frame)(&BgraFrame { width, height, data, timestamp });
+        let c = &self.counters;
+        let read = (t1 - t0).as_micros() as u64;
+        c.frames.fetch_add(1, Ordering::Relaxed);
+        c.read_micros.fetch_add(read, Ordering::Relaxed);
+        c.read_micros_max.fetch_max(read, Ordering::Relaxed);
+        c.deliver_micros.fetch_add(t1.elapsed().as_micros() as u64, Ordering::Relaxed);
         Ok(())
     }
 
@@ -124,6 +159,7 @@ impl GraphicsCaptureApiHandler for Handler {
 /// A running capture; dropping it (or `stop`) ends it.
 pub struct CaptureSession {
     control: Option<windows_capture::capture::CaptureControl<Handler, CaptureError>>,
+    counters: Arc<CaptureCounters>,
 }
 
 impl CaptureSession {
@@ -134,7 +170,8 @@ impl CaptureSession {
         max_fps: u32,
         on_frame: impl FnMut(&BgraFrame<'_>) + Send + 'static,
     ) -> Result<Self, CaptureError> {
-        let cb: FrameCallback = Box::new(on_frame);
+        let counters = Arc::new(CaptureCounters::default());
+        let cb: (FrameCallback, Arc<CaptureCounters>) = (Box::new(on_frame), counters.clone());
         let interval = if max_fps == 0 {
             MinimumUpdateIntervalSettings::Default
         } else {
@@ -162,7 +199,18 @@ impl CaptureSession {
                 cb,
             ))?,
         };
-        Ok(CaptureSession { control: Some(control) })
+        Ok(CaptureSession { control: Some(control), counters })
+    }
+
+    /// Counters of the capture callback; resets the `read_micros_max` window.
+    pub fn stats(&self) -> CaptureStats {
+        let c = &self.counters;
+        CaptureStats {
+            frames: c.frames.load(Ordering::Relaxed),
+            read_micros: c.read_micros.load(Ordering::Relaxed),
+            deliver_micros: c.deliver_micros.load(Ordering::Relaxed),
+            read_micros_max: c.read_micros_max.swap(0, Ordering::Relaxed),
+        }
     }
 
     pub fn is_finished(&self) -> bool {

@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use sala_core::app::{Controller, PlatformApi, Step, Trigger, UiHost, ViewerOpener, ViewerWindow};
 use sala_core::config::{Config, Profile};
+use sala_core::game_detector::ForegroundSample;
 use sala_core::identity::LocalIdentity;
 use sala_core::ipc::IpcServer;
 use sala_core::platform::{Hotkey, HotkeyAction, TrayState};
@@ -153,6 +154,41 @@ async fn a_viewer_opened_before_any_share_stays_until_one_comes_and_goes() {
     ctl.on_session_event(status("b", true));
     assert!(ctl.viewer_open());
     ctl.on_session_event(status("b", false));
+    assert!(!ctl.viewer_open());
+}
+
+/// D-033: a window covering the monitor while watching is the stream, not a game.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_detection_does_not_enter_game_mode_while_watching() {
+    let covering = ForegroundSample { exe_path: r"C:\x\player.exe".into(), covers_monitor: true };
+
+    // Control: without a stream the same samples enter game mode.
+    let (mut ctl, _windows, _calls) = controller();
+    ctl.tick(Some(&covering)).await;
+    ctl.tick(Some(&covering)).await;
+    assert!(ctl.in_game(), "control: no stream, detector must enter");
+
+    // Watching: never enters, however long the window covers the monitor.
+    let (mut ctl, _windows, _calls) = controller();
+    ctl.open_viewer().unwrap();
+    for _ in 0..6 {
+        ctl.tick(Some(&covering)).await;
+    }
+    assert!(!ctl.in_game(), "no automatic game mode while the viewer is open");
+    assert!(ctl.viewer_open());
+
+    // The stream ends: the same window now counts, after the usual two readings.
+    ctl.close_viewer();
+    ctl.tick(Some(&covering)).await;
+    assert!(!ctl.in_game());
+    ctl.tick(Some(&covering)).await;
+    assert!(ctl.in_game(), "detection resumes once the viewer is closed");
+
+    // Manual entry works while watching (and runs the D-012 sequence, closing the viewer).
+    let (mut ctl, _windows, _calls) = controller();
+    ctl.open_viewer().unwrap();
+    ctl.set_game_mode_manual(true, Trigger::Hotkey).await;
+    assert!(ctl.in_game());
     assert!(!ctl.viewer_open());
 }
 

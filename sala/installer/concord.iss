@@ -1,6 +1,6 @@
 ; Concord installer (Inno Setup 6). Build with scripts\build-installer.ps1.
 #define AppName "Concord"
-#define AppVersion "0.1.8"
+#define AppVersion "0.1.9"
 
 [Setup]
 AppId={{B7E2C1A4-5D3F-4C8E-9A61-2F0D7C4E8B15}
@@ -40,6 +40,8 @@ Type: files; Name: "{app}\sala-ui.exe"
 [Files]
 Source: "..\target\release\concord.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\concord-ui.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\av*.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\sw*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\crates\ui\icons\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

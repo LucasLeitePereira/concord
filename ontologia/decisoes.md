@@ -239,3 +239,9 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - A thread de encode volta à prioridade normal: no bench 1080p com a CPU saturada, BELOW_NORMAL derrubava o encode a ~1,5 fps contra ~53 fps em normal. O áudio do cpal segue em TIME_CRITICAL e ainda preempta. O decode do espectador continua BELOW_NORMAL.
 - Medição: `share stats tx` registra `copy_ms_avg`, `sws_ms_avg`, `enc_ms_avg`; bench em `sala/crates/video/examples/encode_bench.rs`.
 - **Data:** 2026-10-30
+
+## D-033 — T-036: detecção automática do modo jogo não entra durante transmissão (revisa D-012)
+- Enquanto o usuário transmite ou assiste, a detecção automática não entra em modo jogo: ela fechava o visualizador ao ver qualquer janela cobrindo o monitor (emulador em tela cheia, Windows Terminal maximizado) e impedia transmitir jogo. Pedido do usuário em 2026-10-30.
+- Entrada manual (atalho, bandeja, IPC) segue a sequência D-012 sem mudança. Quando a transmissão termina, a detecção volta a valer.
+- Falso positivo conhecido, não tratado aqui: a detecção considera jogo qualquer janela que cubra o monitor, inclusive o terminal.
+- **Data:** 2026-10-30

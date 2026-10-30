@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use sala_protocol::{AudioStream, ControlMessage, MediaDatagram, VIDEO_PROTOCOL_VERSION, VideoCodec};
 use sala_video::abr::ReceiverReport as AbrReport;
-use sala_video::capture::{CaptureSession, Source, Target};
+use sala_video::capture::{CaptureSession, CaptureStats, Source, Target};
 use sala_video::fragment::{Frame, Output, Reassembler, ReassemblerStats};
 use sala_video::preset::SharePreset;
 use sala_video::sender::{FrameSlot, RawFrame, Sender, SenderConfig, SenderStats};
@@ -81,6 +81,10 @@ pub trait VideoPipe: Send + Sync {
     fn target_kbps(&self) -> u32;
     /// Encoder counters, when the source has an encoder (for the `share stats` log).
     fn encoder_stats(&self) -> Option<SenderStats> {
+        None
+    }
+    /// Capture callback counters, when the source is a screen capture.
+    fn capture_stats(&self) -> Option<CaptureStats> {
         None
     }
 }
@@ -556,6 +560,7 @@ struct TxLog {
     sent: u64,
     errors: u64,
     encoder: SenderStats,
+    capture: CaptureStats,
     lost_packets: u64,
     congestion_events: u64,
     udp_tx: u64,
@@ -574,6 +579,7 @@ fn log_tx_stats(shared: &ShareShared, ts: Option<TransportStats>, prev: &mut TxL
     let now = Instant::now();
     let window = prev.at.map_or(0, |t| now.duration_since(t).as_millis());
     let enc = shared.pipe.encoder_stats().unwrap_or_default();
+    let cap = shared.pipe.capture_stats().unwrap_or_default();
     let cur = TxLog {
         at: Some(now),
         frames_out: shared.frames_out.load(Ordering::Relaxed),
@@ -581,15 +587,22 @@ fn log_tx_stats(shared: &ShareShared, ts: Option<TransportStats>, prev: &mut TxL
         sent: shared.sent.load(Ordering::Relaxed),
         errors: shared.send_errors.load(Ordering::Relaxed),
         encoder: enc,
+        capture: cap,
         lost_packets: ts.map_or(0, |t| t.lost_packets),
         congestion_events: ts.map_or(0, |t| t.congestion_events),
         udp_tx: ts.map_or(0, |t| t.udp_tx),
         datagram_frames_tx: ts.map_or(0, |t| t.datagram_frames_tx),
     };
     let frames = enc.frames - prev.encoder.frames;
+    // Frames WGC delivered; above `encoded_frames` means the slot overwrote some before encoding.
+    let captured = cap.frames.saturating_sub(prev.capture.frames);
     tracing::info!(
         window_ms = window as u64,
         target_kbps = shared.pipe.target_kbps(),
+        captured_frames = captured,
+        capture_read_ms_avg = cap.read_micros.saturating_sub(prev.capture.read_micros) / 1000 / captured.max(1),
+        capture_read_ms_max = cap.read_micros_max / 1000,
+        capture_deliver_ms_avg = cap.deliver_micros.saturating_sub(prev.capture.deliver_micros) / 1000 / captured.max(1),
         encoded_frames = frames,
         keyframes = enc.keyframes - prev.encoder.keyframes,
         encoder_dropped_deltas = enc.dropped_deltas - prev.encoder.dropped_deltas,
@@ -687,6 +700,10 @@ impl VideoPipe for ScreenPipe {
 
     fn encoder_stats(&self) -> Option<SenderStats> {
         Some(self.sender.stats())
+    }
+
+    fn capture_stats(&self) -> Option<CaptureStats> {
+        lock(&self.capture).as_ref().map(CaptureSession::stats)
     }
 }
 
