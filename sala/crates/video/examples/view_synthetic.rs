@@ -74,6 +74,23 @@ fn main() {
     };
     let (w, h, fps): (u32, u32, u32) = (arg("--width", 1280), arg("--height", 720), arg("--fps", 30));
     let drop_every: u32 = arg("--drop-every", 0);
+    let reopen: u32 = arg("--reopen", 0);
+    if reopen > 0 {
+        // No encoder needed: open, show for a moment, close and open again, in the same process.
+        let mut rx = {
+            let (_tx, rx) = std::sync::mpsc::channel::<Incoming>();
+            rx
+        };
+        for round in 1..=reopen {
+            let handle = viewer::open(rx, Arc::new(|_| {})).unwrap_or_else(|e| panic!("round {round}: {e}"));
+            println!("round {round}: viewer open = {}", handle.is_open());
+            std::thread::sleep(Duration::from_millis(1000));
+            rx = handle.close().expect("the input channel comes back");
+            println!("round {round}: closed");
+        }
+        println!("reopened {reopen} times");
+        return;
+    }
     let cfg = EncoderConfig { codec, width: w, height: h, fps, bitrate_kbps: arg("--kbps", 4000) };
     let mut enc = match VideoEncoder::open(&cfg) {
         Ok(e) => e,

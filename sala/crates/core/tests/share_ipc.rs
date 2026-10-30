@@ -205,6 +205,26 @@ async fn start_and_stop_share_are_reported_to_the_ui() {
     assert!(r.released().await, "stopping must release capture and encoder");
 }
 
+/// T-035a: hanging up (leaving the room) ends the share, with `ShareState` for the UI.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn leaving_the_room_stops_the_share() {
+    let mut r = rig(false).await;
+    r.send(UiToCore::JoinRoom).await;
+    r.send(start_cmd(720, 30)).await;
+    assert_eq!(r.share_state().await, (true, 720, 30));
+    assert!(r.ctl.sharing());
+
+    // Control: staying in the room (a mute change) leaves the share alone.
+    r.send(UiToCore::SetMuted { muted: true }).await;
+    assert!(r.ctl.sharing());
+
+    r.send(UiToCore::HangUp).await;
+    assert!(!r.ctl.sharing(), "leaving the room must stop the share");
+    assert!(!r.ctl.session().local_status().sharing, "friends are told through Status");
+    assert_eq!(r.share_state().await, (false, 0, 0));
+    assert!(r.released().await, "the video pipe must be released");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_source_that_cannot_start_becomes_an_error() {
     let mut r = rig(false).await;

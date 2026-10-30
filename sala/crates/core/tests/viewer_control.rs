@@ -14,7 +14,7 @@ use sala_core::config::{Config, Profile};
 use sala_core::identity::LocalIdentity;
 use sala_core::ipc::IpcServer;
 use sala_core::platform::{Hotkey, HotkeyAction, TrayState};
-use sala_core::session::{AudioSource, Session};
+use sala_core::session::{AudioSource, Session, SessionEvent, StatusFlags};
 
 struct NoPlatform;
 
@@ -105,6 +105,55 @@ async fn game_mode_closes_the_viewer_at_step_two() {
     let pos = |s: &Step| steps.iter().position(|x| x == s).unwrap_or_else(|| panic!("missing {s:?} in {steps:?}"));
     assert!(pos(&Step::CloseViewer) > 0, "the UI shutdown stays the first step: {steps:?}");
     assert!(pos(&Step::CloseViewer) < pos(&Step::StopSharing));
+}
+
+fn status(friend: &str, sharing: bool) -> SessionEvent {
+    SessionEvent::PeerStatus {
+        friend: friend.to_string(),
+        status: StatusFlags { sharing, in_room: true, ..StatusFlags::default() },
+    }
+}
+
+/// T-035a: the viewer follows the friends' shares.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_viewer_closes_when_the_last_watched_share_ends() {
+    let (mut ctl, windows, _calls) = controller();
+    ctl.on_session_event(status("b", true));
+    ctl.open_viewer().unwrap();
+    // Control: other news about the sharing friend leave the window alone.
+    ctl.on_session_event(status("b", true));
+    assert!(ctl.viewer_open());
+
+    // Two friends share; the first stopping is not the end.
+    ctl.on_session_event(status("c", true));
+    ctl.on_session_event(status("b", false));
+    assert!(ctl.viewer_open(), "c still shares");
+
+    ctl.on_session_event(status("c", false));
+    assert!(!ctl.viewer_open(), "no one shares any more: the viewer must close");
+    assert!(!windows.lock().unwrap()[0].load(Ordering::SeqCst), "the window itself must be told to close");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_friend_leaving_while_sharing_closes_the_viewer() {
+    let (mut ctl, _windows, _calls) = controller();
+    ctl.on_session_event(status("b", true));
+    ctl.open_viewer().unwrap();
+    ctl.on_session_event(SessionEvent::Disconnected { friend: "b".into() });
+    assert!(!ctl.viewer_open());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_viewer_opened_before_any_share_stays_until_one_comes_and_goes() {
+    let (mut ctl, _windows, _calls) = controller();
+    ctl.open_viewer().unwrap();
+    // Nobody ever shared: a plain mute change must not close it.
+    ctl.on_session_event(status("b", false));
+    assert!(ctl.viewer_open());
+    ctl.on_session_event(status("b", true));
+    assert!(ctl.viewer_open());
+    ctl.on_session_event(status("b", false));
+    assert!(!ctl.viewer_open());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

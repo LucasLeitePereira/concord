@@ -1,16 +1,21 @@
 //! Screen-share viewer window (`screen-share`, F4): decodes the frames of a friend's share and
 //! draws the newest picture with `winit` + `wgpu`.
 //!
-//! Threads: the *window thread* owns the event loop and the GPU; the *decode thread* owns the
-//! decoder, reads the frame channel and leaves only the **latest** picture in a one-slot mailbox
-//! (late pictures are overwritten, never queued). Closing hands the input channel back, so the
-//! caller can open the viewer again on the same stream.
+//! Threads: the *UI thread* owns the event loop and the GPU of every window; the *decode thread*
+//! (one per open viewer) owns the decoder, reads the frame channel and leaves only the
+//! **latest** picture in a one-slot mailbox (late pictures are overwritten, never queued).
+//! Closing hands the input channel back, so the caller can open the viewer again on the same
+//! stream.
+//!
+//! `winit` allows one event loop per process, so the UI thread is started once (lazily) and its
+//! loop lives until the process ends: opening and closing a viewer only creates and destroys a
+//! window and its `wgpu` surface/device, through user events (`T-035a`).
 //!
 //! Keys: `F11` full screen, `F3` statistics in the title, `Esc` closes.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -18,7 +23,7 @@ use sala_protocol::VideoCodec;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::windows::EventLoopBuilderExtWindows;
 use winit::window::{Fullscreen, Window, WindowId};
@@ -165,10 +170,21 @@ struct Shared {
     closed: AtomicBool,
 }
 
-#[derive(Debug)]
+/// What the UI thread is told (the sessions are told apart by `id`).
 enum UserEvent {
-    NewPicture,
-    Close,
+    /// Create the window and the GPU objects of a new viewer.
+    Open(Box<OpenRequest>),
+    NewPicture(u64),
+    Close(u64),
+}
+
+struct OpenRequest {
+    id: u64,
+    shared: Arc<Shared>,
+    /// The window is up (or why it is not).
+    ready: Sender<Result<(), String>>,
+    /// Dropped by the UI thread once the window and the GPU objects are gone.
+    done: Sender<()>,
 }
 
 // ------------------------------------------------------------------ public handle
@@ -176,9 +192,12 @@ enum UserEvent {
 /// A running viewer window. Dropping it (or [`ViewerHandle::close`]) closes the window and
 /// releases the GPU.
 pub struct ViewerHandle {
+    id: u64,
     proxy: EventLoopProxy<UserEvent>,
     shared: Arc<Shared>,
-    thread: Option<JoinHandle<Receiver<Incoming>>>,
+    decode: Option<JoinHandle<Receiver<Incoming>>>,
+    /// Disconnects when the UI thread dropped the window.
+    done: Receiver<()>,
 }
 
 impl ViewerHandle {
@@ -193,9 +212,13 @@ impl ViewerHandle {
     }
 
     fn shutdown(&mut self) -> Option<Receiver<Incoming>> {
-        let thread = self.thread.take()?;
-        let _ = self.proxy.send_event(UserEvent::Close);
-        thread.join().ok()
+        let decode = self.decode.take()?;
+        self.shared.closed.store(true, Ordering::Release);
+        if self.proxy.send_event(UserEvent::Close(self.id)).is_ok() {
+            // `Disconnected` = the window is gone (also when the user had closed it before).
+            let _ = self.done.recv_timeout(Duration::from_secs(5));
+        }
+        decode.join().ok()
     }
 }
 
@@ -208,66 +231,74 @@ impl Drop for ViewerHandle {
 /// Opens the viewer on `rx`. `request_keyframe(friend)` is called when the decoder needs one
 /// (including at start, as soon as the first delta frame shows up).
 pub fn open(rx: Receiver<Incoming>, request_keyframe: KeyframeRequester) -> Result<ViewerHandle, String> {
+    let proxy = ui_proxy()?;
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let shared = Arc::new(Shared {
         mailbox: Mutex::new(Mailbox::default()),
         notified: AtomicBool::new(false),
         closed: AtomicBool::new(false),
     });
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<EventLoopProxy<UserEvent>, String>>();
-    let thread_shared = shared.clone();
-    let thread = std::thread::Builder::new()
-        .name("viewer".into())
-        .spawn(move || window_thread(rx, request_keyframe, thread_shared, ready_tx))
-        .map_err(|e| e.to_string())?;
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (done_tx, done) = std::sync::mpsc::channel();
+    let request = OpenRequest { id, shared: shared.clone(), ready: ready_tx, done: done_tx };
+    proxy.send_event(UserEvent::Open(Box::new(request))).map_err(|_| "the viewer UI thread is gone".to_string())?;
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(Ok(proxy)) => Ok(ViewerHandle { proxy, shared, thread: Some(thread) }),
-        Ok(Err(e)) => {
-            let _ = thread.join();
-            Err(e)
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            let _ = proxy.send_event(UserEvent::Close(id)); // in case it opens late
+            return Err("the viewer window did not start".into());
         }
-        Err(_) => Err("the viewer window did not start".into()),
+    }
+    let decode = {
+        let (shared, proxy) = (shared.clone(), proxy.clone());
+        std::thread::Builder::new()
+            .name("viewer-decode".into())
+            .spawn(move || decode_thread(rx, request_keyframe, shared, proxy, id))
+    };
+    match decode {
+        Ok(decode) => Ok(ViewerHandle { id, proxy, shared, decode: Some(decode), done }),
+        Err(e) => {
+            let _ = proxy.send_event(UserEvent::Close(id));
+            Err(e.to_string())
+        }
     }
 }
 
-// ------------------------------------------------------------------ window thread
+// ------------------------------------------------------------------ UI thread
 
-fn window_thread(
-    rx: Receiver<Incoming>,
-    request_keyframe: KeyframeRequester,
-    shared: Arc<Shared>,
-    ready: std::sync::mpsc::Sender<Result<EventLoopProxy<UserEvent>, String>>,
-) -> Receiver<Incoming> {
-    let event_loop = match EventLoop::<UserEvent>::with_user_event().with_any_thread(true).build() {
-        Ok(el) => el,
-        Err(e) => {
-            let _ = ready.send(Err(format!("cannot create the event loop: {e}")));
-            return rx;
-        }
-    };
-    let proxy = event_loop.create_proxy();
-    let _ = ready.send(Ok(proxy.clone()));
+/// The one event loop of the process: created on first use, never destroyed (`winit` cannot
+/// build a second one). The proxy sits behind a mutex only to be `Sync`.
+static UI: OnceLock<Result<Mutex<EventLoopProxy<UserEvent>>, String>> = OnceLock::new();
 
-    let decode = {
-        let (shared, proxy) = (shared.clone(), proxy);
-        std::thread::Builder::new()
-            .name("viewer-decode".into())
-            .spawn(move || decode_thread(rx, request_keyframe, shared, proxy))
-    };
-    let Ok(decode) = decode else {
-        shared.closed.store(true, Ordering::Release);
-        // `rx` moved into the failed closure: nothing to hand back.
-        return std::sync::mpsc::channel().1;
-    };
+fn ui_proxy() -> Result<EventLoopProxy<UserEvent>, String> {
+    UI.get_or_init(start_ui_thread).as_ref().map(|p| lock(p).clone()).map_err(Clone::clone)
+}
 
-    let mut app = App { shared: shared.clone(), gfx: None, show_stats: false, fullscreen: false, failed: false };
-    if let Err(e) = event_loop.run_app(&mut app) {
-        tracing::warn!("viewer event loop ended with an error: {e}");
-    }
-    // Window and GPU objects go away here, before the thread returns.
-    drop(app);
-    shared.closed.store(true, Ordering::Release);
-    tracing::info!("viewer closed");
-    decode.join().unwrap_or_else(|_| std::sync::mpsc::channel().1)
+fn start_ui_thread() -> Result<Mutex<EventLoopProxy<UserEvent>>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("viewer-ui".into())
+        .spawn(move || {
+            let event_loop = match EventLoop::<UserEvent>::with_user_event().with_any_thread(true).build() {
+                Ok(el) => el,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("cannot create the event loop: {e}")));
+                    return;
+                }
+            };
+            // Without windows the loop sleeps; it only ends with the process.
+            event_loop.set_control_flow(ControlFlow::Wait);
+            let _ = tx.send(Ok(event_loop.create_proxy()));
+            if let Err(e) = event_loop.run_app(&mut App::default()) {
+                tracing::warn!("viewer event loop ended with an error: {e}");
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv_timeout(Duration::from_secs(10))
+        .map_err(|_| "the viewer UI thread did not start".to_string())?
+        .map(Mutex::new)
 }
 
 fn decode_thread(
@@ -275,6 +306,7 @@ fn decode_thread(
     request_keyframe: KeyframeRequester,
     shared: Arc<Shared>,
     proxy: EventLoopProxy<UserEvent>,
+    id: u64,
 ) -> Receiver<Incoming> {
     let started = Instant::now();
     let now_ms = || started.elapsed().as_millis() as u64;
@@ -348,7 +380,7 @@ fn decode_thread(
                 mb.stats = meter.snapshot(now);
             }
             if !shared.notified.swap(true, Ordering::AcqRel) {
-                let _ = proxy.send_event(UserEvent::NewPicture);
+                let _ = proxy.send_event(UserEvent::NewPicture(id));
             }
         }
     }
@@ -580,92 +612,117 @@ impl Gfx {
     }
 }
 
-struct App {
+impl Drop for Gfx {
+    fn drop(&mut self) {
+        // Let the GPU finish before the device (and with it the swap chain) goes away.
+        let _ = self.device.poll(wgpu::Maintain::Wait);
+    }
+}
+
+/// One open viewer as the UI thread sees it.
+struct Active {
+    id: u64,
+    // Field order: the window and the GPU go before `_done` disconnects the waiting handle.
+    gfx: Gfx,
     shared: Arc<Shared>,
-    gfx: Option<Gfx>,
     show_stats: bool,
     fullscreen: bool,
-    failed: bool,
+    _done: Sender<()>,
+}
+
+impl Active {
+    fn refresh_title(&self, friend: &str, stats: StatsSnapshot) {
+        self.gfx.window.set_title(&title(friend, self.show_stats.then_some(stats)));
+    }
+}
+
+/// The viewers currently on screen (usually zero or one).
+#[derive(Default)]
+struct App {
+    sessions: Vec<Active>,
 }
 
 impl App {
-    fn refresh_title(&self, friend: &str, stats: StatsSnapshot) {
-        if let Some(g) = &self.gfx {
-            g.window.set_title(&title(friend, self.show_stats.then_some(stats)));
+    /// Destroys the window and the GPU objects of session `id` (no-op when already gone).
+    fn end(&mut self, id: u64) {
+        let Some(pos) = self.sessions.iter().position(|a| a.id == id) else {
+            return;
+        };
+        let shared = self.sessions.remove(pos).shared.clone();
+        shared.closed.store(true, Ordering::Release);
+        tracing::info!("viewer closed");
+    }
+
+    fn open(&mut self, el: &ActiveEventLoop, req: OpenRequest) {
+        let attrs = Window::default_attributes().with_title(title("", None)).with_inner_size(LogicalSize::new(1280.0, 720.0));
+        let result = el.create_window(attrs).map_err(|e| e.to_string()).and_then(|w| Gfx::new(Arc::new(w)));
+        match result {
+            Ok(gfx) => {
+                tracing::info!("viewer: window open");
+                let OpenRequest { id, shared, ready, done } = req;
+                self.sessions.push(Active { id, gfx, shared, show_stats: false, fullscreen: false, _done: done });
+                let _ = ready.send(Ok(()));
+            }
+            Err(e) => {
+                tracing::warn!("viewer: cannot open the window: {e}");
+                req.shared.closed.store(true, Ordering::Release);
+                let _ = req.ready.send(Err(e));
+            }
         }
     }
 }
 
 impl ApplicationHandler<UserEvent> for App {
-    fn resumed(&mut self, el: &ActiveEventLoop) {
-        if self.gfx.is_some() || self.failed {
-            return;
-        }
-        let attrs = Window::default_attributes().with_title(title("", None)).with_inner_size(LogicalSize::new(1280.0, 720.0));
-        let result = el.create_window(attrs).map_err(|e| e.to_string()).and_then(|w| Gfx::new(Arc::new(w)));
-        match result {
-            Ok(g) => {
-                tracing::info!("viewer: window open");
-                self.gfx = Some(g);
-            }
-            Err(e) => {
-                tracing::warn!("viewer: cannot open the window: {e}");
-                self.failed = true;
-                el.exit();
-            }
-        }
-    }
+    fn resumed(&mut self, _el: &ActiveEventLoop) {}
 
     fn user_event(&mut self, el: &ActiveEventLoop, ev: UserEvent) {
         match ev {
-            UserEvent::Close => el.exit(),
-            UserEvent::NewPicture => {
+            UserEvent::Open(req) => self.open(el, *req),
+            UserEvent::Close(id) => self.end(id),
+            UserEvent::NewPicture(id) => {
+                let Some(a) = self.sessions.iter_mut().find(|a| a.id == id) else {
+                    return;
+                };
                 let (pic, friend, stats) = {
-                    let mut mb = lock(&self.shared.mailbox);
+                    let mut mb = lock(&a.shared.mailbox);
                     (mb.picture.take(), mb.friend.clone(), mb.stats)
                 };
-                self.shared.notified.store(false, Ordering::Release);
-                if let Some(pic) = pic
-                    && let Some(g) = self.gfx.as_mut()
-                {
-                    g.upload(&pic);
-                    g.window.request_redraw();
+                a.shared.notified.store(false, Ordering::Release);
+                if let Some(pic) = pic {
+                    a.gfx.upload(&pic);
+                    a.gfx.window.request_redraw();
                 }
-                self.refresh_title(&friend, stats);
+                a.refresh_title(&friend, stats);
             }
         }
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, ev: WindowEvent) {
+    fn window_event(&mut self, _el: &ActiveEventLoop, window: WindowId, ev: WindowEvent) {
+        let Some(a) = self.sessions.iter_mut().find(|a| a.gfx.window.id() == window) else {
+            return;
+        };
+        let id = a.id;
         match ev {
-            WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::CloseRequested => self.end(id),
             WindowEvent::Resized(size) => {
-                if let Some(g) = self.gfx.as_mut() {
-                    g.resize(size.width, size.height);
-                    g.window.request_redraw();
-                }
+                a.gfx.resize(size.width, size.height);
+                a.gfx.window.request_redraw();
             }
-            WindowEvent::RedrawRequested => {
-                if let Some(g) = self.gfx.as_mut() {
-                    g.draw();
-                }
-            }
+            WindowEvent::RedrawRequested => a.gfx.draw(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => {
                 match event.physical_key {
-                    PhysicalKey::Code(KeyCode::Escape) => el.exit(),
+                    PhysicalKey::Code(KeyCode::Escape) => self.end(id),
                     PhysicalKey::Code(KeyCode::F11) => {
-                        self.fullscreen = !self.fullscreen;
-                        if let Some(g) = &self.gfx {
-                            g.window.set_fullscreen(self.fullscreen.then_some(Fullscreen::Borderless(None)));
-                        }
+                        a.fullscreen = !a.fullscreen;
+                        a.gfx.window.set_fullscreen(a.fullscreen.then_some(Fullscreen::Borderless(None)));
                     }
                     PhysicalKey::Code(KeyCode::F3) => {
-                        self.show_stats = !self.show_stats;
+                        a.show_stats = !a.show_stats;
                         let (friend, stats) = {
-                            let mb = lock(&self.shared.mailbox);
+                            let mb = lock(&a.shared.mailbox);
                             (mb.friend.clone(), mb.stats)
                         };
-                        self.refresh_title(&friend, stats);
+                        a.refresh_title(&friend, stats);
                     }
                     _ => {}
                 }

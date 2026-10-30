@@ -244,6 +244,10 @@ pub struct Controller<P: PlatformApi> {
     viewer: Option<Box<dyn ViewerWindow>>,
     viewer_opener: ViewerOpener,
     viewer_sink: ViewerSink,
+    /// Friends whose last `Status` said they are sharing their screen.
+    sharing_peers: Vec<String>,
+    /// Somebody was sharing while the open viewer was up (so the end of every share closes it).
+    viewer_saw_share: bool,
     /// `take_video_frames` was already handed to the forwarder thread.
     video_forwarded: bool,
     /// Turns a `StartShare` into a pipe factory (tests use a synthetic source).
@@ -281,6 +285,8 @@ impl<P: PlatformApi> Controller<P> {
             viewer: None,
             viewer_opener: real_viewer_opener(),
             viewer_sink: Arc::new(Mutex::new(None)),
+            sharing_peers: Vec::new(),
+            viewer_saw_share: false,
             video_forwarded: false,
             share_planner: real_share_planner(),
             audio_planner: real_audio_planner(),
@@ -387,8 +393,22 @@ impl<P: PlatformApi> Controller<P> {
         let window = (self.viewer_opener)(rx, request)?;
         *self.viewer_sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
         self.viewer = Some(window);
+        self.viewer_saw_share = !self.sharing_peers.is_empty();
         info!("viewer opened");
         Ok(())
+    }
+
+    /// Records who is sharing and closes the viewer once the last watched share is over
+    /// (T-035a). A viewer opened while nobody shared stays up until somebody does.
+    fn track_shares(&mut self, friend: &str, sharing: bool) {
+        self.sharing_peers.retain(|f| f != friend);
+        if sharing {
+            self.sharing_peers.push(friend.to_string());
+            self.viewer_saw_share |= self.viewer_open();
+        } else if self.viewer_saw_share && self.sharing_peers.is_empty() && self.viewer_open() {
+            info!(%friend, "no one is sharing any more: closing the viewer");
+            self.close_viewer();
+        }
     }
 
     /// Closes the viewer (D-012 step 2, also when the user asks); harmless when none is open.
@@ -519,7 +539,11 @@ impl<P: PlatformApi> Controller<P> {
     }
 
     /// Enters/leaves the room (D-015): friends and the UI hear about it.
+    /// Leaving the room also ends our screen share (T-035a): nobody is left to watch it.
     pub fn set_in_room(&mut self, in_room: bool) {
+        if !in_room {
+            self.stop_share();
+        }
         self.session.set_in_room(in_room);
         self.after_local_change();
     }
@@ -883,6 +907,11 @@ impl<P: PlatformApi> Controller<P> {
     }
 
     pub fn on_session_event(&mut self, ev: SessionEvent) {
+        match &ev {
+            SessionEvent::PeerStatus { friend, status } => self.track_shares(friend, status.sharing),
+            SessionEvent::Disconnected { friend } => self.track_shares(friend, false),
+            _ => {}
+        }
         let ipc = &self.host.ipc;
         match ev {
             SessionEvent::Connected { friend } => {

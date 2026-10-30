@@ -216,3 +216,8 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Captura por WASAPI process loopback excluindo a árvore do próprio processo (Win10 2004+). Sem fallback para loopback comum (ecoaria a voz dos amigos): se falhar, transmite só vídeo e `ShareState.audio=false`.
 - Opus estéreo 128 kbps 20 ms como `ShareAudio`, aos mesmos destinatários do vídeo; o receptor mistura em mono (saída é mono) com volume próprio, antes do "Silenciar", e toca mesmo fora da sala.
 - **Data:** 2026-10-29
+
+## D-029 — T-035a: visualizador com EventLoop único; sair da sala para a transmissão
+- O winit só permite um EventLoop por processo: o viewer tem uma thread de UI criada uma vez (`OnceLock`) com o loop eterno; abrir/fechar = criar/destruir janela e device wgpu por user events.
+- O visualizador fecha quando o último amigo assistido para de transmitir (`inv-viewer-closes-when-share-ends`). Sair da sala (`set_in_room(false)`) para a própria transmissão (`inv-leave-room-stops-share`).
+- **Data:** 2026-10-29
