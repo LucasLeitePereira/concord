@@ -487,6 +487,39 @@ async fn room_commands_status_devices_volume_and_meter() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mic_test_state_follows_requests_game_mode_and_client() {
+    let mut rig = Rig::new(vec![]).await;
+    let on = CoreToUi::MicTest { on: true };
+    let off = CoreToUi::MicTest { on: false };
+    // GetState reports it off (control), then on after SetMicTest.
+    assert!(rig.ask(UiToCore::GetState).await.contains(&off));
+    assert!(rig.ask(UiToCore::SetMicTest { on: true }).await.contains(&on));
+    assert!(rig.ask(UiToCore::GetState).await.contains(&on));
+    assert!(rig.ask(UiToCore::SetMicTest { on: false }).await.contains(&off));
+    // Game mode turns it off and refuses it.
+    assert!(rig.ask(UiToCore::SetMicTest { on: true }).await.contains(&on));
+    let got = rig.ask(UiToCore::EnterGameMode).await;
+    assert!(got.contains(&off), "{got:?}");
+    assert!(rig.ask(UiToCore::GetState).await.contains(&off));
+    let got = rig.ask(UiToCore::SetMicTest { on: true }).await;
+    assert!(!got.contains(&on), "refused in game mode: {got:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mic_test_stops_when_the_ui_client_disconnects() {
+    let mut rig = Rig::new(vec![]).await;
+    let mut ui = IpcClient::connect(&rig.pipe).await.unwrap();
+    ui.send(&UiToCore::SetMicTest { on: true }).await.unwrap();
+    let (client, command) = tokio::time::timeout(Duration::from_secs(5), rig.ipc_rx.recv()).await.unwrap().unwrap();
+    rig.ctl.on_command(client, command).await;
+    drop(ui);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    rig.ctl.check_capture_client();
+    let got = rig.pump(Duration::from_millis(200)).await;
+    assert!(got.contains(&CoreToUi::MicTest { on: false }), "disconnect must turn the test off: {got:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mic_meter_stops_when_the_ui_client_disconnects() {
     let mut rig = Rig::new(vec![]).await;
     let mut ui = IpcClient::connect(&rig.pipe).await.unwrap();

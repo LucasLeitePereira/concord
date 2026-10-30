@@ -46,8 +46,8 @@ mapa:
     codigo: ["sala/crates/core/src/jitter.rs (JitterBuffer, Pop, JitterStats, peek_next p/ FEC)"]
     testes: [sala/crates/core/tests/acceptance_jitter.rs, "sala/crates/core/src/jitter.rs (mod tests)"]
   voice-frame:
-    codigo: ["sala/crates/core/src/voice.rs (VoiceEncoder, VoiceDecoder, EncodedFrame, VoiceEngine)", "sala/crates/core/src/audio_device.rs (AudioInput, AudioOutput, Sink, list_devices)"]
-    testes: ["sala/crates/core/src/voice.rs (mod tests)"]
+    codigo: ["sala/crates/core/src/voice.rs (VoiceEncoder, VoiceDecoder, EncodedFrame, VoiceEngine; set_loopback = \"Ouvir minha voz\", T-034a)", "sala/crates/core/src/session.rs (EngineCmd::MicTest, Session::set_mic_test)", "sala/crates/core/src/app.rs (UiToCore::SetMicTest, mic_test_client, stop_mic_test; desliga no modo jogo e ao cair o cliente)", "sala/crates/core/src/audio_device.rs (AudioInput, AudioOutput, Sink, list_devices)"]
+    testes: ["sala/crates/core/src/voice.rs (mod tests; voice_test_*)", "sala/crates/core/tests/f3_settings.rs (mic_test_*)"]
   voice-activation:
     codigo: ["sala/crates/core/src/voice.rs (Activation; input_gain/apply_input_gain e LevelMeter/MicLevels, D-014)", "sala/crates/core/src/config.rs (AudioConfig.vad_threshold, input_volume)"]
     testes: ["sala/crates/core/src/voice.rs (mod tests)"]

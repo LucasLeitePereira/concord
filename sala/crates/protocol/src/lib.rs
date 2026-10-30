@@ -424,6 +424,11 @@ pub enum UiToCore {
     StopShare,
     /// Volume (0.0 to 1.0) of the sound of the shares we watch, apart from the voices.
     SetShareAudioVolume { volume: f32 },
+    /// "Ouvir minha voz": while on, the microphone, after the same gain and voice detection as
+    /// what is sent, is played on the local output (muted or below the threshold = silence;
+    /// "Silenciar" silences it). Works outside the room. Turns itself off when the client
+    /// disconnects or the game mode starts. The state comes as `CoreToUi::MicTest`.
+    SetMicTest { on: bool },
 }
 
 /// One monitor or window that can be shared (`screen-capture`).
@@ -531,6 +536,8 @@ pub enum CoreToUi {
         #[serde(default)]
         audio: bool,
     },
+    /// Whether the local voice test (`SetMicTest`) is on. Sent at every change and on `GetState`.
+    MicTest { on: bool },
 }
 
 /// Encodes an IPC message as exactly one JSON line terminated by `\n`.
@@ -820,6 +827,7 @@ mod tests {
             UiToCore::StartShare { source_id: "monitor:65537".into(), resolution: 1080, fps: 60, audio: true },
             UiToCore::StopShare,
             UiToCore::SetShareAudioVolume { volume: 0.5 },
+            UiToCore::SetMicTest { on: true },
         ];
         for c in cmds {
             let l = encode_ipc_line(&c).unwrap();
@@ -852,6 +860,7 @@ mod tests {
             },
             CoreToUi::ShareSources { encoder: None, monitors: vec![], windows: vec![] },
             CoreToUi::ShareState { sharing: true, resolution: 720, fps: 30, audio: true },
+            CoreToUi::MicTest { on: true },
             CoreToUi::TailnetPeers {
                 running: true,
                 peers: vec![TailnetPeer {

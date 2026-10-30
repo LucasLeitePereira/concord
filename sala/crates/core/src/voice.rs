@@ -1228,6 +1228,56 @@ mod tests {
         assert_eq!(run(false), 0.0);
     }
 
+    /// Voice test (T-034a): total energy played locally for a sine of `dbfs`, with the test
+    /// `on`, optionally muted, outside the room.
+    fn voice_test_energy(on: bool, dbfs: f32, muted: bool) -> f32 {
+        let mut e = VoiceEngine::new(&AudioConfig::default()).unwrap(); // outside the room
+        e.set_loopback(on).unwrap();
+        e.activation_mut().set_muted(muted);
+        let mut src = SineSource::new(440.0, dbfs);
+        let mut total = 0.0;
+        for i in 0..30u64 {
+            e.process_capture(&mut src.next_frame()).unwrap();
+            total += rms(&e.playout_tick(i * 20));
+        }
+        total
+    }
+
+    #[test]
+    fn voice_test_plays_what_the_friends_would_hear() {
+        assert!(voice_test_energy(true, -12.0, false) > 1.0, "tone is heard, even outside the room");
+        // Negative controls: test off, below the VAD threshold (-50), muted.
+        assert_eq!(voice_test_energy(false, -12.0, false), 0.0);
+        assert_eq!(voice_test_energy(true, -70.0, false), 0.0, "VAD cuts it like it cuts the send");
+        assert_eq!(voice_test_energy(true, -12.0, true), 0.0);
+    }
+
+    #[test]
+    fn voice_test_is_silenced_by_deafen_and_follows_the_input_gain() {
+        let mut e = engine();
+        e.set_loopback(true).unwrap();
+        e.activation_mut().set_deafened(false);
+        let mut src = SineSource::new(440.0, -12.0);
+        let mut heard = 0.0;
+        for i in 0..10u64 {
+            e.process_capture(&mut src.next_frame()).unwrap();
+            e.activation_mut().set_deafened(true);
+            heard += rms(&e.playout_tick(i * 20));
+            e.activation_mut().set_deafened(false);
+        }
+        assert_eq!(heard, 0.0, "deafened plays nothing");
+        // Gain 0 % goes through the same path as the send: nothing to hear.
+        let cfg = AudioConfig { input_volume: 0, ..AudioConfig::default() };
+        let mut e = VoiceEngine::new(&cfg).unwrap();
+        e.set_loopback(true).unwrap();
+        let mut total = 0.0;
+        for i in 0..10u64 {
+            e.process_capture(&mut src.next_frame()).unwrap();
+            total += rms(&e.playout_tick(i * 20));
+        }
+        assert_eq!(total, 0.0, "the input gain applies to the test");
+    }
+
     #[test]
     fn gated_frames_leave_no_seq_hole() {
         let mut e = engine();

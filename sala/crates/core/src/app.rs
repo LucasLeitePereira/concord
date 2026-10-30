@@ -265,6 +265,8 @@ pub struct Controller<P: PlatformApi> {
     capture: Option<ClientId>,
     /// The UI client that enabled the microphone level meter.
     mic_meter_client: Option<ClientId>,
+    /// The UI client that enabled the voice test (`SetMicTest`, "Ouvir minha voz").
+    mic_test_client: Option<ClientId>,
     /// The UI client whose window is focused (`SetUiFocus`); chat sounds play when none is.
     focused_client: Option<ClientId>,
     /// Friends that were ringing at the last `Calls`, to notice the new ones.
@@ -293,6 +295,7 @@ impl<P: PlatformApi> Controller<P> {
             ptt_mode,
             capture: None,
             mic_meter_client: None,
+            mic_test_client: None,
             focused_client: None,
             ringing: Vec::new(),
             steps: Vec::new(),
@@ -461,6 +464,7 @@ impl<P: PlatformApi> Controller<P> {
         info!(%trigger, "entering game mode");
         // The UI is going away: nobody is watching the meter.
         self.stop_mic_meter();
+        self.stop_mic_test();
         let outcome = self.host.shutdown_ui().await;
         self.steps.push(Step::UiShutdown(outcome));
         self.close_viewer();
@@ -601,6 +605,12 @@ impl<P: PlatformApi> Controller<P> {
             info!("metering client disconnected; stopping microphone meter");
             self.stop_mic_meter();
         }
+        if let Some(c) = self.mic_test_client
+            && !self.host.ipc.has_client(c)
+        {
+            info!("voice test client disconnected; stopping the voice test");
+            self.stop_mic_test();
+        }
         if let Some(c) = self.focused_client
             && !self.host.ipc.has_client(c)
         {
@@ -611,6 +621,13 @@ impl<P: PlatformApi> Controller<P> {
     fn stop_mic_meter(&mut self) {
         self.mic_meter_client = None;
         self.session.set_mic_meter(false);
+    }
+
+    fn stop_mic_test(&mut self) {
+        if self.mic_test_client.take().is_some() {
+            self.session.set_mic_test(false);
+            self.host.ipc.broadcast(&CoreToUi::MicTest { on: false });
+        }
     }
 
     /// Sends the `Config` (with the Tailscale address) to every UI.
@@ -795,6 +812,18 @@ impl<P: PlatformApi> Controller<P> {
                     self.stop_mic_meter();
                 }
             }
+            UiToCore::SetMicTest { on } => {
+                if on && !self.session.local_status().game_mode {
+                    self.mic_test_client = Some(client);
+                    self.session.set_mic_test(true);
+                    self.host.ipc.broadcast(&CoreToUi::MicTest { on: true });
+                } else if self.mic_test_client.is_some() {
+                    self.stop_mic_test();
+                } else {
+                    // Refused (game mode) or already off: tell the asking UI where things stand.
+                    self.host.ipc.send_to(client, &CoreToUi::MicTest { on: false });
+                }
+            }
             UiToCore::SetHotkeyCapture { on } => {
                 if on {
                     self.start_capture(client);
@@ -844,6 +873,7 @@ impl<P: PlatformApi> Controller<P> {
         let (incoming, outgoing) = self.session.calls();
         ipc.send_to(client, &CoreToUi::Calls { incoming, outgoing });
         ipc.send_to(client, &self.share_state_msg());
+        ipc.send_to(client, &CoreToUi::MicTest { on: self.mic_test_client.is_some() });
         for friend in self.session.connected_friends() {
             ipc.send_to(client, &CoreToUi::PeerConnected { friend: friend.clone() });
             if let Some(p) = self.session.peer_status(&friend) {

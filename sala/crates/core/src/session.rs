@@ -175,6 +175,8 @@ enum EngineCmd {
     /// New `[audio]` section (live settings; devices are reopened when they changed).
     Audio(Box<AudioConfig>),
     MicMeter(bool),
+    /// "Ouvir minha voz": the encoded-and-decoded microphone also plays locally.
+    MicTest(bool),
     PeerVolume(String, f32),
     /// A screen share whose pipe is already running (the factory ran on the caller's thread).
     ShareStart(Box<Pipe>, Option<AudioCapture>),
@@ -690,6 +692,12 @@ impl Session {
         let _ = self.commands.send(EngineCmd::MicMeter(on));
     }
 
+    /// Plays our own voice locally, after the gain, the voice detection and Opus (what the
+    /// friends would hear). Nothing extra is sent.
+    pub fn set_mic_test(&self, on: bool) {
+        let _ = self.commands.send(EngineCmd::MicTest(on));
+    }
+
     /// Playback volume of a friend, 0.0..=2.0 (not persisted; applies to the running call).
     pub fn set_peer_volume(&self, friend: &str, volume: f32) {
         let _ = self.commands.send(EngineCmd::PeerVolume(friend.to_string(), volume));
@@ -1097,6 +1105,11 @@ async fn run_loop(
                             meter_tick.reset();
                         }
                         meter_on = on;
+                    }
+                    EngineCmd::MicTest(on) => {
+                        if let Err(e) = engine.set_loopback(on) {
+                            tracing::warn!("cannot start the voice test: {e}");
+                        }
                     }
                     EngineCmd::PeerVolume(friend, v) => engine.set_peer_volume(&friend, v),
                     EngineCmd::ShareAudioVolume(v) => engine.set_share_audio_volume(v),
