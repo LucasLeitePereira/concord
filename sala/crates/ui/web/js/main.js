@@ -4,7 +4,7 @@
 import {
   initialState, setLink, reduce, friends, inRoom, callPeers, chatPeer, roomAction,
   friendStatus, friendPresence, avatarIndex, micText, formatDuration, callSeconds, formatClock, initial,
-  sharingPeers, shareConsumeError, encoderLabel,
+  sharingPeers, shareConsumeError, encoderLabel, micTestLeaveMessage,
   SHARE_VOLUME_KEY, loadShareVolume, writePref, clampVolumePct, shareVolumeMessage, shareAudioNote, makeThrottle,
 } from './state.js';
 import { initSettings } from './settings.js';
@@ -529,6 +529,9 @@ function render() {
 
 function setView(v) {
   const entering = v !== state.view;
+  // "Ouvir minha voz" só vale dentro de Ajustes; o estado volta pelo MicTest do núcleo.
+  const stopTest = micTestLeaveMessage(state, v);
+  if (stopTest) send(stopTest);
   state.view = v;
   renderNav();
   syncMicMeter();

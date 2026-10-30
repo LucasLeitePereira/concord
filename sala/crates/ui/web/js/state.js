@@ -10,6 +10,7 @@ export function initialState() {
     config: null, // CoreToUi::Config
     audio_devices: { inputs: ['default'], outputs: ['default'] },
     mic_level_db: -120, // CoreToUi::MicLevel
+    mic_test: false, // CoreToUi::MicTest ("Ouvir minha voz"); só o núcleo muda
     peers: {}, // nome -> { connected, reconnecting, status, stats }
     mismatch: {}, // nome -> true (FingerprintMismatch)
     outsideTailnet: {}, // nome -> true (PeerNotInTailnet; some ao conectar)
@@ -122,6 +123,34 @@ export function setLink(state, link) {
     state.share = initialShare();
     state.shareDialog.pending = false;
   }
+  // Sem ligação o núcleo já desligou o teste; o GetState traz o valor real.
+  state.mic_test = false;
+}
+
+// "Ouvir minha voz" ↔ "Parar de ouvir": rótulo muda com o estado (sem aria-pressed).
+export function micTestLabel(on) {
+  return on ? 'Parar de ouvir' : 'Ouvir minha voz';
+}
+
+// Pedido do botão: o oposto do estado que o núcleo informou (nada de otimismo).
+export function micTestToggleMessage(state) {
+  return { type: 'SetMicTest', on: !state.mic_test };
+}
+
+// O botão fica inativo sem ligação/config e em modo jogo (o núcleo recusa),
+// mas nunca impede de parar um teste em curso.
+export function micTestDisabled(state) {
+  if (state.link !== 'connected' || !state.config) return true;
+  if (state.mic_test) return false;
+  return !!(state.status && state.status.game_mode);
+}
+
+// Ao sair de Ajustes com o teste ligado, devolve o pedido para desligar (ou null).
+export function micTestLeaveMessage(state, nextView) {
+  if (state.view === 'settings' && nextView !== 'settings' && state.mic_test) {
+    return { type: 'SetMicTest', on: false };
+  }
+  return null;
 }
 
 // Texto do resultado de uma chamada que tocou (CallResult), ou null se não se mostra.
@@ -159,6 +188,9 @@ export function reduce(state, msg) {
     case 'MicLevel':
       state.mic_level_db = Number.isFinite(msg.db) ? msg.db : -120;
       return 'mic';
+    case 'MicTest':
+      state.mic_test = msg.on === true;
+      return 'full';
     case 'PeerConnected': {
       const p = peer(state, msg.friend);
       p.connected = true;

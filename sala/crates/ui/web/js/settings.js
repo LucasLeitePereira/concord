@@ -1,6 +1,8 @@
 // Tela Ajustes: Áudio, Modo jogo, Atalhos e Você. Só envia comandos; o estado vem do `Config` do núcleo (D-010).
 // A aba Amigos está em friends.js.
 
+import { micTestLabel, micTestDisabled, micTestToggleMessage } from './state.js';
+
 const NAMED = {
   Space: 'Space', Enter: 'Enter', NumpadEnter: 'Enter', Tab: 'Tab', Backspace: 'Backspace',
   Insert: 'Insert', Delete: 'Delete', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
@@ -352,7 +354,18 @@ export function initSettings({ state, send, h, icon }) {
     renderDeviceSelect('input-device', a && a.input_device, state.audio_devices.inputs, connected);
     renderDeviceSelect('output-device', a && a.output_device, state.audio_devices.outputs, connected);
     renderMicMeter();
+    renderMicTest();
   }
+
+  function renderMicTest() {
+    setText($('listen-label'), micTestLabel(state.mic_test));
+    $('listen-btn').disabled = micTestDisabled(state);
+  }
+
+  $('listen-btn').addEventListener('click', () => {
+    if (micTestDisabled(state)) return;
+    send(micTestToggleMessage(state));
+  });
 
   function updateAudio(patch) {
     const cfg = state.config;

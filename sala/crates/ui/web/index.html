@@ -214,7 +214,10 @@
               <span class="hint-text" id="nivel-ajuda"></span>
             </div>
 
-            <button type="button" class="btn" id="listen-btn" disabled title="Em breve" style="align-self:flex-start"><svg class="ico" width="16" height="16" aria-hidden="true"><use href="#i-headphones"></use></svg>Ouvir minha voz</button>
+            <div class="field">
+              <button type="button" class="btn" id="listen-btn" disabled aria-describedby="listen-ajuda" style="align-self:flex-start"><svg class="ico" width="16" height="16" aria-hidden="true"><use href="#i-headphones"></use></svg><span id="listen-label">Ouvir minha voz</span></button>
+              <span class="hint-text" id="listen-ajuda">Use fone de ouvido para não dar eco.</span>
+            </div>
 
             <div class="field">
               <label for="bitrate">Qualidade da voz</label>
