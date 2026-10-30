@@ -124,12 +124,20 @@ pub struct ShareStats {
 // ---------------------------------------------------------------- loss measurement
 
 /// Counts video fragments received against the ones the sender produced. The "expected" side
-/// comes from the frame ids: a new frame adds its `frag_count`, a gap of N ids adds N frames of
-/// the last known size.
+/// comes from the frame ids: a frame adds its `frag_count`, a gap of N ids adds N frames of the
+/// last known size.
+///
+/// The frame in progress (the `highest` one) stays out of the window totals until it completes
+/// or a newer frame starts: a report window that closes in the middle of a big frame must not
+/// call its not-yet-arrived fragments lost (they would also inflate the next window).
 #[derive(Debug, Default)]
 pub struct LossMeter {
     highest: Option<u32>,
     last_count: u32,
+    /// Fragments received of the `highest` frame while it is open.
+    cur_received: u32,
+    /// The `highest` frame is not yet counted in `received`/`expected`.
+    open: bool,
     received: u32,
     expected: u32,
     dropped: u32,
@@ -137,23 +145,45 @@ pub struct LossMeter {
 
 impl LossMeter {
     pub fn on_fragment(&mut self, frame_id: u32, frag_count: u16) {
-        self.received = self.received.saturating_add(1);
         let count = u32::from(frag_count);
-        match self.highest {
-            None => {
-                self.expected += count;
-                self.highest = Some(frame_id);
-                self.last_count = count;
-            }
-            Some(h) => {
-                let gap = frame_id.wrapping_sub(h) as i32;
-                if gap > 0 {
-                    let missing = (gap as u32 - 1).min(MAX_GAP_FRAMES);
-                    self.expected = self.expected.saturating_add(missing * self.last_count + count);
-                    self.highest = Some(frame_id);
-                    self.last_count = count;
+        let gap = self.highest.map(|h| frame_id.wrapping_sub(h) as i32);
+        match gap {
+            Some(g) if g < 0 => self.received = self.received.saturating_add(1),
+            Some(0) => {
+                if self.open {
+                    self.cur_received += 1;
+                    if self.cur_received >= self.last_count {
+                        self.close_open();
+                    }
+                } else {
+                    self.received = self.received.saturating_add(1);
                 }
             }
+            _ => {
+                // First frame, or a newer one: whatever was open ends here (the missing
+                // fragments are real losses), then the skipped frames count as lost.
+                self.close_open();
+                if let Some(g) = gap {
+                    let missing = (g as u32 - 1).min(MAX_GAP_FRAMES);
+                    self.expected = self.expected.saturating_add(missing * self.last_count);
+                }
+                self.highest = Some(frame_id);
+                self.last_count = count;
+                self.cur_received = 1;
+                self.open = true;
+                if count <= 1 {
+                    self.close_open();
+                }
+            }
+        }
+    }
+
+    /// Moves the frame in progress into the window totals.
+    fn close_open(&mut self) {
+        if self.open {
+            self.open = false;
+            self.expected = self.expected.saturating_add(self.last_count);
+            self.received = self.received.saturating_add(self.cur_received.min(self.last_count));
         }
     }
 
@@ -197,6 +227,8 @@ pub struct ShareIn {
     codec: VideoCodec,
     rx: RxCounters,
     log: RxLog,
+    /// Highest loss reported since the last `share stats rx` line.
+    loss_pct_max: f32,
 }
 
 /// Receiver counters beyond the reassembler's (for the `share stats` log).
@@ -229,6 +261,7 @@ impl ShareIn {
             codec,
             rx: RxCounters::default(),
             log: RxLog { at_ms: now_ms, ..Default::default() },
+            loss_pct_max: 0.0,
         }
     }
 
@@ -267,6 +300,7 @@ impl ShareIn {
             fec_recovered = re.fec_recovered - prev.reasm.fec_recovered,
             keyframe_requests = rx.keyframe_requests - prev.rx.keyframe_requests,
             viewer_full = rx.viewer_full - prev.rx.viewer_full,
+            loss_pct_max = std::mem::take(&mut self.loss_pct_max),
             udp_rx = udp_rx.saturating_sub(prev.udp_rx),
             datagram_frames_rx = dg_rx.saturating_sub(prev.datagram_frames_rx),
             "share stats rx"
@@ -290,7 +324,11 @@ impl ShareIn {
         let window = now_ms.saturating_sub(self.window_start_ms);
         let report = if window >= REPORT_INTERVAL_MS {
             self.window_start_ms = now_ms;
-            self.meter.take_report(window)
+            let report = self.meter.take_report(window);
+            if let Some(ControlMessage::ReceiverReport { received, expected, .. }) = &report {
+                self.loss_pct_max = self.loss_pct_max.max(abr_report(*received, *expected, 0, None).loss_pct);
+            }
+            report
         } else {
             None
         };
@@ -812,26 +850,83 @@ mod tests {
         for _ in 0..3 {
             m.on_fragment(3, 4);
         }
+        m.on_fragment(4, 4); // frame 3 ends here; frame 4 is still in progress
         let Some(ControlMessage::ReceiverReport { received, expected, .. }) = m.take_report(1000) else {
             panic!("report expected")
         };
         assert_eq!((received, expected), (7, 12));
-        // The window restarts; with nothing new there is nothing to report.
+        // The window restarts; the open frame 4 is not reported yet.
         assert_eq!(m.take_report(1000), None);
+    }
+
+    fn report(m: &mut LossMeter) -> Option<(u32, u32)> {
+        match m.take_report(1000) {
+            Some(ControlMessage::ReceiverReport { received, expected, .. }) => Some((received, expected)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn loss_meter_frame_split_across_windows_is_not_loss() {
+        let mut m = LossMeter::default();
+        for _ in 0..3 {
+            m.on_fragment(1, 3); // frame 1 complete
+        }
+        for _ in 0..40 {
+            m.on_fragment(2, 90); // frame 2: 40 of 90 arrive before the window closes
+        }
+        assert_eq!(report(&mut m), Some((3, 3)));
+        for _ in 0..50 {
+            m.on_fragment(2, 90); // the rest arrives in the next window: frame 2 completes
+        }
+        assert_eq!(report(&mut m), Some((90, 90)));
+        assert_eq!(report(&mut m), None);
+    }
+
+    #[test]
+    fn loss_meter_lost_fragment_shows_when_the_next_frame_starts() {
+        let mut m = LossMeter::default();
+        for _ in 0..9 {
+            m.on_fragment(1, 10); // one fragment of frame 1 never arrives
+        }
+        assert_eq!(report(&mut m), None); // still in progress: nothing closed
+        m.on_fragment(2, 10);
+        assert_eq!(report(&mut m), Some((9, 10)));
+    }
+
+    #[test]
+    fn loss_meter_whole_frame_gap_is_loss() {
+        let mut m = LossMeter::default();
+        for _ in 0..5 {
+            m.on_fragment(1, 5);
+        }
+        for _ in 0..5 {
+            m.on_fragment(4, 5); // frames 2 and 3 never arrived
+        }
+        assert_eq!(report(&mut m), Some((10, 20)));
+    }
+
+    #[test]
+    fn loss_meter_complete_frame_reports_at_once() {
+        let mut m = LossMeter::default();
+        m.on_fragment(7, 2);
+        m.on_fragment(7, 2); // a still screen: one frame in the window
+        assert_eq!(report(&mut m), Some((2, 2)));
     }
 
     #[test]
     fn loss_meter_ignores_reordering_and_duplicates_in_expected() {
         let mut m = LossMeter::default();
         m.on_fragment(10, 2);
-        m.on_fragment(12, 2); // 11 missing
+        m.on_fragment(12, 2); // 11 missing; frame 10 ends with 1 of 2
+        m.on_fragment(12, 2); // frame 12 completes
         m.on_fragment(11, 2); // arrives late: received, but expected was already counted
         m.on_fragment(11, 2); // duplicate
         let Some(ControlMessage::ReceiverReport { received, expected, .. }) = m.take_report(500) else {
             panic!("report expected")
         };
         assert_eq!(expected, 6);
-        assert_eq!(received, 4);
+        assert_eq!(received, 5);
     }
 
     #[test]

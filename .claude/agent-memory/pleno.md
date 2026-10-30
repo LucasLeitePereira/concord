@@ -72,3 +72,5 @@
 - wgpu 24: `request_adapter` → Option, `TexelCopyTextureInfo`; winit 0.30: `with_any_thread(true)` fora da main. Clippy 1.99: `to_*(&mut self)` → wrong_self_convention; `x % n == 0` → `is_multiple_of`; `as_chunks::<N>()` no lugar de `chunks_exact`.
 - REGRA: edição só com Edit/Write, mesmo em arquivo LF (T-033f1 usou python/sed de novo).
 - Fatias acima de US$ 2 (T-033d decoder+janela+core; T-033f1 COM/WASAPI+rede): separe crate de mídia/nativo da integração no core.
+- T-035b custou US$ 5,61 (201 tool calls): diagnóstico + ABR + decoder + bench numa fatia só. Diagnóstico/medição vira fatia própria antes da correção.
+- QSV aceita mudar `bit_rate` ao vivo, mas força IDR (não poupa a rajada). `AV_CODEC_FLAG_LOW_DELAY` desliga frame threading. `cargo test -p sala-video --lib` em paralelo dá 0xc0000005: use `--test-threads=1`.
