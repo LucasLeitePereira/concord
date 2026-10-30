@@ -465,7 +465,7 @@ mod tests {
     }
 
     fn encode_stream(codec: VideoCodec, n: u32) -> Option<Vec<Frame>> {
-        let cfg = EncoderConfig { codec, width: W, height: H, fps: 30, bitrate_kbps: 3000 };
+        let cfg = EncoderConfig { codec, width: W, height: H, fps: 30, bitrate_kbps: 3000, ceiling_kbps: 3000 };
         let mut enc = VideoEncoder::open(&cfg).ok()?;
         let mut frames = Vec::new();
         for i in 0..n {

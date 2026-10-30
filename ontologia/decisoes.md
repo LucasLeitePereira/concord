@@ -245,3 +245,12 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Entrada manual (atalho, bandeja, IPC) segue a sequência D-012 sem mudança. Quando a transmissão termina, a detecção volta a valer.
 - Falso positivo conhecido, não tratado aqui: a detecção considera jogo qualquer janela que cubra o monitor, inclusive o terminal.
 - **Data:** 2026-10-30
+
+## D-034 — T-037b: QSV muda o bitrate ao vivo, sem reabrir (revisa D-030)
+- A reabertura bloqueava a thread de encode: 2,0–2,9 s medidos no notebook, e congelamentos de 1 a 2,6 s (mais de 10 s sob carga) no log do transmissor real. A mudança ao vivo custa um quadro (~12–17 ms), com o mesmo IDR que a reabertura já forçava.
+- `h264_qsv` abre no teto do preset (`EncoderConfig.ceiling_kbps`) e escreve só `bit_rate` e `rc_max_rate` no contexto aberto. Invariante: o reset do QSV recusa (EINVAL no `send_frame`) mudança de `rc_buffer_size` e subida acima do valor de abertura.
+- A política de D-030 continua (mudança > 25%; ≥ 10 s para subir, ≥ 2 s para cortar), porque o IDR segue sendo rajada, e o ABR é avisado do mesmo jeito. NVENC e AMF continuam reabrindo.
+- Se o backend recusar a mudança, `encode_bgra` reabre e reenvia o quadro, e aquele encoder não muda mais ao vivo. Caminho exercitado só por mutação, sem teste permanente.
+- Efeito colateral: o VBV fica no tamanho do teto (125 ms a 12 Mbps, ~500 ms a 3 Mbps). O IDR após o corte para 3 Mbps deu 16–27 KB (~45–70 ms); atraso de fila com cena pesada não foi medido.
+- Medição: `sala/crates/video/examples/bitrate_change_bench.rs`; contador `SenderStats.live_changes`.
+- **Data:** 2026-10-30

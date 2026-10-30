@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use sala_protocol::{DEFAULT_MAX_DATAGRAM, MediaDatagram, VideoCodec, max_video_payload};
 
 use crate::abr::{Abr, ReceiverReport};
-use crate::encoder::{EncodeError, EncoderConfig, TIME_BASE_HZ, VideoEncoder};
+use crate::encoder::{BitrateChange, EncodeError, EncoderConfig, TIME_BASE_HZ, VideoEncoder};
 use crate::fragment::{DEFAULT_FEC_GROUP, fragment_fec};
 use crate::preset::SharePreset;
 
@@ -140,6 +140,8 @@ pub struct SenderStats {
     pub enc_micros: u64,
     /// The encode thread stopped on an encoder error.
     pub failed: bool,
+    /// Bitrate changes written on the open encoder (no reopen).
+    pub live_changes: u64,
 }
 
 #[derive(Default)]
@@ -158,6 +160,7 @@ struct Shared {
     sws_micros: AtomicU64,
     enc_micros: AtomicU64,
     failed: AtomicBool,
+    live_changes: AtomicU64,
 }
 
 pub struct Sender {
@@ -275,6 +278,7 @@ impl Sender {
             sws_micros: s.sws_micros.load(Ordering::Relaxed),
             enc_micros: s.enc_micros.load(Ordering::Relaxed),
             failed: s.failed.load(Ordering::Relaxed),
+            live_changes: s.live_changes.load(Ordering::Relaxed),
         }
     }
 
@@ -343,12 +347,18 @@ fn run(
         }
         let now_ms = started.elapsed().as_millis() as u64;
         match enc.set_bitrate(shared.target_kbps.load(Ordering::Relaxed), now_ms) {
-            Ok(true) => {
+            // Both kinds make a keyframe burst, so the ABR is told either way.
+            Ok(BitrateChange::Reopened) => {
                 shared.reopens.fetch_add(1, Ordering::Relaxed);
                 shared.last_reopen_ms.store(now_ms + 1, Ordering::Relaxed);
                 tracing::info!(kbps = enc.config().bitrate_kbps, "video encoder reopened for a new bitrate");
             }
-            Ok(false) => {}
+            Ok(BitrateChange::Live) => {
+                shared.live_changes.fetch_add(1, Ordering::Relaxed);
+                shared.last_reopen_ms.store(now_ms + 1, Ordering::Relaxed);
+                tracing::info!(kbps = enc.config().bitrate_kbps, "video bitrate changed live");
+            }
+            Ok(BitrateChange::None) => {}
             Err(e) => tracing::warn!("cannot change the video bitrate: {e}"),
         }
         let pts = (started.elapsed().as_micros() * TIME_BASE_HZ as u128 / 1_000_000) as i64;

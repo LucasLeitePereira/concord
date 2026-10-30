@@ -91,7 +91,8 @@ fn main() {
         println!("reopened {reopen} times");
         return;
     }
-    let cfg = EncoderConfig { codec, width: w, height: h, fps, bitrate_kbps: arg("--kbps", 4000) };
+    let kbps = arg("--kbps", 4000);
+    let cfg = EncoderConfig { codec, width: w, height: h, fps, bitrate_kbps: kbps, ceiling_kbps: kbps };
     let mut enc = match VideoEncoder::open(&cfg) {
         Ok(e) => e,
         Err(e) => {

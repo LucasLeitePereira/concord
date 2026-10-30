@@ -62,7 +62,8 @@ fn main() {
     let (w, h, frames): (u32, u32, u32) = (arg("--width", 1920), arg("--height", 1080), arg("--frames", 150));
     let burn: usize = arg("--burn", 0);
     let prio = arg("--prio", "below".to_string());
-    let cfg = EncoderConfig { codec: VideoCodec::H264, width: w, height: h, fps: 30, bitrate_kbps: arg("--kbps", 8000) };
+    let kbps = arg("--kbps", 8000);
+    let cfg = EncoderConfig { codec: VideoCodec::H264, width: w, height: h, fps: 30, bitrate_kbps: kbps, ceiling_kbps: kbps };
     let mut enc = VideoEncoder::open(&cfg).unwrap_or_else(|e| panic!("no encoder: {e}"));
     let scenes: Vec<Vec<u8>> = (0..4)
         .map(|i| {

@@ -65,7 +65,7 @@
 - Nunca chamar `sala_video::capabilities()` (probe bloqueante, 2–4 s) de código async ou testes: use `capabilities_if_ready()`; só o `main` aquece o cache.
 - `windows-capture` 2.x: API difere da memória (`start_free_threaded`, `Settings::new` com 8 args, `as_nopadding_buffer`); leia os fontes no registry após `cargo fetch`. WGC só emite quadro quando a tela muda: reenviar o último quadro.
 - `ffmpeg-next`: swscale exige feature `software-scaling`; `rc_buffer_size` sem setter (escreva via `as_mut_ptr()` antes do `open`). Erro opaco de encoder: rode `third_party/ffmpeg/bin/ffmpeg.exe` com o mesmo encoder para ver o log real (a MX110 desta máquina não tem NVENC).
-- `VideoEncoder` tem `unsafe impl Send` (swscale `*mut`): só mover para a thread, nunca compartilhar. QSV não troca bitrate com contexto aberto (reabrir + keyframe). Dimensão/bitrate em inteiros (float dá 1919.99).
+- `VideoEncoder` tem `unsafe impl Send` (swscale `*mut`): só mover para a thread, nunca compartilhar. Dimensão/bitrate em inteiros (float dá 1919.99).
 - Protocolo bincode: variante nova de `ControlMessage` só no fim do enum (índice). Flag local marcado antes do `change_local` não transmite `Status` (before == after).
 - Rodada completa: `cargo test --workspace --no-fail-fast` (sem isso para no 1º binário). `f2_game_mode` oscila 119–260 s sob carga.
 - FFmpeg/DLLs, decode D3D11VA, áudio do PC (WASAPI) e testes lentos: estão no docserver (`buscar`), não aqui.
@@ -74,4 +74,4 @@
 - Fatias acima de US$ 2 (T-033d decoder+janela+core; T-033f1 COM/WASAPI+rede): separe crate de mídia/nativo da integração no core.
 - T-035b custou US$ 5,61 (201 tool calls): diagnóstico + ABR + decoder + bench numa fatia só. Diagnóstico/medição vira fatia própria antes da correção.
 - Examples do `sala-video` precisam das DLLs no PATH: `PATH=$PWD/target/release:$PATH target/release/examples/x.exe`. Bench com CPU saturada: `--frames 30` + timeout. swscale só usa threads via `sws_scale_frame` (o `sws_scale` ignora).
-- QSV aceita mudar `bit_rate` ao vivo, mas força IDR (não poupa a rajada). `AV_CODEC_FLAG_LOW_DELAY` desliga frame threading. `cargo test -p sala-video --lib` em paralelo dá 0xc0000005: use `--test-threads=1`.
+- QSV ao vivo: só `bit_rate`/`rc_max_rate`, abaixo do valor de abertura e sem tocar `rc_buffer_size`, senão EINVAL no `send_frame` seguinte (D-034). Sempre sai IDR. `--log 1` no bench revela o erro real. Mutação: uma por vez, uma mascara a outra. `AV_CODEC_FLAG_LOW_DELAY` desliga frame threading. `cargo test -p sala-video --lib` em paralelo dá 0xc0000005: use `--test-threads=1`.

@@ -47,7 +47,8 @@ fn main() {
     };
     let (w, h, fps, frames): (u32, u32, u32, u32) = (arg("--width", 1920), arg("--height", 1080), arg("--fps", 60), arg("--frames", 240));
     let software = std::env::args().any(|a| a == "--software");
-    let cfg = EncoderConfig { codec, width: w, height: h, fps, bitrate_kbps: arg("--kbps", 8000) };
+    let kbps = arg("--kbps", 8000);
+    let cfg = EncoderConfig { codec, width: w, height: h, fps, bitrate_kbps: kbps, ceiling_kbps: kbps };
     let mut enc = VideoEncoder::open(&cfg).unwrap_or_else(|e| panic!("no encoder: {e}"));
     println!("encoder: {}", enc.name());
     let mut bgra = vec![0u8; (w * h * 4) as usize];

@@ -118,7 +118,8 @@ impl SharePreset {
     /// Encoder configuration for this preset and a source of `src_w` x `src_h` pixels.
     pub fn encoder_config(self, codec: VideoCodec, src_w: u32, src_h: u32) -> EncoderConfig {
         let (width, height) = self.output_size(src_w, src_h);
-        EncoderConfig { codec, width, height, fps: self.fps(), bitrate_kbps: self.bitrate(codec).initial }
+        let range = self.bitrate(codec);
+        EncoderConfig { codec, width, height, fps: self.fps(), bitrate_kbps: range.initial, ceiling_kbps: range.max }
     }
 }
 

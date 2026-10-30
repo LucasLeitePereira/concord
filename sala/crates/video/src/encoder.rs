@@ -35,6 +35,36 @@ pub fn bitrate_change_needs_reopen(current: u32, target: u32, since_reopen_ms: O
         && since_reopen_ms.is_none_or(|s| s >= spacing)
 }
 
+/// Whether a bitrate change on this backend is written on the open context (QSV, while it has
+/// not shown that it cannot) instead of reopening the encoder. Pure: testable without hardware.
+pub fn change_is_live(backend: &str, live_ok: bool) -> bool {
+    backend == "qsv" && live_ok
+}
+
+/// The rate actually applied for `target`: a live change cannot go above the ceiling the context
+/// was opened with (QSV refuses it with EINVAL), so it is capped there; a reopen takes it as is.
+pub fn effective_target(live: bool, target: u32, ceiling_kbps: u32) -> u32 {
+    if live { target.min(ceiling_kbps) } else { target }
+}
+
+/// Result of [`VideoEncoder::set_bitrate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitrateChange {
+    /// Held back (inside the threshold or the spacing).
+    None,
+    /// Written on the open context; costs about one frame, with a keyframe.
+    Live,
+    /// The encoder was reopened (seconds), with a keyframe.
+    Reopened,
+}
+
+impl BitrateChange {
+    /// Either way the stream got a keyframe.
+    pub fn changed(self) -> bool {
+        self != BitrateChange::None
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EncoderConfig {
     pub codec: VideoCodec,
@@ -42,7 +72,11 @@ pub struct EncoderConfig {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    /// Rate to start at (and the one applied, once changed).
     pub bitrate_kbps: u32,
+    /// Highest rate the stream will ask for. QSV opens the context there so that later changes can
+    /// be live (a value below `bitrate_kbps` counts as `bitrate_kbps`).
+    pub ceiling_kbps: u32,
 }
 
 /// Where the time of one `encode_bgra` call went, in microseconds.
@@ -132,6 +166,18 @@ fn backend_options(backend: &str, keyframe_gop: u32) -> ff::Dictionary<'static> 
     o
 }
 
+/// Writes the rate on an open context without reopening it. Only `bit_rate` and `rc_max_rate`:
+/// QSV resets with the new rate only while `rc_buffer_size` keeps the value it opened with.
+fn write_rate(enc: &mut ff::encoder::video::Encoder, kbps: u32) {
+    let bps = i64::from(kbps) * 1000;
+    // SAFETY: plain field writes on the context we own, between two `send_frame` calls.
+    unsafe {
+        let ctx = enc.as_mut_ptr();
+        (*ctx).bit_rate = bps;
+        (*ctx).rc_max_rate = bps;
+    }
+}
+
 pub struct VideoEncoder {
     enc: ff::encoder::video::Encoder,
     name: String,
@@ -141,8 +187,13 @@ pub struct VideoEncoder {
     dst: ff::frame::Video,
     force_key: bool,
     last_pts: i64,
+    /// Time of the last rate change (live or reopen) on the caller's clock.
     last_reopen_ms: Option<u64>,
     last_timings: EncodeTimings,
+    /// Live changes still allowed (cleared once the backend rejected one).
+    live_ok: bool,
+    /// A live change was written and no frame went through since.
+    live_unverified: bool,
 }
 
 // SAFETY: the FFmpeg codec and swscale contexts are plain heap objects with no thread
@@ -160,7 +211,7 @@ impl VideoEncoder {
         let mut log = Vec::new();
         for backend in BACKENDS {
             let name = format!("{}_{backend}", short(cfg.codec));
-            match Self::open_named(&name, backend, cfg) {
+            match Self::open_named(&name, backend, cfg, true) {
                 Ok(e) => return Ok(e),
                 Err(e) => log.push(format!("{name}: {e}")),
             }
@@ -168,7 +219,13 @@ impl VideoEncoder {
         Err(EncodeError::NoEncoder(log.join("; ")))
     }
 
-    fn open_named(name: &str, backend: &str, cfg: &EncoderConfig) -> Result<Self, String> {
+    /// `live`: whether later rate changes may be live; if so on QSV the context opens at the
+    /// ceiling (rate and VBV) and `cfg.bitrate_kbps` is written right after.
+    fn open_named(name: &str, backend: &str, cfg: &EncoderConfig, live: bool) -> Result<Self, String> {
+        let live = change_is_live(backend, live);
+        let mut cfg = cfg.clone();
+        cfg.ceiling_kbps = cfg.ceiling_kbps.max(cfg.bitrate_kbps);
+        let open_kbps = if live { cfg.ceiling_kbps } else { cfg.bitrate_kbps };
         let codec = ff::encoder::find_by_name(name).ok_or("not built into this FFmpeg")?;
         let mut enc = ff::codec::context::Context::new_with_codec(codec)
             .encoder()
@@ -179,7 +236,7 @@ impl VideoEncoder {
         enc.set_format(ff::format::Pixel::NV12);
         enc.set_time_base((1, TIME_BASE_HZ));
         enc.set_frame_rate(Some((cfg.fps as i32, 1)));
-        let bps = cfg.bitrate_kbps as usize * 1000;
+        let bps = open_kbps as usize * 1000;
         enc.set_bit_rate(bps);
         enc.set_max_bit_rate(bps);
         enc.set_max_b_frames(0);
@@ -198,17 +255,24 @@ impl VideoEncoder {
         }
         let enc = enc.open_with(backend_options(backend, gop)).map_err(|e| e.to_string())?;
         let dst = ff::frame::Video::new(ff::format::Pixel::NV12, cfg.width, cfg.height);
+        let mut enc = enc;
+        let below_ceiling = live && cfg.bitrate_kbps < open_kbps;
+        if below_ceiling {
+            write_rate(&mut enc, cfg.bitrate_kbps);
+        }
         Ok(VideoEncoder {
             enc,
             name: name.to_string(),
             backend: backend.to_string(),
-            cfg: cfg.clone(),
+            cfg,
             scaler: None,
             dst,
             force_key: false,
             last_pts: i64::MIN,
             last_reopen_ms: None,
             last_timings: EncodeTimings::default(),
+            live_ok: live,
+            live_unverified: below_ceiling,
         })
     }
 
@@ -226,27 +290,57 @@ impl VideoEncoder {
         &self.cfg
     }
 
-    /// Moves the bitrate target (`now_ms`: a monotonic clock owned by the caller). Hardware
-    /// encoders do not follow a new rate without a keyframe (QSV accepts it on the open context
-    /// but restarts the GOP; the others need a reopen), and a keyframe is a burst that the
-    /// network answers with loss. So the context is reopened only when the change exceeds
-    /// [`REOPEN_THRESHOLD_PERCENT`] of the applied rate and [`REOPEN_MIN_INTERVAL_MS`] passed
-    /// since the last reopen (a cut waits only [`REOPEN_CUT_INTERVAL_MS`]); a target held back
-    /// stays pending and is judged again on the next call. Returns whether it reopened.
-    pub fn set_bitrate(&mut self, kbps: u32, now_ms: u64) -> Result<bool, EncodeError> {
+    /// Moves the bitrate target (`now_ms`: a monotonic clock owned by the caller). Either way a
+    /// rate change makes a keyframe, a burst that the network answers with loss, so the target
+    /// is applied only when the change exceeds [`REOPEN_THRESHOLD_PERCENT`] of the applied rate
+    /// and [`REOPEN_MIN_INTERVAL_MS`] passed since the last change (a cut waits only
+    /// [`REOPEN_CUT_INTERVAL_MS`]); a target held back stays pending and is judged again on the
+    /// next call.
+    ///
+    /// How it is applied depends on the backend: QSV (opened at `ceiling_kbps`) takes the new
+    /// `bit_rate`/`rc_max_rate` on the open context, about one frame of cost ([`BitrateChange::Live`]),
+    /// and caps the target at the ceiling; if the next frame is rejected, `encode_bgra` falls back
+    /// to reopening for the rest of the session. NVENC and AMF reopen the context, which takes
+    /// seconds on this thread ([`BitrateChange::Reopened`]).
+    pub fn set_bitrate(&mut self, kbps: u32, now_ms: u64) -> Result<BitrateChange, EncodeError> {
+        let live = change_is_live(&self.backend, self.live_ok);
+        let target = effective_target(live, kbps, self.cfg.ceiling_kbps);
         let since = self.last_reopen_ms.map(|t| now_ms.saturating_sub(t));
-        if !bitrate_change_needs_reopen(self.cfg.bitrate_kbps, kbps, since) {
-            return Ok(false);
+        if !bitrate_change_needs_reopen(self.cfg.bitrate_kbps, target, since) {
+            return Ok(BitrateChange::None);
+        }
+        if live {
+            write_rate(&mut self.enc, target);
+            self.cfg.bitrate_kbps = target;
+            self.live_unverified = true;
+            self.force_key = true;
+            self.last_reopen_ms = Some(now_ms);
+            return Ok(BitrateChange::Live);
         }
         let mut cfg = self.cfg.clone();
-        cfg.bitrate_kbps = kbps;
-        let fresh = Self::open_named(&self.name, &self.backend, &cfg).map_err(EncodeError::Ffmpeg)?;
+        cfg.bitrate_kbps = target;
+        let fresh = Self::open_named(&self.name, &self.backend, &cfg, false).map_err(EncodeError::Ffmpeg)?;
         self.enc = fresh.enc;
         self.dst = fresh.dst;
         self.cfg = cfg;
         self.force_key = true;
         self.last_reopen_ms = Some(now_ms);
-        Ok(true)
+        Ok(BitrateChange::Reopened)
+    }
+
+    /// The backend rejected a live change: reopen at the applied rate and never go live again.
+    fn fall_back_to_reopen(&mut self) -> Result<(), String> {
+        let fresh = Self::open_named(&self.name, &self.backend, &self.cfg, false)?;
+        self.enc = fresh.enc;
+        self.live_ok = false;
+        self.live_unverified = false;
+        self.force_key = true;
+        Ok(())
+    }
+
+    /// Whether rate changes are still written live (false after the backend rejected one).
+    pub fn live_changes_ok(&self) -> bool {
+        change_is_live(&self.backend, self.live_ok)
     }
 
     /// The next frame is encoded as an IDR keyframe (answer to a `KeyframeRequest`).
@@ -288,7 +382,19 @@ impl VideoEncoder {
         } else {
             ff::picture::Type::None
         });
-        self.enc.send_frame(&self.dst).map_err(err)?;
+        if let Err(e) = self.enc.send_frame(&self.dst) {
+            if !self.live_unverified {
+                return Err(err(e));
+            }
+            // The backend refused the live rate change (EINVAL): reopen at the applied rate,
+            // give up on live changes for this encoder and send the same frame again.
+            tracing::warn!("video encoder rejected a live bitrate change ({e}); reopening, live changes off");
+            self.fall_back_to_reopen().map_err(EncodeError::Ffmpeg)?;
+            self.dst.set_kind(ff::picture::Type::I);
+            self.force_key = false;
+            self.enc.send_frame(&self.dst).map_err(err)?;
+        }
+        self.live_unverified = false;
         let packets = self.drain();
         self.last_timings = EncodeTimings {
             copy_micros,
@@ -380,14 +486,14 @@ mod tests {
     /// Hardware-dependent: skipped (passes) when this machine has no encoder.
     #[test]
     fn set_bitrate_reopens_forces_a_keyframe_and_respects_the_spacing() {
-        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 640, height: 360, fps: 30, bitrate_kbps: 4000 };
+        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 640, height: 360, fps: 30, bitrate_kbps: 4000, ceiling_kbps: 4000 };
         let Ok(mut enc) = VideoEncoder::open(&cfg) else { return };
         let frame = vec![90u8; 640 * 360 * 4];
         enc.encode_bgra(&frame, 640, 360, 0).unwrap();
-        assert!(!enc.set_bitrate(4300, 0).unwrap());
-        assert!(!enc.set_bitrate(3300, 0).unwrap()); // -17.5%: inside the threshold
+        assert!(!enc.set_bitrate(4300, 0).unwrap().changed());
+        assert!(!enc.set_bitrate(3300, 0).unwrap().changed()); // -17.5%: inside the threshold
         assert_eq!(enc.config().bitrate_kbps, 4000);
-        assert!(enc.set_bitrate(2000, 0).unwrap());
+        assert!(enc.set_bitrate(2000, 0).unwrap().changed());
         assert_eq!(enc.config().bitrate_kbps, 2000);
         let mut first_key = None;
         for i in 1..10i64 {
@@ -397,13 +503,61 @@ mod tests {
         }
         assert_eq!(first_key, Some(true), "no keyframe after reopening");
         // Right after a reopen, another large raise waits for the spacing.
-        assert!(!enc.set_bitrate(4000, 1_000).unwrap());
-        assert!(enc.set_bitrate(4000, REOPEN_MIN_INTERVAL_MS).unwrap());
+        assert!(!enc.set_bitrate(4000, 1_000).unwrap().changed());
+        assert!(enc.set_bitrate(4000, REOPEN_MIN_INTERVAL_MS).unwrap().changed());
+    }
+
+    #[test]
+    fn live_changes_are_only_for_qsv_and_never_above_the_ceiling() {
+        assert!(change_is_live("qsv", true));
+        assert!(!change_is_live("qsv", false), "after a rejected change it must reopen");
+        assert!(!change_is_live("nvenc", true));
+        assert!(!change_is_live("amf", true));
+        assert_eq!(effective_target(true, 12_000, 8_000), 8_000);
+        assert_eq!(effective_target(true, 3_000, 8_000), 3_000);
+        assert_eq!(effective_target(false, 12_000, 8_000), 12_000);
+        assert!(!BitrateChange::None.changed());
+        assert!(BitrateChange::Live.changed() && BitrateChange::Reopened.changed());
+    }
+
+    /// Hardware-dependent: skipped (passes) when this machine has no QSV. The context opens at the
+    /// ceiling, the first target is applied live, a raise goes back up to (and is capped at) the
+    /// ceiling, and each change makes a keyframe without a reopen.
+    #[test]
+    fn qsv_changes_the_bitrate_live_within_the_ceiling() {
+        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 640, height: 360, fps: 30, bitrate_kbps: 2000, ceiling_kbps: 6000 };
+        let Ok(mut enc) = VideoEncoder::open(&cfg) else { return };
+        if enc.name() != "h264_qsv" {
+            return;
+        }
+        let mut frame = vec![0u8; 640 * 360 * 4];
+        let mut pts = 0i64;
+        let mut run = |enc: &mut VideoEncoder, n: usize| -> Vec<bool> {
+            let mut keys = Vec::new();
+            for _ in 0..n {
+                for (i, px) in frame.chunks_mut(4).enumerate() {
+                    px.copy_from_slice(&[(i as i64 + pts * 5) as u8, (i / 640) as u8, 90, 255]);
+                }
+                pts += 3000;
+                keys.extend(enc.encode_bgra(&frame, 640, 360, pts).unwrap().iter().map(|p| p.keyframe));
+            }
+            keys
+        };
+        assert_eq!(enc.config().bitrate_kbps, 2000);
+        run(&mut enc, 5);
+        // 2000 -> 6000 (+200%), and 9000 is capped at the ceiling.
+        assert_eq!(enc.set_bitrate(9000, 0).unwrap(), BitrateChange::Live);
+        assert_eq!(enc.config().bitrate_kbps, 6000);
+        assert_eq!(run(&mut enc, 3).first(), Some(&true), "no keyframe after the live change");
+        // A cut after the short spacing is live as well.
+        assert_eq!(enc.set_bitrate(2000, REOPEN_CUT_INTERVAL_MS).unwrap(), BitrateChange::Live);
+        assert_eq!(run(&mut enc, 3).first(), Some(&true));
+        assert!(enc.live_changes_ok(), "the live change was rejected and the fallback ran");
     }
 
     #[test]
     fn rejects_odd_sizes() {
-        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 1281, height: 720, fps: 30, bitrate_kbps: 1000 };
+        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 1281, height: 720, fps: 30, bitrate_kbps: 1000, ceiling_kbps: 1000 };
         assert!(matches!(VideoEncoder::open(&cfg), Err(EncodeError::Invalid(_))));
     }
 
@@ -411,7 +565,7 @@ mod tests {
     /// width is not a multiple of 16 (1366x768 monitors) is converted through a padded copy.
     #[test]
     fn encodes_a_source_that_needs_the_padded_copy() {
-        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 640, height: 360, fps: 30, bitrate_kbps: 2000 };
+        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 640, height: 360, fps: 30, bitrate_kbps: 2000, ceiling_kbps: 2000 };
         let Ok(mut enc) = VideoEncoder::open(&cfg) else { return };
         let frame = vec![120u8; 650 * 360 * 4];
         enc.encode_bgra(&frame, 650, 360, 0).unwrap();
@@ -424,7 +578,7 @@ mod tests {
     /// Hardware-dependent: skipped (passes) when this machine has no encoder.
     #[test]
     fn encodes_and_forces_keyframes() {
-        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 640, height: 360, fps: 30, bitrate_kbps: 2000 };
+        let cfg = EncoderConfig { codec: VideoCodec::H264, width: 640, height: 360, fps: 30, bitrate_kbps: 2000, ceiling_kbps: 2000 };
         let Ok(mut enc) = VideoEncoder::open(&cfg) else { return };
         let mut frame = vec![0u8; 640 * 360 * 4];
         let (mut keys, mut total) = (0, 0);
