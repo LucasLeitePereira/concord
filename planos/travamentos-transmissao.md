@@ -1,6 +1,22 @@
 # Estudo: travamentos da transmissão com mouse e jogos
 
-**Status (2026-10-30):** anotado para depois, nada executado. Começar pela T-037c, em "Próximos passos". O usuário não tem cabo de rede, então o Wi-Fi do outro PC só pode ser isolado pelo LatencyMon.
+**Status (2026-10-30):** anotado para depois, nada executado. Começar pela T-037c, em "Próximos passos". O usuário não tem cabo de rede, então o Wi-Fi do outro PC só pode ser isolado pelo LatencyMon. O teste com jogo pela internet está em "Resultado com jogo real".
+
+## Resultado com jogo real (2026-10-30)
+
+God of War 2 transmitido pelo amigo Lukeson, pela internet (Tailscale direto, 45 ms), visto neste notebook. Só o log de quem assiste; o log do transmissor não será pedido.
+
+| Fase | Tempo | fps (média) | Incompletos/min | Descartados/min | Pacotes/s | Janelas sem perda |
+|---|---|---|---|---|---|---|
+| 1080p60, jogo sem limite (~200 fps; 80–110 transmitindo) | 5,7 min | 20,9 | 23,0 | 127,7 | 420 | 28% |
+| 1080p60, jogo limitado a 60 | 22,2 min | 38,7 | 28,0 | 265,8 | 1.046 | 12% |
+| 720p30, jogo limitado a 60 | 10,7 min | 27,3 de 30 | 5,1 | 5,8 | 487 | 84% |
+
+- **Limitar o jogo quase dobrou o fps,** mas não reduziu a perda, e os descartes aumentaram junto com o volume.
+- **720p a 30 fps ficou bom para jogo:** no mini chefe, 28–29 fps com mínimo de 25 e perda abaixo de 1%. Excluída a falha abaixo, é a configuração recomendada hoje.
+- **Volume não explica tudo:** a primeira fase enviava 420 pacotes/s e perdia muito mais que a de 720p com 487. Keyframes maiores em 1080p e o jogo sem limite disputando a máquina são candidatos.
+- **Falha sem causa conhecida:** às 19:04:10–19:04:25 a perda foi de 91–100%, por cerca de 10 s. Às 18:28 outra queda terminou em desconexão. Pode ser internet, PC ou a própria transmissão. Teste sugerido: jogar o mesmo trecho em chamada, sem transmitir.
+- **Achado no código:** a FEC protege só keyframes (`SenderConfig`, `sala/crates/video/src/sender.rs:100`). Um pacote perdido em quadro comum faz os quadros seguintes serem descartados até o próximo keyframe. É o que transforma 2–3% de perda em 1 de cada 4 quadros descartados em 1080p.
 
 ## Contexto
 
@@ -75,6 +91,12 @@ Não depende de você nem de cabo, porque ataca o problema 2. Delegar ao `pleno`
 **Critério de pronto:** testes passando, commit local, sem push nem release. Depois, em nova queda no eunice: RTT abaixo de ~1 s e imagem de volta em menos de 1 s.
 
 **Limite:** isso não deixa o transmissor mais rápido. O travamento longo vira uma queda curta de qualidade.
+
+### Fatia nova: perda pela internet
+
+Estudar proteção para quadros comuns. Opções: FEC também em deltas, keyframe intermediário (intra refresh) ou referência a um quadro já confirmado. Avaliar custo de banda e latência antes de escolher, e registrar uma decisão D-0NN. Prioridade alta para jogar com amigos pela internet.
+
+Também vale avaliar um aviso ou preset sugerindo 720p a 30 fps e limite de fps no jogo.
 
 ### Depois, com você: testes no eunice
 
