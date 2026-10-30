@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "docserver": {
+      "command": "D:/TI/RAG/rag-local/venv/Scripts/docserver.exe",
+      "args": [
+        "serve"
+      ]
+    }
+  }
+}

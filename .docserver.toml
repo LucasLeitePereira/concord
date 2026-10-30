@@ -1,0 +1,32 @@
+# Configuração do docserver. Caminhos relativos valem a partir da pasta deste arquivo.
+# Papel no Concord: busca em texto livre sobre a documentação e o conhecimento revisado.
+# A ontologia (ontologia/*.yaml) continua sendo a fonte estruturada de conceitos,
+# invariantes e mapa conceito→código; os documentos citam os conceitos pelo `id`.
+
+[docs]
+# A raiz inteira, com o que não é documentação ignorado abaixo (pastas ocultas já ficam de fora).
+fonte = "."
+# Onde ficam os textos extraídos (cache regenerável; fora do git).
+normalizado = ".docserver/normalizado"
+# Banco do índice (regenerável).
+indice = ".docserver/indice.db"
+# false = ingestão e busca só léxicas (sem modelo de embeddings, bem mais leve).
+embeddings = false
+# Relativos a `fonte`. Código não é indexado (use grep e ontologia/mapa-codigo.yaml).
+ignorar = [
+  "docs/_pendentes", "docs/_rejeitados", "docs/_revisoes.jsonl",
+  "sala", "metricas", "entrada", "ab", "scripts", "target", "node_modules",
+  "ideia/sala-handoff/design/telas",
+]
+
+[revisor]
+# Comando que revisa cada documento pendente; {modelo} vira o valor de `modelo`.
+comando = ["claude", "-p", "--model", "{modelo}", "--output-format", "json", "--allowedTools", "Read,Grep,Glob", "--strict-mcp-config"]
+# Use um modelo diferente do que escreve os documentos: LLMs favorecem o próprio texto.
+modelo = "claude-sonnet-5-5"
+# Relativos a `fonte`: onde o agente escreve, onde o aprovado vai e onde o rejeitado fica.
+pendentes = "docs/_pendentes"
+aprovados = "docs/conhecimento"
+rejeitados = "docs/_rejeitados"
+registro = "docs/_revisoes.jsonl"
+max_tentativas = 3

@@ -68,3 +68,7 @@
 - `VideoEncoder` tem `unsafe impl Send` (swscale `*mut`): só mover para a thread, nunca compartilhar. QSV não troca bitrate com contexto aberto (reabrir + keyframe). Dimensão/bitrate em inteiros (float dá 1919.99).
 - Protocolo bincode: variante nova de `ControlMessage` só no fim do enum (índice). Flag local marcado antes do `change_local` não transmite `Status` (before == after).
 - Rodada completa: `cargo test --workspace --no-fail-fast` (sem isso para no 1º binário). `f2_game_mode` oscila 119–260 s sob carga.
+- FFmpeg/DLLs, decode D3D11VA, áudio do PC (WASAPI) e testes lentos: estão no docserver (`buscar`), não aqui.
+- wgpu 24: `request_adapter` → Option, `TexelCopyTextureInfo`; winit 0.30: `with_any_thread(true)` fora da main. Clippy 1.99: `to_*(&mut self)` → wrong_self_convention; `x % n == 0` → `is_multiple_of`; `as_chunks::<N>()` no lugar de `chunks_exact`.
+- REGRA: edição só com Edit/Write, mesmo em arquivo LF (T-033f1 usou python/sed de novo).
+- Fatias acima de US$ 2 (T-033d decoder+janela+core; T-033f1 COM/WASAPI+rede): separe crate de mídia/nativo da integração no core.

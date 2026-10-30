@@ -19,11 +19,23 @@ Escolha sempre o agente mais barato que resolve. Prompts de delegação: objetiv
 ## Ciclo pós-tarefa (obrigatório)
 1. Revisar a entrega (rodada completa de clippy + testes uma vez, de preferência pelo `junior`).
 2. `python metricas/coletar.py registrar <agentId> --tarefa T-NNN --fase F --descricao ... --tentativas --bugs --conceitos --ajudou --divergencias --licoes`.
-3. Memória: filtrar "lições candidatas" → `.claude/agent-memory/<agente>.md` (só armadilhas e atalhos duráveis e não-óbvios, nada de estado do projeto; consolidar; remover obsoleto; ≤ ~60 linhas).
+3. Lições candidatas, separadas por destino:
+   - Conhecimento do projeto que custou investigação (por quê, armadilha de biblioteca/hardware, como operar) → skill `documentar` → `docs/_pendentes/`, citando os `id` de conceito da ontologia no corpo. No fim da sessão: `docserver revisar` (outro modelo aprova para `docs/conhecimento/`) e `docserver ingest`.
+   - Hábito do próprio agente (ferramenta, shell, custo) → `.claude/agent-memory/<agente>.md` (≤ ~60 linhas; consolidar; remover o que já virou documento).
+   - Conceito, relação, invariante ou decisão → `ontologia/` (passo 4).
 3b. Atualizar o `AGENTS.md` §6 (estado e próximo passo) antes de encerrar a sessão.
 4. Ontologia: aplicar mudanças propostas aceitas em `ontologia/` (`mapa-codigo.yaml` sempre que arquivos forem criados/movidos).
 5. Fim de fase: `coletar.py resumo` + `coletar.py orquestrador <sessão>` → atualizar `metricas/ANALISE.md`.
 
 ## Onde fica
+- docserver (RAG): `D:/TI/RAG/rag-local/venv/Scripts/docserver.exe` (não está no PATH), config em `.docserver.toml`, índice regenerável em `.docserver/`.
 - Agentes: `.claude/agents/` · Memória deles: `.claude/agent-memory/`
 - Ontologia: `ontologia/` (ver README) · Métricas: `metricas/`
+
+<!-- docserver:inicio -->
+## Conhecimento do projeto (docserver)
+- Antes de investigar por que algo é como é, use a tool `buscar` do MCP docserver.
+- O código não está indexado: para achar código, use grep e glob.
+- Aprendeu algo que custou investigação e não está documentado? Use a skill `documentar`.
+- Não edite `docs/conhecimento/` direto: escreva em `docs/_pendentes/`; o revisor aprova.
+<!-- docserver:fim -->

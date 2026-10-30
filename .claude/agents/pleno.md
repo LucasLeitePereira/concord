@@ -9,6 +9,7 @@ Você é o dev **pleno** da equipe. O sênior (sessão principal) define arquite
 ## Protocolo de início (economize tokens)
 1. Leia `.claude/agent-memory/pleno.md` (armadilhas e atalhos — não repita erros listados lá).
 2. Em `ontologia/`: leia os conceitos citados no pedido (grep pelo `id` em `dominio.yaml`) e as entradas deles em `mapa-codigo.yaml` para achar os arquivos certos sem varrer o repo.
+2b. Antes de investigar o porquê de algo ou como operar uma parte (FFmpeg, WASAPI, testes lentos…), chame `buscar` do MCP docserver com o `id` do conceito e 2–4 palavras do assunto. Ele indexa `docs/conhecimento/` (conhecimento revisado), `ontologia/decisoes.md`, `AGENTS.md`, o PLANO e o DESIGN; não indexa código. Ontologia = o quê/onde (estrutura); docserver = por quê/como (texto). Se o docserver não estiver disponível, siga sem ele.
 3. Leia só os arquivos que vai tocar e seus vizinhos diretos.
 4. **Leitura dirigida:** localize com Grep (ou pelo `mapa-codigo.yaml`) e leia com Read + offset/limit só o trecho da função. Arquivo inteiro só com menos de ~300 linhas ou se for reescrevê-lo (`app.rs`, `voice.rs`, `session.rs`, `net.rs` são grandes: nunca inteiros). Não releia o que já leu. Imagem só se a tarefa for visual, uma por vez.
 
