@@ -254,3 +254,10 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Efeito colateral: o VBV fica no tamanho do teto (125 ms a 12 Mbps, ~500 ms a 3 Mbps). O IDR após o corte para 3 Mbps deu 16–27 KB (~45–70 ms); atraso de fila com cena pesada não foi medido.
 - Medição: `sala/crates/video/examples/bitrate_change_bench.rs`; contador `SenderStats.live_changes`.
 - **Data:** 2026-10-30
+
+## D-035 — T-038: FEC XOR também nos quadros comuns (revisa T-033c1)
+- Teste com jogo pela internet (1080p60): ~28 quadros incompletos por minuto viraram ~266 descartados, porque `inv-drop-deltas-until-keyframe` joga fora os deltas até o próximo keyframe, e cada perda ainda pede um keyframe ~9× maior que um delta.
+- `sender` aplica `SenderConfig.fec_group` a todo quadro, não só a keyframes: 1 paridade a cada 8 fragmentos de dados. O `Reassembler` já é genérico, e `fec_group` já vem em cada datagrama: sem mudança de protocolo, e só quem transmite precisa atualizar.
+- Custo: ~12,5% a mais de dados, sem compensar o alvo do ABR nesta fatia. Quadro de 1 fragmento vira 2 pacotes, efeito desprezível em tela parada.
+- Limite: o XOR recupera 1 perda por grupo, e a perda real parece vir em rajadas. O ganho real se mede comparando `fec_recovered` e `incomplete` em `share stats rx`; se `incomplete` não cair à metade, avaliar intra refresh do QSV ou intercalar os grupos.
+- **Data:** 2026-10-30

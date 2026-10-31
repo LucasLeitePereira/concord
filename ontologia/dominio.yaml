@@ -209,7 +209,7 @@ conceitos:
 
   - id: video-fragmentation
     nome: VideoFragmentation
-    definicao: "Corte de um quadro codificado em VideoFragments e remontagem no receptor (fora de ordem, duplicatas ignoradas, timeout 250 ms). Keyframes levam FEC XOR: 1 paridade a cada fec_group (8) fragmentos de dados, recupera 1 perda por grupo; paridade vem depois dos dados (frag_idx >= n_data)."
+    definicao: "Corte de um quadro codificado em VideoFragments e remontagem no receptor (fora de ordem, duplicatas ignoradas, timeout 250 ms). Todo quadro leva FEC XOR (D-035): 1 paridade a cada fec_group (8) fragmentos de dados, recupera 1 perda por grupo; paridade vem depois dos dados (frag_idx >= n_data)."
     secao: "§5.5"
   - id: screen-capture
     nome: ScreenCapture

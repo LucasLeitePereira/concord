@@ -621,6 +621,43 @@ mod tests {
         assert!(survive[1] >= 150, "fec only saved {}", survive[1]);
     }
 
+    /// Delta frames delivered across 100 streams of one clean keyframe followed by 60 deltas
+    /// of ~30 KB (27 fragments), with 2% seeded fragment loss on the deltas only. No keyframe
+    /// is resent, so a stream stalls at its first unrecovered loss
+    /// (`inv-drop-deltas-until-keyframe`): the count measures how far FEC keeps it alive.
+    fn deltas_delivered_under_loss(fec_group: u8) -> u32 {
+        let (key, delta) = (data(60_000), data(30_000));
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        let mut delivered = 0;
+        for _ in 0..100 {
+            let mut r = Reassembler::new();
+            for dg in fragment_fec(1, true, 0, &key, 1100, fec_group) {
+                r.push(0, &dg); // the keyframe is never lost
+            }
+            for id in 2..62u32 {
+                for dg in fragment_fec(id, false, 0, &delta, 1100, fec_group) {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 7;
+                    rng ^= rng << 17;
+                    if rng % 100 < 2 {
+                        continue;
+                    }
+                    delivered += u32::from(r.push(0, &dg).frame.is_some_and(|f| !f.keyframe));
+                }
+            }
+        }
+        delivered
+    }
+
+    #[test]
+    fn fec_keeps_delta_stream_alive_under_two_percent_loss() {
+        let (without, with) = (deltas_delivered_under_loss(0), deltas_delivered_under_loss(8));
+        eprintln!("deltas delivered: no fec {without} / fec {with}");
+        // Without FEC a delta survives ~0.98^27 = 58%, so a stream dies after ~1.4 deltas;
+        // with one parity per 8 fragments it survives far longer.
+        assert!(with > without * 3, "no fec {without} / fec {with}");
+    }
+
     #[test]
     fn late_joiner_waits_for_keyframe() {
         let mut r = Reassembler::new();

@@ -1,6 +1,6 @@
 # Estudo: travamentos da transmissão com mouse e jogos
 
-**Status (2026-10-30):** anotado para depois, nada executado. Começar pela T-037c, em "Próximos passos". O usuário não tem cabo de rede, então o Wi-Fi do outro PC só pode ser isolado pelo LatencyMon. O teste com jogo pela internet está em "Resultado com jogo real".
+**Status (2026-10-31):** este é o estudo, com as fontes. A execução e a ordem das fatias estão em `planos/jogos-pela-internet.md`, e o estado, no `AGENTS.md` §6. O usuário não tem cabo de rede, então o Wi-Fi do outro PC só pode ser isolado pelo LatencyMon. O teste com jogo pela internet está em "Resultado com jogo real".
 
 ## Resultado com jogo real (2026-10-30)
 
@@ -106,7 +106,7 @@ Não depende de você nem de cabo, porque ataca o problema 2. Delegar ao `pleno`
 
 ### Fatia nova: perda pela internet
 
-Estudar proteção para quadros comuns. Opções: FEC também em deltas, keyframe intermediário (intra refresh) ou referência a um quadro já confirmado. Avaliar custo de banda e latência antes de escolher, e registrar uma decisão D-0NN. Prioridade alta para jogar com amigos pela internet.
+FEC nos quadros comuns feita na T-038 (D-035). Se `incomplete` não cair à metade no teste real, avaliar keyframe intermediário (intra refresh) ou intercalar os grupos de FEC.
 
 Também vale avaliar um aviso ou preset sugerindo 720p a 30 fps e limite de fps no jogo.
 

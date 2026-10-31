@@ -97,7 +97,7 @@ pub struct SenderConfig {
     /// Largest encoded datagram (QUIC datagram budget). Shared and read before every frame:
     /// the owner of the connection lowers it when QUIC reduces its limit mid-stream.
     pub max_datagram: Arc<AtomicUsize>,
-    /// XOR FEC group size for keyframes (0 = off).
+    /// XOR FEC group size, applied to every frame, keyframe or delta (0 = off).
     pub fec_group: u8,
     /// Repeat the last frame after this long without a new one.
     pub idle_resend: Duration,
@@ -380,8 +380,7 @@ fn run(
         has_fresh = false;
         for p in packets {
             frame_id = frame_id.wrapping_add(1);
-            let fec = if p.keyframe { cfg.fec_group } else { 0 };
-            let dgs = fragment_fec(frame_id, p.keyframe, p.pts as u32, &p.data, payload_for(&cfg.max_datagram), fec);
+            let dgs = fragment_fec(frame_id, p.keyframe, p.pts as u32, &p.data, payload_for(&cfg.max_datagram), cfg.fec_group);
             if dgs.is_empty() {
                 tracing::warn!(bytes = p.data.len(), "encoded frame cannot be fragmented, dropped");
                 continue;
@@ -530,6 +529,7 @@ mod tests {
 
     struct Run {
         frames: Vec<(bool, u32)>, // (keyframe, frame_id) as reassembled
+        delta_fec: Vec<u8>,       // fec_group of every delta datagram on the wire
     }
 
     /// Drives a real `Sender` with a synthetic source; returns what the receiver got.
@@ -540,10 +540,12 @@ mod tests {
         ask_key_at: Option<Duration>,
         capacity: usize,
         drain: bool,
+        fec_group: u8,
     ) -> Option<(Run, SenderStats)> {
         let slot = FrameSlot::new();
         let mut cfg = SenderConfig::new(SharePreset::P720p30, VideoCodec::H264, 640, 360);
         cfg.idle_resend = idle;
+        cfg.fec_group = fec_group;
         cfg.channel_frames = capacity;
         let (sender, rx) = Sender::start(cfg, slot.clone()).ok()?;
         let src = {
@@ -560,7 +562,7 @@ mod tests {
         };
         let t0 = Instant::now();
         let mut reasm = Reassembler::new();
-        let mut run = Run { frames: Vec::new() };
+        let mut run = Run { frames: Vec::new(), delta_fec: Vec::new() };
         let mut asked = false;
         while t0.elapsed() < total {
             if let Some(at) = ask_key_at
@@ -576,6 +578,9 @@ mod tests {
             }
             if let Ok(dgs) = rx.recv_timeout(Duration::from_millis(20)) {
                 for d in &dgs {
+                    if let MediaDatagram::Video { keyframe: false, fec_group, .. } = d {
+                        run.delta_fec.push(*fec_group);
+                    }
                     if let Some(f) = reasm.push(t0.elapsed().as_millis() as u64, d).frame {
                         run.frames.push((f.keyframe, f.frame_id));
                     }
@@ -592,7 +597,7 @@ mod tests {
     #[test]
     fn streams_frames_and_answers_keyframe_requests() {
         let Some((run, stats)) =
-            drive(Duration::from_secs(1), Duration::from_millis(1500), Duration::from_millis(1800), Some(Duration::from_millis(800)), 16, true)
+            drive(Duration::from_secs(1), Duration::from_millis(1500), Duration::from_millis(1800), Some(Duration::from_millis(800)), 16, true, DEFAULT_FEC_GROUP)
         else {
             return;
         };
@@ -611,7 +616,7 @@ mod tests {
     #[test]
     fn static_screen_is_resent() {
         let Some((run, _)) =
-            drive(Duration::from_millis(100), Duration::from_millis(60), Duration::from_millis(1200), None, 16, true)
+            drive(Duration::from_millis(100), Duration::from_millis(60), Duration::from_millis(1200), None, 16, true, DEFAULT_FEC_GROUP)
         else {
             return;
         };
@@ -626,12 +631,27 @@ mod tests {
     fn full_channel_drops_deltas_and_stop_returns() {
         let t0 = Instant::now();
         let Some((_, stats)) =
-            drive(Duration::from_secs(1), Duration::from_millis(1200), Duration::from_millis(1300), None, 2, false)
+            drive(Duration::from_secs(1), Duration::from_millis(1200), Duration::from_millis(1300), None, 2, false, DEFAULT_FEC_GROUP)
         else {
             return;
         };
         assert!(stats.dropped_deltas > 0, "nothing dropped: {stats:?}");
         assert!(stats.keyframes >= 1);
         assert!(t0.elapsed() < Duration::from_secs(10));
+    }
+
+    /// Hardware-dependent. Delta frames leave the sender with the configured FEC group
+    /// (D-035); with `fec_group` 0 they carry none.
+    #[test]
+    fn deltas_carry_the_configured_fec_group() {
+        for (group, expected) in [(DEFAULT_FEC_GROUP, DEFAULT_FEC_GROUP), (0, 0)] {
+            let Some((run, _)) =
+                drive(Duration::from_secs(1), Duration::from_millis(600), Duration::from_millis(900), None, 16, true, group)
+            else {
+                return;
+            };
+            assert!(!run.delta_fec.is_empty(), "no delta datagrams seen");
+            assert!(run.delta_fec.iter().all(|g| *g == expected), "group {group}: {:?}", run.delta_fec);
+        }
     }
 }

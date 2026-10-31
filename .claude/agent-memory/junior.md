@@ -11,6 +11,7 @@
 
 ## Armadilhas (não repetir)
 - Ao resumir saídas de teste, mostre a lista COMPLETA de testes e o placar final (um `tail` curto já cortou testes).
+- `f2_game_mode` compila `fake_ui` antes de rodar: 3–4 min sem saída não é travamento, não mate o processo. Se falhar por timeout com outro build rodando, rerode isolado.
 
 ## Atalhos / padrões que funcionaram
 - Formato "comando → resultado" com timeout longo é o que o sênior quer.
