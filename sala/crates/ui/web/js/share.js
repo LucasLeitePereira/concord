@@ -134,6 +134,7 @@ export function initShare({ state, send, h, icon, linked }) {
       h('div', { class: 'field fps' },
         h('span', { class: 'share-label', id: 'share-fps' }, 'Quadros por segundo'),
         segment('share-fps', fpsOpts, view.fps, (v) => { d.fps = v; renderShare(); }, (v) => String(v)))),
+    h('span', { class: 'hint-text note' }, icon('i-info', 13), 'Para jogos, use 720p a 30 fps e limite o fps no próprio jogo.'),
     h('label', { class: 'check-row share-audio', for: 'share-audio' },
       h('span', {}, h('strong', {}, 'Transmitir o áudio do PC'),
         h('small', {}, 'Quem assiste ouve o som do seu computador, sem a voz da chamada.')),

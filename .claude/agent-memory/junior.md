@@ -19,4 +19,4 @@
 
 ## Convenções do projeto
 - Workspace Cargo em `sala/`. Testes: `cargo test --workspace`; lint: `cargo clippy --workspace --all-targets -- -D warnings`.
-- Rodada completa leva >3 min (f2_game_mode ~106 s) e o Bash a joga para background: use log com nome novo a cada rodada e confira `ps -W | grep cargo.exe` antes de relançar; espere a notificação em vez de reexecutar.
+- Rodada completa leva >3 min (f2_game_mode ~106 s) e o Bash a joga para background: use log com nome novo a cada rodada e confira `ps -W | grep cargo.exe` antes de relançar; espere a notificação em vez de reexecutar. Não espere com `tail --pid=<pid>`: no Git Bash ele retorna na hora.

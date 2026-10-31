@@ -108,7 +108,7 @@ Não depende de você nem de cabo, porque ataca o problema 2. Delegar ao `pleno`
 
 FEC nos quadros comuns feita na T-038 (D-035). Se `incomplete` não cair à metade no teste real, avaliar keyframe intermediário (intra refresh) ou intercalar os grupos de FEC.
 
-Também vale avaliar um aviso ou preset sugerindo 720p a 30 fps e limite de fps no jogo.
+O aviso sugerindo 720p a 30 fps e limite de fps no jogo entrou na T-039, na janela de transmissão. Não há preset para jogos, e o padrão segue em 1080p60.
 
 ### Depois, com você: testes no eunice
 
