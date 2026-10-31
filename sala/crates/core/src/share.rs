@@ -376,6 +376,44 @@ pub struct ShareShared {
     max_frame_bytes: AtomicU64,
     /// Last `send_datagram` error text (what kind of refusal, e.g. `datagram too large`).
     last_send_error: Mutex<Option<String>>,
+    /// How late a thread that asks for a 1 ms sleep wakes up (the machine's scheduling delay).
+    sched_lag: SchedLag,
+}
+
+/// Window of scheduling delays: how much longer than asked a 1 ms sleep took. About 1 ms is
+/// normal; tens of ms mean the CPU or a driver kept the machine from running threads.
+#[derive(Default)]
+struct SchedLag {
+    sum_micros: AtomicU64,
+    count: AtomicU64,
+    max_micros: AtomicU64,
+}
+
+impl SchedLag {
+    fn record(&self, lag_micros: u64) {
+        self.sum_micros.fetch_add(lag_micros, Ordering::Relaxed);
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.max_micros.fetch_max(lag_micros, Ordering::Relaxed);
+    }
+
+    /// `(average, maximum)` in microseconds since the previous call; the window starts over.
+    fn take(&self) -> (u64, u64) {
+        let sum = self.sum_micros.swap(0, Ordering::Relaxed);
+        let count = self.count.swap(0, Ordering::Relaxed);
+        let max = self.max_micros.swap(0, Ordering::Relaxed);
+        (sum / count.max(1), max)
+    }
+}
+
+/// Measures the scheduling delay until `shared.stop`.
+fn sched_lag_probe(shared: &ShareShared) {
+    const ASKED: Duration = Duration::from_millis(1);
+    while !shared.stop.load(Ordering::Relaxed) {
+        let t = Instant::now();
+        std::thread::sleep(ASKED);
+        let lag = t.elapsed().saturating_sub(ASKED);
+        shared.sched_lag.record(u64::try_from(lag.as_micros()).unwrap_or(u64::MAX));
+    }
 }
 
 impl ShareShared {
@@ -398,6 +436,7 @@ pub struct ShareOut {
     shared: Arc<ShareShared>,
     thread: Option<JoinHandle<()>>,
     audio_thread: Option<JoinHandle<()>>,
+    lag_thread: Option<JoinHandle<()>>,
     start_msg: ControlMessage,
 }
 
@@ -421,12 +460,20 @@ impl ShareOut {
             generated: AtomicU64::new(0),
             max_frame_bytes: AtomicU64::new(0),
             last_send_error: Mutex::new(None),
+            sched_lag: SchedLag::default(),
         });
-        let out = ShareOut { shared: shared.clone(), thread: None, audio_thread: None, start_msg };
+        let out = ShareOut {
+            shared: shared.clone(),
+            thread: None,
+            audio_thread: None,
+            lag_thread: None,
+            start_msg,
+        };
         for p in peers {
             out.add_peer(net, p);
         }
         let net = net.clone();
+        let lag_shared = shared.clone();
         let thread = std::thread::Builder::new()
             .name("share-send".into())
             .spawn(move || drain(&shared, &datagrams, &net, &budget))
@@ -435,7 +482,12 @@ impl ShareOut {
         if thread.is_none() {
             out.shared.running.store(false, Ordering::Relaxed);
         }
-        ShareOut { thread, ..out }
+        let lag_thread = std::thread::Builder::new()
+            .name("share-sched-lag".into())
+            .spawn(move || sched_lag_probe(&lag_shared))
+            .map_err(|e| tracing::warn!("cannot start the scheduling lag probe: {e}"))
+            .ok();
+        ShareOut { thread, lag_thread, ..out }
     }
 
     pub fn shared(&self) -> Arc<ShareShared> {
@@ -504,6 +556,9 @@ impl ShareOut {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        if let Some(t) = self.lag_thread.take() {
+            let _ = t.join();
+        }
     }
 }
 
@@ -565,6 +620,7 @@ struct TxLog {
     congestion_events: u64,
     udp_tx: u64,
     datagram_frames_tx: u64,
+    datagrams_handed: u64,
 }
 
 impl TxLog {
@@ -592,7 +648,12 @@ fn log_tx_stats(shared: &ShareShared, ts: Option<TransportStats>, prev: &mut TxL
         congestion_events: ts.map_or(0, |t| t.congestion_events),
         udp_tx: ts.map_or(0, |t| t.udp_tx),
         datagram_frames_tx: ts.map_or(0, |t| t.datagram_frames_tx),
+        datagrams_handed: ts.map_or(0, |t| t.datagrams_handed),
     };
+    let frames_tx = cur.datagram_frames_tx.saturating_sub(prev.datagram_frames_tx);
+    // Handed to quinn (voice included) but never put on the wire: dropped from the full queue.
+    let send_queue_dropped = cur.datagrams_handed.saturating_sub(prev.datagrams_handed).saturating_sub(frames_tx);
+    let (lag_avg_micros, lag_max_micros) = shared.sched_lag.take();
     let frames = enc.frames - prev.encoder.frames;
     // Frames WGC delivered; above `encoded_frames` means the slot overwrote some before encoding.
     let captured = cap.frames.saturating_sub(prev.capture.frames);
@@ -623,7 +684,10 @@ fn log_tx_stats(shared: &ShareShared, ts: Option<TransportStats>, prev: &mut TxL
         lost_packets = cur.lost_packets.saturating_sub(prev.lost_packets),
         congestion_events = cur.congestion_events.saturating_sub(prev.congestion_events),
         udp_tx = cur.udp_tx.saturating_sub(prev.udp_tx),
-        datagram_frames_tx = cur.datagram_frames_tx.saturating_sub(prev.datagram_frames_tx),
+        datagram_frames_tx = frames_tx,
+        send_queue_dropped = send_queue_dropped,
+        sched_lag_ms_avg = lag_avg_micros as f64 / 1000.0,
+        sched_lag_ms_max = lag_max_micros as f64 / 1000.0,
         send_buffer_space = ts.map_or(0, |t| t.send_buffer_space),
         max_datagram = ts.map_or(0, |t| t.max_datagram),
         mtu = ts.map_or(0, |t| t.mtu),
@@ -827,6 +891,19 @@ pub fn real_share_planner() -> SharePlanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sched_lag_reports_average_and_maximum_and_starts_a_new_window() {
+        let lag = SchedLag::default();
+        assert_eq!(lag.take(), (0, 0), "empty window: no division by zero");
+        for micros in [1_000, 2_000, 12_000] {
+            lag.record(micros);
+        }
+        assert_eq!(lag.take(), (5_000, 12_000));
+        assert_eq!(lag.take(), (0, 0), "take() clears the window");
+        lag.record(300);
+        assert_eq!(lag.take(), (300, 300));
+    }
 
     #[test]
     fn source_ids_round_trip_and_reject_garbage() {

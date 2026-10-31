@@ -3,6 +3,7 @@
 //! The receiver sends a [`ReceiverReport`] about once per second; [`Abr::on_report`] turns it
 //! into the bitrate target for the encoder. Heavy loss cuts the target fast, a clean network
 //! raises it slowly, and the zone in between holds (hysteresis) so the rate does not oscillate.
+//! A round trip that stays far too long (the send queue is filling) cuts like heavy loss.
 
 use crate::preset::BitrateRange;
 
@@ -26,6 +27,10 @@ pub const HOLD_AFTER_DECREASE_MS: u64 = 8_000;
 pub const BACKOFF_WINDOW_MS: u64 = 60_000;
 /// A round trip above this (ms) blocks increases: the queue is already building.
 pub const RTT_HOLD_MS: u32 = 400;
+/// A round trip above this (ms) for [`RTT_DECREASE_REPORTS`] reports in a row cuts the target like loss.
+pub const RTT_DECREASE_MS: u32 = 800;
+/// Consecutive reports above [`RTT_DECREASE_MS`] needed to cut (a single spike does not count).
+pub const RTT_DECREASE_REPORTS: u32 = 2;
 /// Reports this soon after the encoder reopened say nothing about the network: they carry the loss
 /// of the keyframe burst the reopen itself caused, and cutting for it would start the next reopen.
 pub const REOPEN_BLACKOUT_MS: u64 = 2_500;
@@ -49,6 +54,8 @@ pub struct Abr {
     last_reopen_ms: Option<u64>,
     /// Cuts that followed another one within [`BACKOFF_WINDOW_MS`] (a failed probe upward).
     decrease_streak: u32,
+    /// Consecutive reports with a round trip above [`RTT_DECREASE_MS`].
+    slow_rtt_reports: u32,
 }
 
 impl Abr {
@@ -60,6 +67,7 @@ impl Abr {
             last_increase_ms: None,
             last_reopen_ms: None,
             decrease_streak: 0,
+            slow_rtt_reports: 0,
         }
     }
 
@@ -85,8 +93,14 @@ impl Abr {
         if r.loss_pct.is_nan() || since(self.last_reopen_ms).is_some_and(|d| d < REOPEN_BLACKOUT_MS) {
             return self.current;
         }
-        if r.loss_pct > LOSS_DECREASE_PCT {
+        if r.rtt_ms.is_some_and(|rtt| rtt > RTT_DECREASE_MS) {
+            self.slow_rtt_reports = self.slow_rtt_reports.saturating_add(1);
+        } else {
+            self.slow_rtt_reports = 0;
+        }
+        if r.loss_pct > LOSS_DECREASE_PCT || self.slow_rtt_reports >= RTT_DECREASE_REPORTS {
             if since(self.last_decrease_ms).is_none_or(|d| d >= DECREASE_COOLDOWN_MS) {
+                self.slow_rtt_reports = 0;
                 let cut = (u64::from(self.current) * u64::from(DECREASE_PERCENT) / 100) as u32;
                 self.current = cut.clamp(self.range.min, self.range.max);
                 let recent = since(self.last_decrease_ms).is_some_and(|d| d < BACKOFF_WINDOW_MS);
@@ -200,6 +214,76 @@ mod tests {
         // Control: without the note the same report cuts at once.
         let mut b = Abr::new(RANGE);
         assert_eq!(b.on_report(11_000, &rep(30.0)), 4_200);
+    }
+
+    fn slow(rtt: Option<u32>) -> ReceiverReport {
+        ReceiverReport { loss_pct: 0.0, dropped_frames: 0, rtt_ms: rtt }
+    }
+
+    #[test]
+    fn an_isolated_rtt_spike_does_not_cut() {
+        let mut a = Abr::new(RANGE);
+        let high = slow(Some(RTT_DECREASE_MS + 1));
+        assert_eq!(a.on_report(0, &high), 6_000);
+        assert_eq!(a.on_report(1_000, &slow(Some(100))), 6_180);
+        // Two spikes separated by a good report are not consecutive.
+        assert_eq!(a.on_report(2_000, &high), 6_180);
+        assert_eq!(a.on_report(3_000, &slow(Some(100))), 6_366);
+        assert_eq!(a.on_report(4_000, &high), 6_366);
+    }
+
+    #[test]
+    fn a_sustained_rtt_cuts_on_the_second_report_and_again_only_after_the_cooldown() {
+        let mut a = Abr::new(RANGE);
+        let high = slow(Some(RTT_DECREASE_MS + 1));
+        assert_eq!(a.on_report(0, &high), 6_000);
+        assert_eq!(a.on_report(1_000, &high), 4_200);
+        // Still high, but inside the cooldown of the cut.
+        assert_eq!(a.on_report(2_000, &high), 4_200);
+        assert_eq!(a.on_report(1_000 + DECREASE_COOLDOWN_MS - 1, &high), 4_200);
+        assert_eq!(a.on_report(1_000 + DECREASE_COOLDOWN_MS, &high), 2_940);
+        // The cut used up the count: a new cut needs two new reports.
+        let mut b = Abr::new(RANGE);
+        assert_eq!(b.on_report(0, &high), 6_000);
+        assert_eq!(b.on_report(1_000, &high), 4_200);
+        assert_eq!(b.on_report(1_000 + DECREASE_COOLDOWN_MS, &slow(Some(100))), 4_200);
+        assert_eq!(b.on_report(2_000 + DECREASE_COOLDOWN_MS, &high), 4_200);
+        assert_eq!(b.on_report(3_000 + DECREASE_COOLDOWN_MS, &high), 2_940);
+    }
+
+    #[test]
+    fn a_report_without_rtt_resets_the_slow_rtt_count() {
+        let mut a = Abr::new(RANGE);
+        let high = slow(Some(RTT_DECREASE_MS + 1));
+        assert_eq!(a.on_report(0, &high), 6_000);
+        assert_eq!(a.on_report(1_000, &slow(None)), 6_180);
+        assert_eq!(a.on_report(2_000, &high), 6_180);
+        assert_eq!(a.on_report(3_000, &high), 4_326);
+    }
+
+    #[test]
+    fn reports_in_the_reopen_blackout_do_not_count_toward_the_rtt_cut() {
+        let mut a = Abr::new(RANGE);
+        let high = slow(Some(RTT_DECREASE_MS + 1));
+        a.note_encoder_reopen(10_000);
+        assert_eq!(a.on_report(11_000, &high), 6_000);
+        assert_eq!(a.on_report(11_500, &high), 6_000);
+        // First report after the blackout is the first that counts.
+        assert_eq!(a.on_report(10_000 + REOPEN_BLACKOUT_MS, &high), 6_000);
+        assert_eq!(a.on_report(10_000 + REOPEN_BLACKOUT_MS + 1_000, &high), 4_200);
+    }
+
+    #[test]
+    fn an_rtt_only_above_the_hold_limit_never_cuts() {
+        let mut a = Abr::new(RANGE);
+        let held = slow(Some(RTT_HOLD_MS + 1));
+        for i in 0..10 {
+            assert_eq!(a.on_report(i * 1_000, &held), 6_000, "report {i}");
+        }
+        let edge = slow(Some(RTT_DECREASE_MS));
+        for i in 10..20 {
+            assert_eq!(a.on_report(i * 1_000, &edge), 6_000, "report {i}");
+        }
     }
 
     #[test]

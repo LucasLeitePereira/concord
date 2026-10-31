@@ -290,7 +290,7 @@ invariantes:
     testado_em: "sala/crates/video/src/fragment.rs (mod tests)"
   - id: inv-adaptive-bitrate-rule
     conceitos: [adaptive-bitrate, share-preset]
-    regra: "Perda > 5% ⇒ ×0,7 (no máx. 1 corte/s); perda < 1%, sem quadros descartados e RTT ≤ 400 ms ⇒ +5%/s, só 5 s após o último corte; sempre em [min,max] do preset."
+    regra: "Perda > 5% ou RTT > 800 ms em 2 relatórios seguidos ⇒ ×0,7 (no máx. 1 corte a cada 3 s); perda < 1%, sem quadros descartados e RTT ≤ 400 ms ⇒ +3%/s, só 8 s após o último corte (dobra com cortes seguidos); sempre em [min,max] do preset."
     testado_em: "sala/crates/video/src/abr.rs (mod tests)"
   - id: inv-mix-no-clipping
     conceitos: [soundboard, voice-frame]

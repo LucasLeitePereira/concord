@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use sala_core::config::Friend;
 use sala_core::identity::{ConnSide, Fingerprint, FriendEntry, LocalIdentity, TrustStore};
-use sala_core::net::{Net, NetError, NetEvent};
+use sala_core::net::{DATAGRAM_SEND_BUFFER_BYTES, Net, NetError, NetEvent};
 use sala_protocol::{AudioStream, Capabilities, ControlMessage, MediaDatagram, ProtocolError};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -395,6 +395,63 @@ async fn f_oversized_datagram_is_an_error_and_not_sent() {
             a.net.send_datagram("Nobody", &audio(1)),
             Err(NetError::NotConnected(_))
         ));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn g_a_burst_beyond_the_send_buffer_is_handed_over_but_not_all_sent() {
+    with_timeout(async {
+        let (mut a, mut b) = pair();
+        a.net.dial(&friend("B", port(&b))).unwrap();
+        wait_connected(&mut a, "B").await;
+        wait_connected(&mut b, "A").await;
+
+        // Single-threaded runtime: the connection driver cannot run while this loop does, so the
+        // whole burst lands in the datagram queue and quinn drops the oldest to make room.
+        let count = 4 * DATAGRAM_SEND_BUFFER_BYTES / 1000;
+        for _ in 0..count {
+            a.net.send_datagram("B", &audio(1000)).unwrap();
+        }
+        let mut last = a.net.transport_stats("B").unwrap();
+        assert_eq!(last.datagrams_handed, count as u64, "every accepted datagram is counted");
+        // Let the driver drain whatever survived in the queue.
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            last = a.net.transport_stats("B").unwrap();
+        }
+        assert!(
+            last.datagram_frames_tx < last.datagrams_handed / 2,
+            "queue must have dropped most of the burst: handed {} sent {}",
+            last.datagrams_handed,
+            last.datagram_frames_tx
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn h_a_small_spaced_sequence_ends_with_handed_equal_to_sent_and_refusals_do_not_count() {
+    with_timeout(async {
+        let (mut a, mut b) = pair();
+        a.net.dial(&friend("B", port(&b))).unwrap();
+        wait_connected(&mut a, "B").await;
+        wait_connected(&mut b, "A").await;
+
+        for _ in 0..5 {
+            a.net.send_datagram("B", &audio(100)).unwrap();
+            wait_for(&mut b.rx, |e| match e {
+                NetEvent::Datagram { .. } => Some(()),
+                _ => None,
+            })
+            .await;
+        }
+        // A refused datagram (too large) is not counted.
+        let max = a.net.max_datagram_size("B").unwrap();
+        assert!(a.net.send_datagram("B", &audio(max + 100)).is_err());
+        let s = a.net.transport_stats("B").unwrap();
+        assert_eq!(s.datagrams_handed, 5);
+        assert_eq!(s.datagram_frames_tx, s.datagrams_handed);
     })
     .await;
 }

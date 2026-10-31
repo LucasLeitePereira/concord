@@ -11,6 +11,7 @@
 
 ## Armadilhas (não repetir)
 - Ao resumir saídas de teste, mostre a lista COMPLETA de testes e o placar final (um `tail` curto já cortou testes).
+- `cargo test -p sala-video --tests` inclui a lib em paralelo, e `full_channel_drops_deltas_and_stop_returns` estoura o tempo: para os outros alvos use `--test <nome>`. `--doc` não combina com `--tests`.
 - `f2_game_mode` compila `fake_ui` antes de rodar: 3–4 min sem saída não é travamento, não mate o processo. Se falhar por timeout com outro build rodando, rerode isolado.
 
 ## Atalhos / padrões que funcionaram

@@ -27,7 +27,7 @@ mapa:
   share-preset:
     codigo: ["sala/crates/video/src/preset.rs (SharePreset, BitrateRange, encoder_config sem upscale; conta em inteiros; SharePreset::Custom{height,fps} via custom(): 480/720/1080/1440 x 30/60, escolha da UI)"]
   adaptive-bitrate:
-    codigo: ["sala/crates/video/src/abr.rs (Abr, ReceiverReport; tempo injetado em ms)", "sala/crates/video/src/encoder.rs (set_bitrate: QSV reabre se mudar >15% e força keyframe)"]
+    codigo: ["sala/crates/video/src/abr.rs (Abr, ReceiverReport, RTT_DECREASE_MS, RTT_DECREASE_REPORTS; tempo injetado em ms)", "sala/crates/video/src/encoder.rs (set_bitrate: QSV muda ao vivo, D-034)"]
     testes: ["sala/crates/video/src/abr.rs (mod tests)"]
   screen-share:
     codigo: ["sala/crates/video/src/sender.rs (FrameSlot último-quadro, Sender: thread de encode, reenvio em tela parada, canal descarta delta cheio; idle_resend 500 ms)", "sala/crates/core/src/share.rs (VideoPipe/PipeFactory, ShareOut thread share-send, ShareIn Reassembler+LossMeter+ReceiverReport 1 s, screen_pipe real)", "sala/crates/core/src/session.rs (start_share, start_screen_share, stop_share, share_stats, take_video_frames; ReceiverReport→abr)", "sala/crates/protocol/src/lib.rs (ControlMessage::ReceiverReport, PROTOCOL_VERSION 3, VIDEO_PROTOCOL_VERSION; IPC: UiToCore::ListShareSources/StartShare/StopShare, CoreToUi::ShareSources/ShareState, ShareSource)", "sala/crates/core/src/share.rs (T-033e1: source_id/parse_source_id, pick_codec H.264 primeiro, encoder_backend, list_share_sources, ShareLaunch/SharePlanner/real_share_planner)", "sala/crates/core/src/app.rs (Controller::start_share/stop_share/set_share_planner, ShareState no GetState, Step::StopSharing para de verdade no D-012 passo 3)", "sala/crates/video/src/sender.rs (T-035d: KeyGate ≤1 keyframe forçado/s, payload_for, max_datagram Arc<AtomicUsize>)", "sala/crates/core/src/share.rs (T-035c/d: logs share stats tx/rx, refresh_budget/datagram_budget pelo max_datagram_size vivo)", "sala/crates/core/src/net.rs (T-035c/d: TransportStats, tune_socket_buffers 4 MiB, Endpoint::new com socket próprio)", "sala/crates/video/src/abr.rs (D-030: reabertura limitada do encoder)", "sala/crates/video/src/capture.rs (T-036: CaptureStats, CaptureSession::stats)", "sala/crates/core/src/share.rs (T-036: VideoPipe::capture_stats, campos capture_* no share stats tx)"]
@@ -58,7 +58,7 @@ mapa:
     codigo: ["sala/crates/core/src/identity.rs (Fingerprint, LocalIdentity)"]
     testes: [sala/crates/core/tests/acceptance_identity.rs]
   peer-connection:
-    codigo: ["sala/crates/core/src/net.rs (Net, NetEvent, NetError, trust_store_from_config)", "sala/crates/core/src/identity.rs (TrustStore::check_peer, PeerDecision, keep_connection)"]
+    codigo: ["sala/crates/core/src/net.rs (Net, NetEvent, NetError, trust_store_from_config, TransportStats, DATAGRAM_SEND_BUFFER_BYTES)", "sala/crates/core/src/identity.rs (TrustStore::check_peer, PeerDecision, keep_connection)"]
     testes: [sala/crates/core/tests/net.rs, sala/crates/core/tests/acceptance_identity.rs]
   friend:
     codigo: ["sala/crates/core/src/config.rs (Friend)", "sala/crates/core/src/identity.rs (FriendEntry)"]

@@ -261,3 +261,12 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - Custo: ~12,5% a mais de dados, sem compensar o alvo do ABR nesta fatia. Quadro de 1 fragmento vira 2 pacotes, efeito desprezível em tela parada.
 - Limite: o XOR recupera 1 perda por grupo, e a perda real parece vir em rajadas. O ganho real se mede comparando `fec_recovered` e `incomplete` em `share stats rx`; se `incomplete` não cair à metade, avaliar intra refresh do QSV ou intercalar os grupos.
 - **Data:** 2026-10-30
+
+## D-036 — T-037c: limitar a fila de envio (revisa D-031)
+- No reteste da v0.1.10, o RTT chegou a 9,6 s sem perda: a fila crescia, e o ABR só bloqueava aumentos por atraso (`RTT_HOLD_MS`). Com 1 MiB de datagramas no quinn e 4 MiB de `SO_SNDBUF`, a 2 Mbit/s cabem ~4 s + ~17 s de fila.
+- **Corte por atraso:** `Abr::on_report` corta a taxa como a perda quando `RTT_DECREASE_REPORTS` (2) relatórios seguidos passam de `RTT_DECREASE_MS` (800 ms), respeitando `DECREASE_COOLDOWN_MS`. Um pico isolado não corta, e o RTT já vem suavizado pelo quinn. O limite fica bem acima dos ~300 ms de um caminho ruim e estável.
+- **Filas menores:** `datagram_send_buffer_size` e `SO_SNDBUF` de 512 KiB, suficientes para um keyframe (maior visto: 244 KB, ~275 KB com FEC). `SO_RCVBUF` continua em 4 MiB, o motivo da D-031. A D-031 pediu os dois buffers juntos, mas o problema dela era só de recepção.
+- **Contadores em `share stats tx`:** `send_queue_dropped` (datagramas entregues ao quinn e que nunca saíram, voz incluída) e `sched_lag_ms_avg/max` (atraso de uma thread que dorme 1 ms). O segundo aponta CPU ou driver travando a máquina sem LatencyMon. Base medida no notebook, sem carga: 0,59 ms de média e 1,1 ms de máximo, porque o `sleep` do Rust usa timer de alta resolução; não há o tique de ~15 ms.
+- **Risco:** o áudio usa a mesma conexão, e o quinn descarta os datagramas mais antigos quando o buffer enche. Se a voz piorar no teste real, o buffer de datagramas volta a crescer.
+- **Limite:** isso não deixa o transmissor mais rápido. O travamento longo vira uma queda curta de qualidade.
+- **Data:** 2026-10-31

@@ -83,6 +83,9 @@ pub struct TransportStats {
     pub udp_rx: u64,
     /// QUIC DATAGRAM frames sent / received.
     pub datagram_frames_tx: u64,
+    /// Datagrams of every kind (voice included) accepted by `Net::send_datagram` on this
+    /// connection. Minus `datagram_frames_tx`, it is what the send queue dropped or still holds.
+    pub datagrams_handed: u64,
     pub datagram_frames_rx: u64,
     /// Room left in the connection's outgoing datagram buffer, in bytes.
     pub send_buffer_space: usize,
@@ -322,12 +325,20 @@ fn transport() -> Arc<quinn::TransportConfig> {
     ));
     t.max_concurrent_bidi_streams(1u8.into());
     t.max_concurrent_uni_streams(0u8.into());
+    t.datagram_send_buffer_size(DATAGRAM_SEND_BUFFER_BYTES);
     Arc::new(t)
 }
 
-/// Kernel buffer size asked for the QUIC socket. The Windows default receive buffer is 64 KB,
-/// which a keyframe burst overflows as soon as the receiver loses the CPU for a moment.
-const SOCKET_BUFFER_BYTES: i32 = 4 << 20;
+/// Outgoing datagram queue of quinn. What sits in it is delay (at 2 Mbit/s, 1 MiB is ~4 s), so
+/// it is kept small; it still has to hold a whole keyframe (the largest seen: ~275 KB with FEC).
+/// When it fills, quinn drops the oldest datagrams.
+pub const DATAGRAM_SEND_BUFFER_BYTES: usize = 512 << 10;
+
+/// Kernel receive buffer asked for the QUIC socket. The Windows default is 64 KB, which a
+/// keyframe burst overflows as soon as the receiver loses the CPU for a moment.
+const RECV_BUFFER_BYTES: i32 = 4 << 20;
+/// Kernel send buffer: another queue that turns into delay, so it matches the datagram queue.
+const SEND_BUFFER_BYTES: i32 = 512 << 10;
 
 /// Raises SO_RCVBUF and SO_SNDBUF of the endpoint socket and logs what the OS granted.
 #[cfg(windows)]
@@ -337,10 +348,12 @@ fn tune_socket_buffers(socket: &std::net::UdpSocket) {
 
     let raw = socket.as_raw_socket() as usize;
     let mut effective = [0i32; 2];
-    for (slot, opt) in effective.iter_mut().zip([SO_RCVBUF, SO_SNDBUF]) {
+    for (slot, (opt, want)) in effective
+        .iter_mut()
+        .zip([(SO_RCVBUF, RECV_BUFFER_BYTES), (SO_SNDBUF, SEND_BUFFER_BYTES)])
+    {
         // SAFETY: `raw` is the live socket owned by `socket`; the option buffers are valid i32s.
         unsafe {
-            let want = SOCKET_BUFFER_BYTES;
             if setsockopt(raw, SOL_SOCKET, opt, (&raw const want).cast(), 4) != 0 {
                 tracing::warn!(option = opt, "cannot resize the socket buffer");
             }
@@ -404,6 +417,8 @@ struct Active {
     side: ConnSide,
     tx: mpsc::UnboundedSender<ControlMessage>,
     since: Instant,
+    /// Datagrams of every kind that `send_datagram` handed to quinn on this connection.
+    datagrams_handed: Arc<AtomicU64>,
 }
 
 struct Inner {
@@ -584,19 +599,21 @@ impl Net {
     /// Sends a media datagram. Fails (without sending anything) when the encoded
     /// size exceeds the connection's maximum datagram size (`inv-datagram-max-size`).
     pub fn send_datagram(&self, friend: &str, dg: &MediaDatagram) -> Result<(), NetError> {
-        let conn = self.connection(friend)?;
+        let (conn, handed) = self.connection_with_counter(friend)?;
         let max = conn
             .max_datagram_size()
             .ok_or(NetError::DatagramsUnsupported)?
             .min(DEFAULT_MAX_DATAGRAM);
         let bytes = dg.encode(max)?;
         conn.send_datagram(bytes.into())
-            .map_err(|e| NetError::SendDatagram(e.to_string()))
+            .map_err(|e| NetError::SendDatagram(e.to_string()))?;
+        handed.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     /// QUIC counters of the active connection to `friend` (for the `share stats` log).
     pub fn transport_stats(&self, friend: &str) -> Option<TransportStats> {
-        let conn = self.connection(friend).ok()?;
+        let (conn, handed) = self.connection_with_counter(friend).ok()?;
         let s = conn.stats();
         Some(TransportStats {
             rtt_ms: conn.rtt().as_secs_f32() * 1000.0,
@@ -607,6 +624,7 @@ impl Net {
             udp_tx: s.udp_tx.datagrams,
             udp_rx: s.udp_rx.datagrams,
             datagram_frames_tx: s.frame_tx.datagram,
+            datagrams_handed: handed.load(Ordering::Relaxed),
             datagram_frames_rx: s.frame_rx.datagram,
             send_buffer_space: conn.datagram_send_buffer_space(),
             max_datagram: conn.max_datagram_size().unwrap_or(0),
@@ -622,9 +640,13 @@ impl Net {
     }
 
     fn connection(&self, friend: &str) -> Result<quinn::Connection, NetError> {
+        self.connection_with_counter(friend).map(|(conn, _)| conn)
+    }
+
+    fn connection_with_counter(&self, friend: &str) -> Result<(quinn::Connection, Arc<AtomicU64>), NetError> {
         lock(&self.inner.conns)
             .get(friend)
-            .map(|a| a.conn.clone())
+            .map(|a| (a.conn.clone(), a.datagrams_handed.clone()))
             .ok_or_else(|| NetError::NotConnected(friend.to_string()))
     }
 
@@ -922,6 +944,7 @@ async fn establish(inner: Arc<Inner>, conn: quinn::Connection, side: ConnSide) {
                 side,
                 tx,
                 since: Instant::now(),
+                datagrams_handed: Arc::new(AtomicU64::new(0)),
             },
         );
     }
