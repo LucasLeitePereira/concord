@@ -270,3 +270,14 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - **Risco:** o áudio usa a mesma conexão, e o quinn descarta os datagramas mais antigos quando o buffer enche. Se a voz piorar no teste real, o buffer de datagramas volta a crescer.
 - **Limite:** isso não deixa o transmissor mais rápido. O travamento longo vira uma queda curta de qualidade.
 - **Data:** 2026-10-31
+
+## D-037 — T-040: contrapressão do vídeo na fila de envio (revisa D-036)
+- No teste da v0.1.11, as maiores rajadas de perda nasceram no transmissor: quando a vazão caía abaixo do alvo do vídeo, a fila de 512 KiB enchia e o quinn descartava 670 a 1.623 datagramas por janela, sem escolher. Isso deixava quadros pela metade e tirava datagramas da voz, que perdeu 2–3× mais nesses trechos (risco previsto no D-036).
+- **Limite para o vídeo:** `drain` só entrega um quadro quando há no máximo 128 KiB na fila e o quadro cabe com 32 KiB de reserva para a voz. Com a fila vazia, passa qualquer quadro: sem isso, um keyframe grande demais seria pulado e pedido de novo para sempre, congelando a imagem. A fila de 512 KiB não muda: ela segue cabendo um keyframe.
+- **Contrapressão, sem descarte novo:** `drain` espera por vaga, até 150 ms. Enquanto isso o canal enche, e `deliver` faz o que já fazia: descarta o quadro comum e força keyframe. Pular um quadro comum dentro do `drain` não basta, porque quebra a referência dos seguintes e o encoder não ficaria sabendo. Depois de 150 ms, o espectador sem vaga não recebe aquele quadro, nota a lacuna e pede keyframe, para um espectador lento não travar os outros.
+- **Corte local do ABR:** espera acima de 50 ms entra como um relatório de perda total pelo `VideoPipe::report`, respeitando cooldown e backoff. Sem isso, o ABR ficaria cego, já que a perda deixa de aparecer no receptor.
+- **Contadores em `share stats tx`:** `queue_wait_ms_max` e `queue_skipped_frames`. `send_queue_dropped` vira alarme e deve ficar em ~0.
+- Sem mudança de protocolo: só quem transmite precisa atualizar.
+- **Risco:** cada quadro comum descartado custa um keyframe ~9× maior no pior momento. Se o teste real mostrar excesso de keyframes, avaliar intra refresh do QSV.
+- **Limite:** não resolve a perda real da rede, só o descarte causado pela nossa própria fila.
+- **Data:** 2026-11-01

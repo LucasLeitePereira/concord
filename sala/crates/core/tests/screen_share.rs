@@ -12,10 +12,12 @@ use std::time::{Duration, Instant};
 use sala_core::config::{Config, Friend, Profile};
 use sala_core::identity::LocalIdentity;
 use sala_core::session::{AudioSource, Session};
-use sala_core::share::{Pipe, PipeFactory, VideoFrame, VideoPipe};
+use sala_core::identity::{FriendEntry, TrustStore};
+use sala_core::net::{Net, NetEvent};
+use sala_core::share::{Pipe, PipeFactory, ShareOut, VideoFrame, VideoPipe};
 use sala_core::share_audio::{AudioCapture, AudioFactory, FRAME_VALUES};
 use sala_core::voice::FRAME_SAMPLES;
-use sala_protocol::{DEFAULT_MAX_DATAGRAM, MediaDatagram, VideoCodec, max_video_payload};
+use sala_protocol::{AudioStream, DEFAULT_MAX_DATAGRAM, MediaDatagram, VideoCodec, max_video_payload};
 use sala_video::abr::{Abr, ReceiverReport};
 use sala_video::fragment::{DEFAULT_FEC_GROUP, fragment_fec};
 use sala_video::preset::SharePreset;
@@ -369,4 +371,106 @@ async fn without_a_capture_no_share_audio_is_sent() {
     a.stop_share();
     a.shutdown().await;
     b.shutdown().await;
+}
+
+// ---------------------------------------------------------------- T-040 queue back-pressure
+
+/// A pipe that only records what the ABR is told.
+struct RecordingPipe {
+    reports: Arc<Mutex<Vec<ReceiverReport>>>,
+}
+
+impl VideoPipe for RecordingPipe {
+    fn request_keyframe(&self) {}
+
+    fn report(&self, report: ReceiverReport) -> u32 {
+        self.reports.lock().unwrap().push(report);
+        0
+    }
+
+    fn target_kbps(&self) -> u32 {
+        0
+    }
+}
+
+fn voice(seq: u16, len: usize) -> MediaDatagram {
+    MediaDatagram::Audio { stream: AudioStream::Voice, seq, timestamp: 960, payload: vec![0xAB; len] }
+}
+
+/// A trusts B by address only; the nodes are returned once connected.
+async fn net_pair() -> (Net, Net, tokio::sync::mpsc::UnboundedReceiver<NetEvent>) {
+    let node = |peer: &str| {
+        let dir = temp_root();
+        let identity = LocalIdentity::load_or_create(&dir).unwrap();
+        let entry = FriendEntry { name: peer.into(), address: Ipv4Addr::LOCALHOST.into(), fingerprint: None };
+        Net::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), &identity, TrustStore::new(vec![entry])).unwrap()
+    };
+    let ((a, mut a_rx), (b, b_rx)) = (node("B"), node("A"));
+    let f = Friend { name: "B".into(), address: "127.0.0.1".into(), port: Some(b.local_addr().port()), fingerprint: None };
+    a.dial(&f).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !matches!(a_rx.recv().await.expect("events"), NetEvent::Connected { .. }) {}
+    })
+    .await
+    .expect("connected");
+    // Let B's side finish the handshake too.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    (a, b, b_rx)
+}
+
+/// T-040 (D-037): a video burst above the queue limit, with the connection driver parked, is
+/// held back by `drain`: nothing is handed to QUIC, the ABR gets a total-loss report per frame,
+/// and the voice sent afterwards still goes out.
+#[tokio::test]
+async fn video_burst_beyond_the_queue_limit_is_held_back_and_voice_still_goes_out() {
+    const QUEUED: u64 = 200; // 200 KB already in the queue: past the 128 KiB video limit
+    const FRAMES: usize = 5;
+    let (a, _b, mut b_rx) = net_pair().await;
+
+    // Current-thread runtime: the QUIC driver only runs when this test awaits. Nothing below
+    // awaits until the burst is over, so the queue stays full and cannot drain.
+    for _ in 0..QUEUED {
+        a.send_datagram("B", &voice(7, 1000)).unwrap();
+    }
+    let max = a.max_datagram_size("B").unwrap();
+    let reports = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = mpsc::channel::<Vec<MediaDatagram>>();
+    let pipe = Pipe {
+        control: Box::new(RecordingPipe { reports: reports.clone() }),
+        datagrams: rx,
+        codec: CODEC,
+        width: 1280,
+        height: 720,
+        fps: 30,
+    };
+    let out = ShareOut::start(&a, pipe, &["B".to_string()], Arc::new(AtomicUsize::new(max)));
+    // One frame more than checked: when its report is in, the earlier frames are all decided.
+    for id in 1..=FRAMES as u32 + 1 {
+        let data = vec![1u8; 100_000];
+        tx.send(fragment_fec(id, id == 1, id * 90, &data, max_video_payload(max), 0)).unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while reports.lock().unwrap().len() < FRAMES + 1 {
+        assert!(Instant::now() < deadline, "timed out waiting for the cut reports");
+        std::thread::sleep(Duration::from_millis(5)); // blocks on purpose, see above
+    }
+    assert!(reports.lock().unwrap().iter().all(|r| r.loss_pct == 100.0 && r.rtt_ms.is_none()));
+    let s = a.transport_stats("B").unwrap();
+    assert_eq!(s.datagrams_handed, QUEUED, "no video datagram may reach QUIC while the queue is full");
+
+    // The voice goes in last, so it is the newest in the queue and survives.
+    a.send_datagram("B", &voice(99, 100)).unwrap();
+    out.stop(&a);
+    let got_voice = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let NetEvent::Datagram { dg: MediaDatagram::Audio { seq: 99, .. }, .. } = b_rx.recv().await.expect("events") {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(got_voice.is_ok(), "the voice datagram sent after the burst never arrived");
+    let end = a.transport_stats("B").unwrap();
+    assert_eq!(end.datagrams_handed, QUEUED + 1);
+    assert_eq!(end.datagram_frames_tx, end.datagrams_handed, "nothing handed to QUIC was dropped");
 }

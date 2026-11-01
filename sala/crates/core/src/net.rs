@@ -633,6 +633,12 @@ impl Net {
         })
     }
 
+    /// Free bytes in the datagram send queue towards `friend` (`DATAGRAM_SEND_BUFFER_BYTES`
+    /// minus what is queued); `None` when there is no connection.
+    pub fn datagram_send_buffer_space(&self, friend: &str) -> Option<usize> {
+        Some(self.connection(friend).ok()?.datagram_send_buffer_space())
+    }
+
     /// Largest datagram currently allowed towards `friend`.
     pub fn max_datagram_size(&self, friend: &str) -> Option<usize> {
         let conn = self.connection(friend).ok()?;

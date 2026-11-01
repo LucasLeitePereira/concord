@@ -22,7 +22,7 @@ use sala_video::preset::SharePreset;
 use sala_video::sender::{FrameSlot, RawFrame, Sender, SenderConfig, SenderStats};
 use tokio::sync::mpsc;
 
-use crate::net::{Net, TransportStats};
+use crate::net::{DATAGRAM_SEND_BUFFER_BYTES, Net, TransportStats};
 use crate::share_audio::{AudioCapture, BITRATE_KBPS, ShareAudioEncoder};
 
 /// Spacing of the `ReceiverReport`s.
@@ -34,6 +34,57 @@ pub const STATS_INTERVAL_MS: u64 = 5_000;
 /// At most this many whole frames are counted as lost from one id gap (a long outage must not
 /// inflate the window).
 const MAX_GAP_FRAMES: u32 = 64;
+
+/// Most bytes video may leave queued in QUIC's datagram queue (D-037).
+pub const VIDEO_QUEUE_LIMIT_BYTES: usize = 128 << 10;
+
+/// Free space a frame must leave in the queue for the voice (D-037).
+pub const VOICE_RESERVE_BYTES: usize = 32 << 10;
+
+/// How long `drain` waits for room in the queue before skipping the viewer for that frame.
+const ROOM_WAIT_MAX: Duration = Duration::from_millis(150);
+
+/// Pause between two looks at the queue while waiting for room.
+const ROOM_POLL: Duration = Duration::from_millis(2);
+
+/// A wait longer than this is reported to the ABR as a total loss.
+const ROOM_WAIT_REPORT: Duration = Duration::from_millis(50);
+
+/// Whether a frame of `frame_bytes` may enter a queue with `space` free bytes: at most
+/// `VIDEO_QUEUE_LIMIT_BYTES` already queued, and the frame leaves `VOICE_RESERVE_BYTES` free.
+/// An empty queue takes any frame: a keyframe too big for the reserve would otherwise be skipped
+/// and requested again forever, and the picture would never come back.
+pub fn has_room(space: usize, frame_bytes: usize) -> bool {
+    space >= DATAGRAM_SEND_BUFFER_BYTES
+        || (space >= DATAGRAM_SEND_BUFFER_BYTES.saturating_sub(VIDEO_QUEUE_LIMIT_BYTES)
+            && space >= frame_bytes.saturating_add(VOICE_RESERVE_BYTES))
+}
+
+/// Waits (short sleeps, no spinning) until every viewer has room for the frame, up to `max_wait`
+/// or until `stop`. Returns the time waited and the viewers still without room. A viewer whose
+/// `space_of` is `None` (no connection) never holds the wait: its sends fail on their own.
+fn wait_for_room(
+    space_of: impl Fn(&str) -> Option<usize>,
+    viewers: &[String],
+    frame_bytes: usize,
+    stop: &AtomicBool,
+    max_wait: Duration,
+    poll: Duration,
+) -> (Duration, Vec<String>) {
+    let start = Instant::now();
+    loop {
+        let lacking: Vec<String> = viewers
+            .iter()
+            .filter(|v| space_of(v).is_some_and(|s| !has_room(s, frame_bytes)))
+            .cloned()
+            .collect();
+        let waited = start.elapsed();
+        if lacking.is_empty() || waited >= max_wait || stop.load(Ordering::Relaxed) {
+            return (waited, lacking);
+        }
+        std::thread::sleep(poll);
+    }
+}
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -378,6 +429,10 @@ pub struct ShareShared {
     last_send_error: Mutex<Option<String>>,
     /// How late a thread that asks for a 1 ms sleep wakes up (the machine's scheduling delay).
     sched_lag: SchedLag,
+    /// Longest wait for queue room since the last `share stats tx` line (ms).
+    queue_wait_ms_max: AtomicU64,
+    /// Frames not sent to a viewer because its queue had no room within the wait.
+    queue_skipped_frames: AtomicU64,
 }
 
 /// Window of scheduling delays: how much longer than asked a 1 ms sleep took. About 1 ms is
@@ -461,6 +516,8 @@ impl ShareOut {
             max_frame_bytes: AtomicU64::new(0),
             last_send_error: Mutex::new(None),
             sched_lag: SchedLag::default(),
+            queue_wait_ms_max: AtomicU64::new(0),
+            queue_skipped_frames: AtomicU64::new(0),
         });
         let out = ShareOut {
             shared: shared.clone(),
@@ -575,8 +632,22 @@ fn drain(shared: &ShareShared, rx: &Receiver<Vec<MediaDatagram>>, net: &Net, bud
                 shared.frames_out.fetch_add(1, Ordering::Relaxed);
                 shared.generated.fetch_add(dgs.len() as u64, Ordering::Relaxed);
                 shared.max_frame_bytes.fetch_max(bytes as u64, Ordering::Relaxed);
+                // Back-pressure (D-037): while the queue is too full the encoder channel fills
+                // and `deliver` drops whole frames, so the queue never overflows.
+                let (waited, no_room) =
+                    wait_for_room(|v| net.datagram_send_buffer_space(v), &viewers, bytes, &shared.stop, ROOM_WAIT_MAX, ROOM_POLL);
+                shared.queue_wait_ms_max.fetch_max(u64::try_from(waited.as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+                if waited > ROOM_WAIT_REPORT {
+                    // Local report of total loss, so the ABR cuts now: the loss no longer shows at
+                    // the viewer. Not counted in `reports` (those are the viewers' reports).
+                    shared.pipe.report(abr_report(0, 1, 0, None));
+                }
+                if shared.stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                shared.queue_skipped_frames.fetch_add(no_room.len() as u64, Ordering::Relaxed);
                 for dg in &dgs {
-                    for v in &viewers {
+                    for v in viewers.iter().filter(|v| !no_room.contains(v)) {
                         // `send_datagram` refuses anything above this connection's real limit.
                         match net.send_datagram(v, dg) {
                             Ok(()) => shared.sent.fetch_add(1, Ordering::Relaxed),
@@ -621,6 +692,7 @@ struct TxLog {
     udp_tx: u64,
     datagram_frames_tx: u64,
     datagrams_handed: u64,
+    queue_skipped_frames: u64,
 }
 
 impl TxLog {
@@ -649,6 +721,7 @@ fn log_tx_stats(shared: &ShareShared, ts: Option<TransportStats>, prev: &mut TxL
         udp_tx: ts.map_or(0, |t| t.udp_tx),
         datagram_frames_tx: ts.map_or(0, |t| t.datagram_frames_tx),
         datagrams_handed: ts.map_or(0, |t| t.datagrams_handed),
+        queue_skipped_frames: shared.queue_skipped_frames.load(Ordering::Relaxed),
     };
     let frames_tx = cur.datagram_frames_tx.saturating_sub(prev.datagram_frames_tx);
     // Handed to quinn (voice included) but never put on the wire: dropped from the full queue.
@@ -686,6 +759,8 @@ fn log_tx_stats(shared: &ShareShared, ts: Option<TransportStats>, prev: &mut TxL
         udp_tx = cur.udp_tx.saturating_sub(prev.udp_tx),
         datagram_frames_tx = frames_tx,
         send_queue_dropped = send_queue_dropped,
+        queue_wait_ms_max = shared.queue_wait_ms_max.swap(0, Ordering::Relaxed),
+        queue_skipped_frames = cur.queue_skipped_frames - prev.queue_skipped_frames,
         sched_lag_ms_avg = lag_avg_micros as f64 / 1000.0,
         sched_lag_ms_max = lag_max_micros as f64 / 1000.0,
         send_buffer_space = ts.map_or(0, |t| t.send_buffer_space),
@@ -891,6 +966,71 @@ pub fn real_share_planner() -> SharePlanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FULL: usize = DATAGRAM_SEND_BUFFER_BYTES;
+    const LIMIT_SPACE: usize = FULL - VIDEO_QUEUE_LIMIT_BYTES;
+
+    #[test]
+    fn has_room_limits_the_queue_and_keeps_a_reserve_for_voice() {
+        // Exactly at the limit: room; one byte more queued: none.
+        assert!(has_room(LIMIT_SPACE, 1_000));
+        assert!(!has_room(LIMIT_SPACE - 1, 1_000));
+        // The frame must leave the voice reserve free.
+        assert!(has_room(FULL - 1, FULL - 1 - VOICE_RESERVE_BYTES));
+        assert!(!has_room(FULL - 1, FULL - VOICE_RESERVE_BYTES));
+        // The biggest keyframe seen (244 KB) fits as soon as the queue is at its limit: the
+        // limit is the binding rule. A frame over 352 KB needs the queue emptier than that.
+        assert!(has_room(LIMIT_SPACE, 244_000));
+        assert!(!has_room(LIMIT_SPACE, 400_000));
+        assert!(has_room(FULL, 400_000));
+        // No space at all, and an oversized keyframe: it goes out once the queue is empty.
+        assert!(!has_room(0, 0));
+        assert!(has_room(FULL, FULL * 2));
+        assert!(!has_room(FULL - 1, FULL * 2));
+    }
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn wait_for_room_returns_at_once_with_room_and_ignores_viewers_without_connection() {
+        let stop = AtomicBool::new(false);
+        let space = |v: &str| (v == "ok").then_some(FULL);
+        let (waited, lacking) =
+            wait_for_room(space, &names(&["ok", "gone"]), 10_000, &stop, Duration::from_secs(5), Duration::from_millis(1));
+        assert!(lacking.is_empty());
+        assert!(waited < Duration::from_secs(1), "{waited:?}");
+    }
+
+    #[test]
+    fn wait_for_room_gives_up_on_the_full_viewer_only() {
+        let stop = AtomicBool::new(false);
+        let space = |v: &str| Some(if v == "slow" { 0 } else { FULL });
+        let (waited, lacking) =
+            wait_for_room(space, &names(&["fast", "slow"]), 10_000, &stop, Duration::from_millis(30), Duration::from_millis(1));
+        assert_eq!(lacking, names(&["slow"]));
+        assert!(waited >= Duration::from_millis(30), "{waited:?}");
+    }
+
+    #[test]
+    fn wait_for_room_ends_as_soon_as_room_appears_and_when_stopped() {
+        let stop = AtomicBool::new(false);
+        let polls = std::cell::Cell::new(0);
+        let space = |_: &str| {
+            polls.set(polls.get() + 1);
+            Some(if polls.get() < 4 { 0 } else { FULL })
+        };
+        let (_, lacking) = wait_for_room(space, &names(&["v"]), 10_000, &stop, Duration::from_secs(5), Duration::from_millis(1));
+        assert!(lacking.is_empty());
+        assert_eq!(polls.get(), 4);
+
+        stop.store(true, Ordering::Relaxed);
+        let (waited, lacking) =
+            wait_for_room(|_| Some(0), &names(&["v"]), 10_000, &stop, Duration::from_secs(5), Duration::from_millis(1));
+        assert_eq!(lacking.len(), 1);
+        assert!(waited < Duration::from_secs(1), "stop must end the wait: {waited:?}");
+    }
 
     #[test]
     fn sched_lag_reports_average_and_maximum_and_starts_a_new_window() {
