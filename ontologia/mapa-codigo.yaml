@@ -99,3 +99,6 @@ mapa:
   tailscale-autostart:
     codigo: ["sala/crates/core/src/tailscale.rs (plan, parse_backend; abre tailscale-ipn.exe e roda `tailscale up` se Stopped, em segundo plano)"]
     testes: ["sala/crates/core/src/tailscale.rs (mod tests)"]
+  atualizacao-automatica:
+    codigo: ["sala/scripts/publish-release.ps1 (T-041d: confere versões, gera e assina latest.json, gh release create)", "sala/installer/concord.iss ([Run] com Check: WizardSilent; Tailscale nunca em silêncio)", "sala/crates/core/src/update.rs (D-038, T-041a/b: parse_and_verify_manifest minisign, is_newer semver, url_allowed, validate, verify_sha256; fetch_manifest e download via ureq (só HTTPS), copy_limited, install_blocking: handle FILE_SHARE_READ + ShellExecuteExW runas, UpdateEvent, update_enabled)", "sala/crates/core/src/app.rs (Controller: update_state/update_manifest, on_update_event, install_update; run: tarefa de consulta 30 s/6 h e braço update_rx)", "sala/crates/protocol/src/lib.rs (UiToCore::InstallUpdate, CoreToUi::UpdateState, UpdateState)"]
+    testes: ["sala/crates/core/src/update.rs (mod tests)", "sala/crates/core/tests/update_ipc.rs (transições do Controller)", "sala/crates/protocol/src/lib.rs (ida e volta IPC)"]

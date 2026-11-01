@@ -59,6 +59,11 @@ conceitos:
     definicao: "App Tauri 2 que só exibe estado e envia comandos via IPC. Existe apenas no modo normal. Se aberto sem núcleo, inicia o núcleo. Ao receber Shutdown, sai."
     secao: "§3, §7"
 
+  - id: atualizacao-automatica
+    nome: Atualização pelo próprio app
+    definicao: "O núcleo consulta um manifesto assinado nas releases do repositório, avisa a UI e, com o clique do usuário, baixa, confere e abre o instalador (D-038)."
+    secao: "D-038"
+
   - id: ipc-message
     nome: IpcMessage
     definicao: "Mensagem entre sala-ui e sala-core por named pipe \\\\.\\pipe\\sala-core-<usuário>, JSON delimitado por linha (uma mensagem por linha)."
@@ -306,5 +311,17 @@ invariantes:
     testado_em: "sala/crates/core/src/voice.rs::deafen_mutes_and_undeafen_restores_previous_mute, sala/crates/core/tests/f2_game_mode.rs (via controlador, Status visto pelo amigo)"
   - id: inv-no-external-calls
     conceitos: [core-process, ui-process]
-    regra: "Nenhuma chamada de rede a serviços externos (sem telemetria, sem fontes remotas); só conexões com Friends."
+    regra: "Nenhuma chamada de rede a serviços externos (sem telemetria, sem fontes remotas); só conexões com Friends. Exceção única (D-038): consultar e baixar atualizações nas releases do repositório público, sem enviar dados do usuário."
     testado_em: ""
+  - id: inv-update-assinada-antes-do-json
+    conceitos: [atualizacao-automatica]
+    regra: "A assinatura do manifesto é conferida antes de interpretar o JSON; só valem url nas releases do repositório e versão estritamente maior que a atual."
+    testado_em: "sala/crates/core/src/update.rs (mod tests)"
+  - id: inv-update-so-com-clique
+    conceitos: [atualizacao-automatica]
+    regra: "Download e instalação só começam com InstallUpdate; perfis de teste nunca chamam a rede; consulta nova não sobrescreve Downloading nem Installing."
+    testado_em: "sala/crates/core/tests/update_ipc.rs, sala/crates/core/src/update.rs (update_enabled)"
+  - id: inv-update-arquivo-travado
+    conceitos: [atualizacao-automatica]
+    regra: "O instalador fica aberto sem permitir escrita desde a conferência do SHA-256 até o processo terminar."
+    testado_em: "sala/crates/core/src/update.rs (locked_handle_denies_writers_while_open)"

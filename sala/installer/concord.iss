@@ -31,7 +31,7 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 Name: "desktopicon"; Description: "Criar atalho na Área de Trabalho"; Flags: unchecked
 Name: "startup"; Description: "Iniciar o Concord com o Windows"; Flags: unchecked
 
-Name: "installtailscale"; Description: "Baixar e instalar o Tailscale (necessário para conectar com amigos)"; Check: not TailscaleInstalled
+Name: "installtailscale"; Description: "Baixar e instalar o Tailscale (necessário para conectar com amigos)"; Check: (not TailscaleInstalled) and (not WizardSilent)
 
 [InstallDelete]
 Type: files; Name: "{app}\sala-core.exe"
@@ -56,6 +56,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Concord"" dir=in action=allow protocol=UDP localport=47800 program=""{app}\concord.exe"""; Flags: runhidden; StatusMsg: "Configurando o firewall..."
 Filename: "{tmp}\tailscale-setup.exe"; StatusMsg: "Instalando o Tailscale..."; Flags: waituntilterminated skipifsilent; Tasks: installtailscale; Check: GotTailscaleSetup
 Filename: "{app}\concord.exe"; Description: "Abrir o Concord"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; Atualização pelo próprio Concord (D-038, /SILENT): reabre o app sem a página final.
+Filename: "{app}\concord.exe"; Flags: nowait runasoriginaluser; Check: WizardSilent
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Concord"""; Flags: runhidden; RunOnceId: "DelFirewallRule"
@@ -112,7 +114,8 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
-  if (CurPageID = wpReady) and WizardIsTaskSelected('installtailscale') then
+  // Nunca baixar nem abrir instalador de terceiros em modo silencioso (atualização automática).
+  if (CurPageID = wpReady) and (not WizardSilent) and WizardIsTaskSelected('installtailscale') then
   begin
     TailscaleDownloaded := False;
     DownloadPage.Clear;

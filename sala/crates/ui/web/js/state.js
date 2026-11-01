@@ -11,6 +11,8 @@ export function initialState() {
     audio_devices: { inputs: ['default'], outputs: ['default'] },
     mic_level_db: -120, // CoreToUi::MicLevel
     mic_test: false, // CoreToUi::MicTest ("Ouvir minha voz"); só o núcleo muda
+    update: null, // CoreToUi::UpdateState: null | { type: 'Available'|'Downloading'|'Installing'|'Failed', ... } (D-038)
+    updateDismissed: null, // versão cujo aviso "Agora não" fechou; só em memória, vale até reabrir o app
     peers: {}, // nome -> { connected, reconnecting, status, stats }
     mismatch: {}, // nome -> true (FingerprintMismatch)
     outsideTailnet: {}, // nome -> true (PeerNotInTailnet; some ao conectar)
@@ -122,9 +124,45 @@ export function setLink(state, link) {
     state.calls = { incoming: [], outgoing: [] };
     state.share = initialShare();
     state.shareDialog.pending = false;
+    state.update = null; // o GetState traz o estado da atualização, se houver
   }
   // Sem ligação o núcleo já desligou o teste; o GetState traz o valor real.
   state.mic_test = false;
+}
+
+// Aviso de atualização (D-038). Só `Available` pode ser fechado ("Agora não"); `Downloading`,
+// `Installing` e `Failed` aparecem sempre. Devolve null (nada a mostrar) ou o que o banner exibe.
+export function updateBanner(state) {
+  const u = state.update;
+  if (!u) return null;
+  switch (u.type) {
+    case 'Available': {
+      if (state.updateDismissed === u.version) return null;
+      const busy = callPeers(state).length > 0 || !!(state.share && state.share.sharing);
+      return {
+        kind: 'available',
+        title: 'Nova atualização disponível',
+        version: `Versão ${u.version}`,
+        notes: String(u.notes || '').trim(),
+        warn: busy ? 'A chamada será encerrada.' : '',
+      };
+    }
+    case 'Downloading': {
+      const pct = Math.max(0, Math.min(100, Number(u.percent) || 0));
+      return { kind: 'downloading', title: 'Baixando atualização…', text: `${pct}%`, percent: pct };
+    }
+    case 'Installing':
+      return { kind: 'installing', title: 'Instalando…', text: 'Confirme a permissão do Windows. O Concord vai reabrir sozinho.' };
+    case 'Failed':
+      return { kind: 'failed', title: 'Não foi possível atualizar', text: String(u.message || '') };
+    default:
+      return null;
+  }
+}
+
+// "Agora não": só vale para o aviso `Available` da versão atual.
+export function dismissUpdate(state) {
+  if (state.update && state.update.type === 'Available') state.updateDismissed = state.update.version;
 }
 
 // "Ouvir minha voz" ↔ "Parar de ouvir": rótulo muda com o estado (sem aria-pressed).
@@ -190,6 +228,9 @@ export function reduce(state, msg) {
       return 'mic';
     case 'MicTest':
       state.mic_test = msg.on === true;
+      return 'full';
+    case 'UpdateState':
+      state.update = msg.state && typeof msg.state.type === 'string' ? msg.state : null;
       return 'full';
     case 'PeerConnected': {
       const p = peer(state, msg.friend);

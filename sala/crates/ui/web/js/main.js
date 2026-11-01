@@ -4,7 +4,7 @@
 import {
   initialState, setLink, reduce, friends, inRoom, callPeers, chatPeer, roomAction,
   friendStatus, friendPresence, avatarIndex, micText, formatDuration, callSeconds, formatClock, initial,
-  sharingPeers, shareConsumeError, encoderLabel, micTestLeaveMessage,
+  sharingPeers, shareConsumeError, encoderLabel, micTestLeaveMessage, updateBanner, dismissUpdate,
   SHARE_VOLUME_KEY, loadShareVolume, writePref, clampVolumePct, shareVolumeMessage, shareAudioNote, makeThrottle,
 } from './state.js';
 import { initSettings } from './settings.js';
@@ -166,6 +166,37 @@ function noticeBox(title, text) {
     h('span', {}, h('strong', {}, title), ' ', h('span', { class: 'muted' }, text)));
 }
 
+// Aviso de atualização (D-038). As notas vêm de manifesto assinado, mas entram só como texto.
+function updateBannerNode(u) {
+  const installBtn = (label) => h('button', {
+    type: 'button', class: 'btn primary', 'data-key': 'update-install', disabled: !linked(),
+    onclick: () => send({ type: 'InstallUpdate' }),
+  }, label);
+  const failed = u.kind === 'failed';
+  const spans = [];
+  if (u.kind === 'available') {
+    spans.push(h('span', {}, u.version));
+    if (u.notes) spans.push(h('span', { class: 'banner-notes' }, u.notes));
+    if (u.warn) spans.push(h('span', {}, u.warn));
+  } else {
+    spans.push(h('span', { class: failed ? 'banner-notes' : '' }, u.text));
+  }
+  const buttons = [];
+  if (u.kind === 'available') {
+    buttons.push(installBtn('Atualizar'),
+      h('button', {
+        type: 'button', class: 'btn', 'data-key': 'update-dismiss',
+        onclick: () => { dismissUpdate(state); render(); },
+      }, 'Agora não'));
+  } else if (failed) {
+    buttons.push(installBtn('Tentar de novo'));
+  }
+  return h('div', { class: `banner${failed ? ' danger' : ''}`, role: failed ? 'alert' : 'status' },
+    h('div', { class: 'banner-icon' }, icon(failed ? 'i-alert' : 'i-refresh', 20)),
+    h('div', { class: 'banner-text' }, h('strong', {}, u.title), ...spans),
+    ...buttons);
+}
+
 function renderBanners() {
   const out = [];
   if (!linked()) {
@@ -175,6 +206,8 @@ function renderBanners() {
         h('strong', {}, 'Sem conexão com o núcleo'),
         h('span', {}, 'Tentando reconectar…'))));
   }
+  const upd = updateBanner(state);
+  if (upd) out.push(updateBannerNode(upd));
   for (const name of Object.keys(state.mismatch)) {
     out.push(h('div', { class: 'banner danger', role: 'alert' },
       h('div', { class: 'banner-icon' }, icon('i-alert', 20)),

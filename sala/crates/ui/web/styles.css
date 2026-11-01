@@ -172,6 +172,8 @@ select.input { padding: 0 10px; }
 .banner-text strong { font-weight: 600; }
 .banner-text span { font-size: 12px; color: var(--text-muted); }
 .banner.danger .banner-text strong, .banner.danger .banner-text span { color: var(--danger-text); }
+/* Notas da atualização e mensagem de erro: no máximo 3 linhas, para não empurrar a tela. */
+.banner-text span.banner-notes { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; white-space: pre-line; overflow-wrap: anywhere; }
 .notice { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--surface-5); font-size: 13px; line-height: 1.5; }
 .notice .ico { margin-top: 2px; color: var(--text); }
 .notice strong { font-weight: 600; }

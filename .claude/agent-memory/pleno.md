@@ -76,3 +76,5 @@
 - Examples do `sala-video` precisam das DLLs no PATH: `PATH=$PWD/target/release:$PATH target/release/examples/x.exe`. Bench com CPU saturada: `--frames 30` + timeout. swscale só usa threads via `sws_scale_frame` (o `sws_scale` ignora).
 - QSV ao vivo: só `bit_rate`/`rc_max_rate`, abaixo do valor de abertura e sem tocar `rc_buffer_size`, senão EINVAL no `send_frame` seguinte (D-034). Sempre sai IDR. `--log 1` no bench revela o erro real. Mutação: uma por vez, uma mascara a outra. `AV_CODEC_FLAG_LOW_DELAY` desliga frame threading. `cargo test -p sala-video --lib` em paralelo dá 0xc0000005: use `--test-threads=1`.
 - Fila do quinn em teste: o runtime de uma thread do `#[tokio::test]` só roda o driver quando o teste cede, então um loop síncrono enche a fila de forma determinística (T-037c, `tests/net.rs`).
+- Teste com `IpcServer`: faça um round trip de `GetState` antes de transmitir; o servidor registra o cliente de forma assíncrona.
+- `SHELLEXECUTEINFOW` no `windows-sys` 0.61 exige a feature `Win32_System_Registry`.

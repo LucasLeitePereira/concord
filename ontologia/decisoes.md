@@ -281,3 +281,16 @@ Formato: `## D-NNN título` · **Conceitos:** ids · **Decisão** · **Alternati
 - **Risco:** cada quadro comum descartado custa um keyframe ~9× maior no pior momento. Se o teste real mostrar excesso de keyframes, avaliar intra refresh do QSV.
 - **Limite:** não resolve a perda real da rede, só o descarte causado pela nossa própria fila.
 - **Data:** 2026-11-01
+
+## D-038 — T-041: atualização pelo próprio Concord (exceção a `inv-no-external-calls`)
+- O usuário pediu que o amigo receba "Nova atualização disponível" no app e atualize com um botão, sem ir ao GitHub.
+- **Exceção única à regra de chamadas externas:** o núcleo consulta e baixa nas releases do repositório público. Nenhum dado do usuário vai junto, e não há telemetria.
+- **Consulta automática, instalação só com clique.** Perfis de teste (`--profile`) nunca chamam a rede.
+- **Assinatura minisign obrigatória no manifesto `latest.json`.** O app baixa um programa e o executa como administrador; SHA-256 no mesmo release não basta, porque quem invadir a conta do GitHub troca o arquivo e o hash juntos. A chave pública vai embutida, e a privada fica fora do repositório. O manifesto traz o SHA-256 do instalador. Só valem `url` nas releases deste repositório e `version` maior que a atual, o que impede voltar para versão antiga.
+- **Mantém Inno Setup com admin:** o UAC aparece a cada atualização. Evitá-lo exigiria migrar a instalação para a pasta do usuário.
+- **Sem `tauri-plugin-updater`:** quem manda é o núcleo residente, que funciona com a interface fechada no modo jogo.
+- **Instalador aberto sem elevação (verbo `open`, não `runas`):** ele mesmo pede o UAC. Se já nascesse elevado, a flag `runasoriginaluser` não teria efeito (documentação do Inno Setup) e o Concord reabriria como administrador. Em contrapartida, o UAC recusado não vem como `ERROR_CANCELLED`: o núcleo espera o processo, e se ele terminar com o núcleo ainda vivo, a instalação não aconteceu.
+- **A chamada só cai depois do UAC aceito:** recusar não muda nada. Quem encerra é o `taskkill` do instalador, sem Bye; os amigos notam pelo timeout.
+- **Risco:** perder a chave privada obriga cada amigo a reinstalar à mão uma vez.
+- **Limite:** a primeira versão com atualizador precisa ser instalada à mão.
+- **Data:** 2026-11-01

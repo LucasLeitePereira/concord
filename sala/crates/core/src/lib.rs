@@ -23,6 +23,7 @@ pub mod share;
 pub mod share_audio;
 #[cfg(windows)]
 pub mod tailscale;
+pub mod update;
 #[cfg(windows)]
 pub mod ui_process;
 pub mod voice;

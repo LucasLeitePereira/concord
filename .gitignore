@@ -7,3 +7,4 @@ oi.txt
 sala/crates/ui/gen/
 sala/third_party/
 .docserver/
+*.key

@@ -17,6 +17,9 @@ rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "
 sala-protocol = { path = "../protocol", features = ["ipc-client"] }
 sala-video = { path = "../video" }
 sha2 = "0.11.1"
+minisign-verify = "0.3"
+semver = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -49,6 +52,7 @@ windows-sys = { version = "0.61", default-features = false, features = [
     "Win32_Networking_WinSock",
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
+    "Win32_System_Registry", # SHELLEXECUTEINFOW (update.rs) has an HKEY field
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

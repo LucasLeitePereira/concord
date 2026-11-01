@@ -13,8 +13,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use sala_protocol::{AudioSettings, CoreToUi, GameModeSettings, HotkeySettings, UiToCore};
+use sala_protocol::{AudioSettings, CoreToUi, GameModeSettings, HotkeySettings, UiToCore, UpdateState};
 use sala_video::viewer::{self, Incoming, KeyframeRequester, ViewerHandle};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{info, warn};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
@@ -30,6 +31,7 @@ use crate::session::{AudioSource, Session, SessionEvent, StatusFlags};
 use crate::share::{SharePlanner, VideoFrame, list_share_sources, real_share_planner};
 use crate::share_audio::{AudioPlanner, real_audio_planner};
 use crate::settings;
+use crate::update::{self, Manifest, UpdateEvent, UpdateInstaller, real_installer, update_enabled};
 use crate::ui_process::{SHUTDOWN_TIMEOUT, ShutdownOutcome, UiProcess, resolve_ui_exe};
 use crate::voice::clamp_volume;
 
@@ -275,12 +277,20 @@ pub struct Controller<P: PlatformApi> {
     focused_client: Option<ClientId>,
     /// Friends that were ringing at the last `Calls`, to notice the new ones.
     ringing: Vec<String>,
+    /// Self-update (D-038): the state the UI shows and the verified manifest it came from.
+    update_state: Option<UpdateState>,
+    update_manifest: Option<Manifest>,
+    /// How `InstallUpdate` starts the download/install worker (tests replace it).
+    update_installer: UpdateInstaller,
+    update_tx: UnboundedSender<UpdateEvent>,
+    update_rx: Option<UnboundedReceiver<UpdateEvent>>,
     steps: Vec<Step>,
 }
 
 impl<P: PlatformApi> Controller<P> {
     /// `ptt_mode`: `audio.mode = push_to_talk` (then PTT events reach `Session::set_ptt`).
     pub fn new(session: Arc<Session>, host: UiHost, platform: P, game_cfg: &GameModeConfig, ptt_mode: bool) -> Self {
+        let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel();
         Controller {
             viewer: None,
             viewer_opener: real_viewer_opener(),
@@ -304,8 +314,88 @@ impl<P: PlatformApi> Controller<P> {
             mic_test_client: None,
             focused_client: None,
             ringing: Vec::new(),
+            update_state: None,
+            update_manifest: None,
+            update_installer: real_installer(),
+            update_tx,
+            update_rx: Some(update_rx),
             steps: Vec::new(),
         }
+    }
+
+    /// Replaces the download/install worker (tests use a fake that sends `UpdateEvent`s).
+    pub fn set_update_installer(&mut self, installer: UpdateInstaller) {
+        self.update_installer = installer;
+    }
+
+    /// Where the update checks and the install worker report; clone it for background tasks.
+    pub fn update_sender(&self) -> UnboundedSender<UpdateEvent> {
+        self.update_tx.clone()
+    }
+
+    /// The receiving end of the update events, for the event loop (once).
+    pub fn take_update_events(&mut self) -> Option<UnboundedReceiver<UpdateEvent>> {
+        self.update_rx.take()
+    }
+
+    /// The update state the UI is being shown (`None` = nothing to offer).
+    pub fn update_state(&self) -> Option<&UpdateState> {
+        self.update_state.as_ref()
+    }
+
+    fn set_update_state(&mut self, state: UpdateState) {
+        if self.update_state.as_ref() == Some(&state) {
+            return;
+        }
+        self.update_state = Some(state.clone());
+        self.host.ipc.broadcast(&CoreToUi::UpdateState { state });
+    }
+
+    fn update_in_progress(&self) -> bool {
+        matches!(self.update_state, Some(UpdateState::Downloading { .. } | UpdateState::Installing))
+    }
+
+    fn available_state(m: &Manifest) -> UpdateState {
+        UpdateState::Available { version: m.version.clone(), notes: m.notes.clone() }
+    }
+
+    /// An event from a check or from the install worker (D-038).
+    pub fn on_update_event(&mut self, ev: UpdateEvent) {
+        match ev {
+            UpdateEvent::Found(m) => {
+                // A new check never overwrites a download or an install in progress.
+                if self.update_in_progress() {
+                    return;
+                }
+                let state = Self::available_state(&m);
+                self.update_manifest = Some(m);
+                self.set_update_state(state);
+            }
+            UpdateEvent::State(state) => {
+                // Late events from a worker that is no longer current are dropped.
+                if self.update_in_progress() {
+                    self.set_update_state(state);
+                }
+            }
+            UpdateEvent::Cancelled => {
+                if matches!(self.update_state, Some(UpdateState::Installing))
+                    && let Some(m) = &self.update_manifest
+                {
+                    let state = Self::available_state(m);
+                    self.set_update_state(state);
+                }
+            }
+        }
+    }
+
+    /// `InstallUpdate`: only from `Available` or `Failed`, with a manifest; ignored while busy.
+    fn install_update(&mut self) {
+        if !matches!(self.update_state, Some(UpdateState::Available { .. } | UpdateState::Failed { .. })) {
+            return;
+        }
+        let Some(manifest) = self.update_manifest.clone() else { return };
+        self.set_update_state(UpdateState::Downloading { percent: 0 });
+        (self.update_installer)(manifest, self.update_tx.clone());
     }
 
     /// Replaces how the viewer window is created (tests use a fake).
@@ -856,6 +946,7 @@ impl<P: PlatformApi> Controller<P> {
                     self.host.ipc.send_to(client, &CoreToUi::MicTest { on: false });
                 }
             }
+            UiToCore::InstallUpdate => self.install_update(),
             UiToCore::SetHotkeyCapture { on } => {
                 if on {
                     self.start_capture(client);
@@ -906,6 +997,9 @@ impl<P: PlatformApi> Controller<P> {
         ipc.send_to(client, &CoreToUi::Calls { incoming, outgoing });
         ipc.send_to(client, &self.share_state_msg());
         ipc.send_to(client, &CoreToUi::MicTest { on: self.mic_test_client.is_some() });
+        if let Some(state) = &self.update_state {
+            ipc.send_to(client, &CoreToUi::UpdateState { state: state.clone() });
+        }
         for friend in self.session.connected_friends() {
             ipc.send_to(client, &CoreToUi::PeerConnected { friend: friend.clone() });
             if let Some(p) = self.session.peer_status(&friend) {
@@ -1168,6 +1262,33 @@ pub async fn run(
             }
         });
     }
+    // Self-update (D-038): check 30 s after start, then every 6 h; never in test profiles and
+    // never while the game mode is on. The check runs on a blocking thread and reports through
+    // the same channel as the install worker.
+    let mut update_rx = ctl.take_update_events().expect("update events taken once");
+    if update_enabled(profile_name) {
+        let tx = ctl.update_sender();
+        let session = ctl.session().clone();
+        tokio::spawn(async move {
+            let _ = tokio::task::spawn_blocking(update::cleanup_update_dir).await;
+            tokio::time::sleep(update::FIRST_CHECK_DELAY).await;
+            loop {
+                let mut wait = update::CHECK_INTERVAL;
+                if session.local_status().game_mode {
+                    wait = update::GAME_MODE_RETRY;
+                } else {
+                    match tokio::task::spawn_blocking(update::fetch_manifest).await {
+                        Ok(Ok(manifest)) => {
+                            let _ = tx.send(UpdateEvent::Found(manifest));
+                        }
+                        Ok(Err(e)) => info!("update check: {e}"),
+                        Err(e) => warn!("update check panicked: {e}"),
+                    }
+                }
+                tokio::time::sleep(wait).await;
+            }
+        });
+    }
     let mut capture_watch = interval(std::time::Duration::from_secs(1));
     capture_watch.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -1197,6 +1318,7 @@ pub async fn run(
                 ctl.tick(sample.as_ref()).await;
             }
             Some(()) = ts_rx.recv() => ctl.refresh_config(),
+            Some(ev) = update_rx.recv() => ctl.on_update_event(ev),
             _ = capture_watch.tick() => ctl.check_capture_client(),
             _ = &mut ctrl_c => break,
         }

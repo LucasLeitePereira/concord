@@ -431,6 +431,23 @@ pub enum UiToCore {
     /// "Silenciar" silences it). Works outside the room. Turns itself off when the client
     /// disconnects or the game mode starts. The state comes as `CoreToUi::MicTest`.
     SetMicTest { on: bool },
+    /// Downloads and installs the update offered by `CoreToUi::UpdateState::Available` (D-038).
+    /// Only the user's click sends this; ignored when no update is on offer.
+    InstallUpdate,
+}
+
+/// Progress of the self-update (D-038), sent inside `CoreToUi::UpdateState`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum UpdateState {
+    /// A newer, signed release exists; waiting for the user's click.
+    Available { version: String, notes: String },
+    /// Downloading the installer.
+    Downloading { percent: u8 },
+    /// Installer verified and launched; the core is about to exit.
+    Installing,
+    /// The update failed; `version` and `notes` allow offering it again.
+    Failed { version: String, notes: String, message: String },
 }
 
 /// One monitor or window that can be shared (`screen-capture`).
@@ -540,6 +557,8 @@ pub enum CoreToUi {
     },
     /// Whether the local voice test (`SetMicTest`) is on. Sent at every change and on `GetState`.
     MicTest { on: bool },
+    /// State of the self-update (D-038).
+    UpdateState { state: UpdateState },
 }
 
 /// Encodes an IPC message as exactly one JSON line terminated by `\n`.
@@ -830,6 +849,7 @@ mod tests {
             UiToCore::StopShare,
             UiToCore::SetShareAudioVolume { volume: 0.5 },
             UiToCore::SetMicTest { on: true },
+            UiToCore::InstallUpdate,
         ];
         for c in cmds {
             let l = encode_ipc_line(&c).unwrap();
@@ -863,6 +883,12 @@ mod tests {
             CoreToUi::ShareSources { encoder: None, monitors: vec![], windows: vec![] },
             CoreToUi::ShareState { sharing: true, resolution: 720, fps: 30, audio: true },
             CoreToUi::MicTest { on: true },
+            CoreToUi::UpdateState { state: UpdateState::Available { version: "0.1.12".into(), notes: "novidades".into() } },
+            CoreToUi::UpdateState { state: UpdateState::Downloading { percent: 42 } },
+            CoreToUi::UpdateState { state: UpdateState::Installing },
+            CoreToUi::UpdateState {
+                state: UpdateState::Failed { version: "0.1.12".into(), notes: "n".into(), message: "falhou".into() },
+            },
             CoreToUi::TailnetPeers {
                 running: true,
                 peers: vec![TailnetPeer {
