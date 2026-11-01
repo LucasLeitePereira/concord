@@ -47,14 +47,13 @@ pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 pub const MAX_INSTALLER_BYTES: u64 = 200 * 1024 * 1024;
 
 /// Public key (the base64 line of the `.pub` file from `minisign -G`).
-// TODO(T-041d): placeholder, its private key was thrown away. Replace with the real key before
-// any release; `release_key_ready` / the ignored test `release_requires_real_public_key` flag it.
-pub const PUBLIC_KEY: &str = "RWR0O4aPmu5Poj/rvw/TwLbSAxRH1NXV+KdmqMBdsARVU8GKuAeOldYo";
+// Must match `sala/concord-update.pub`. Changing it means every friend reinstalls by hand once.
+pub const PUBLIC_KEY: &str = "RWTbHhsEGnIz+Cf8qub5r8+/+W8Bo5mshILLA9lc+YFGvNKUuoaaAnGn";
 
-/// Value of `PUBLIC_KEY` while it is still the placeholder.
+/// The T-041d placeholder, whose private key was thrown away.
 const PLACEHOLDER_PUBLIC_KEY: &str = "RWR0O4aPmu5Poj/rvw/TwLbSAxRH1NXV+KdmqMBdsARVU8GKuAeOldYo";
 
-/// False while `PUBLIC_KEY` is still the T-041d placeholder: a release must not go out then.
+/// False if `PUBLIC_KEY` were the old placeholder: a release must not go out then.
 pub fn release_key_ready() -> bool {
     PUBLIC_KEY != PLACEHOLDER_PUBLIC_KEY
 }
@@ -649,14 +648,15 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_key_is_flagged() {
-        assert!(!release_key_ready(), "T-041d replaces the placeholder; then this test goes away");
+    fn public_key_matches_the_pub_file() {
+        let pub_file = include_str!("../../../concord-update.pub");
+        assert_eq!(pub_file.lines().nth(1).map(str::trim), Some(PUBLIC_KEY));
     }
 
     /// Run by the release script: `cargo test -p sala-core --lib update -- --ignored`.
     #[test]
-    #[ignore = "fails on purpose while PUBLIC_KEY is the T-041d placeholder"]
+    #[ignore = "run by the release script"]
     fn release_requires_real_public_key() {
-        assert!(release_key_ready(), "PUBLIC_KEY is still the placeholder (TODO T-041d)");
+        assert!(release_key_ready(), "PUBLIC_KEY is still the placeholder");
     }
 }
