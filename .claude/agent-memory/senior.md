@@ -14,3 +14,4 @@
 ## Convenções do projeto (Sala)
 - Spec: `ideia/sala-handoff/PLANO-CLAUDE-CODE.md`. Invariantes em `ontologia/dominio.yaml` (`id: inv-...`).
 - Em revisão cega A/B: julgue só o diff e a checklist recebidos; não tente inferir qual braço é qual.
+- Não edite `metricas/` (vindo do antigo agente `senior` do concord).

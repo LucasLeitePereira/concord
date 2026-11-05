@@ -21,3 +21,7 @@
 - Workspace Cargo em `sala/`. Testes: `cargo test --workspace`; lint: `cargo clippy --workspace --all-targets -- -D warnings`.
 - Rodada completa leva >3 min (f2_game_mode ~106 s) e o Bash a joga para background: use log com nome novo a cada rodada e confira `ps -W | grep cargo.exe` antes de relançar; espere a notificação em vez de reexecutar. Não espere com `tail --pid=<pid>`: no Git Bash ele retorna na hora.
 - Fim de cargo em background: confira a linha `EXIT=` no log; a notificação do Bash pode chegar antes. Build frio de teste leva ~15 min.
+
+## Contexto do projeto (vindo do antigo agente `junior` do concord)
+- Rodada completa (clippy + `cargo test --workspace`): devolva só `test result` por alvo, contagem de warnings e falhas; filtre com `grep -E "^error|^warning|-->|panicked|FAILED|^test result"`.
+- Não edite `metricas/`.

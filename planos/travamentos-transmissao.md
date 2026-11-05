@@ -129,7 +129,7 @@ Teste transmitindo do eunice, porque hoje não temos essa medição. `DwmFlush` 
 
 ### Registro
 
-Ao sair do modo de plano: skill `documentar` em `docs/_pendentes/` com este estudo e o `AGENTS.md` §6 atualizado.
+Ao sair do modo de plano: skill `documentar` em `D:/TI/conhecimento/_pendentes/` com este estudo e o `AGENTS.md` §6 atualizado.
 
 ## Verificação
 

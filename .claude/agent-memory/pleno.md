@@ -78,3 +78,9 @@
 - Fila do quinn em teste: o runtime de uma thread do `#[tokio::test]` só roda o driver quando o teste cede, então um loop síncrono enche a fila de forma determinística (T-037c, `tests/net.rs`).
 - Teste com `IpcServer`: faça um round trip de `GetState` antes de transmitir; o servidor registra o cliente de forma assíncrona.
 - `SHELLEXECUTEINFOW` no `windows-sys` 0.61 exige a feature `Win32_System_Registry`.
+
+## Contexto do projeto (vindo do antigo agente `pleno` do concord)
+- Ontologia em `ontologia/` (fonte; espelhada em `D:/TI/conhecimento/ontologia/concord`): grep pelo `id` em `dominio.yaml` e use `mapa-codigo.yaml` para achar os arquivos.
+- Arquivos grandes, nunca lidos inteiros: `app.rs`, `voice.rs`, `session.rs`, `net.rs`.
+- Teste só do que mudou: `cargo test -p <crate> --test <arquivo> <filtro>` ou `--lib <módulo>` + clippy da crate tocada. Rodada completa (`cargo clippy --workspace --all-targets` + `cargo test --workspace`) fica com o sênior/júnior.
+- Não edite `metricas/`.
